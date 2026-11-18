@@ -382,38 +382,49 @@ fn crowding_off(b: &mut crate::Balance) {
 }
 
 /// The predator tunables as snapshots before version 36 read them.
+/// `w` as snapshots before version 42 read it: no species hysteresis
+/// settings or state.
+fn hysteresis_off(w: &mut World) {
+    let sc = &mut w.config.scoring;
+    (sc.species_confirm, sc.species_confirm_adults, sc.species_merge_confirm, sc.species_revive_days) = (0, 0.0, 0, 0);
+    w.chronicle.species.candidates.clear();
+    for s in &mut w.chronicle.species.species {
+        s.merging = 0;
+    }
+}
+
 fn predators_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v36::OLD_VALUE;
     b.pack_hunt = old;
     b.territory_harass = old;
     b.attack_grace = old;
-    balance38_off(b);
+    balance43_off(b);
 }
 
-/// The playtest 2 balance tunables as snapshots before version 38 read them.
-fn balance38_off(b: &mut crate::Balance) {
-    let old = crate::serde_util::before_v38::OLD_VALUE;
+/// The playtest 2 balance tunables as snapshots before version 43 read them.
+fn balance43_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v43::OLD_VALUE;
     b.egg_hybrid = old;
     b.age_spread = old;
     b.dormancy_toll = old;
     b.emergence_lag = old;
 }
 
-/// Version 36 snapshots (before the playtest 2 balance rules) restore with
+/// Version 42 snapshots (before the playtest 2 balance rules) restore with
 /// those tunables off, and are otherwise the same world.
 #[test]
-fn version_36_snapshots_restore_without_playtest2_balance() {
+fn version_42_snapshots_restore_without_playtest2_balance() {
     let mut w = fixture_world();
-    let old = w.snapshot_v36();
+    let old = w.snapshot_v42();
     let h = SnapshotHeader::read(&old).unwrap();
-    assert_eq!(h.version, 36);
+    assert_eq!(h.version, 42);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
-    assert_eq!(r.config.balance.age_spread, crate::serde_util::before_v38::OLD_VALUE);
-    balance38_off(&mut w.config.balance);
+    assert_eq!(r.config.balance.age_spread, crate::serde_util::before_v43::OLD_VALUE);
+    balance43_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
-    assert!(r.snapshot_v36() == old);
+    assert!(r.snapshot_v42() == old);
     // This version keeps them.
     let mut w = fixture_world();
     w.config.balance.dormancy_toll = 0.3;
@@ -560,7 +571,7 @@ fn version_10_snapshots_still_restore() {
 fn version_12_snapshots_still_restore() {
     let mut w = fixture_world();
     w.config.balance.nest_predation = crate::serde_util::before_v13::OLD_NEST_PREDATION;
-    let w = without_obedience(&w);
+    let mut w = without_obedience(&w);
     let old = w.snapshot_v12();
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!(h.version, 12);
@@ -571,6 +582,7 @@ fn version_12_snapshots_still_restore() {
     let r = headings_from(&w, World::restore(&old, Some(w.map.terrain().clone())).unwrap());
     assert_eq!(r.config.balance.nest_predation, 0.0);
     assert_eq!(r.config.balance, w.config.balance);
+    hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
 }
 
@@ -661,6 +673,7 @@ fn version_15_snapshots_restore_without_migration_onset() {
     assert_eq!(r.config.balance.migration_onset, crate::serde_util::before_v16::OLD_MIGRATION_ONSET);
     w.config.balance.migration_onset = r.config.balance.migration_onset;
     assert_eq!(r.config.balance, w.config.balance);
+    hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
 }
 
@@ -681,6 +694,7 @@ fn version_16_snapshots_restore_without_the_home_range() {
     assert_eq!(r.config.balance.home_range, crate::config::HomeRangeBalance::default());
     w.config.balance.home_range = r.config.balance.home_range;
     assert_eq!(r.config.balance, w.config.balance);
+    hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v16() == old);
 }
@@ -743,6 +757,7 @@ fn version_18_snapshots_restore_without_warm_costs() {
     w.config.balance.fang_grazing = crate::serde_util::before_v20::OLD_VALUE;
     w.config.balance.scale_cover = crate::serde_util::before_v20::OLD_VALUE;
     assert_eq!(r.config.balance, w.config.balance);
+    hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v18() == old);
 }
@@ -767,6 +782,7 @@ fn version_19_snapshots_restore_without_trait_costs() {
     w.config.balance.fang_grazing = off;
     w.config.balance.scale_cover = off;
     assert_eq!(r.config.balance, w.config.balance);
+    hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v20() == w.snapshot_v20());
     assert!(r.snapshot_v19() == old);
@@ -797,6 +813,7 @@ fn version_20_snapshots_restore_without_morph_effects() {
     w.config.balance.morph_tail_chill = off;
     w.config.balance.morph_long_legs = off;
     assert_eq!(r.config.balance, w.config.balance);
+    hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v20() == old);
 }
@@ -838,6 +855,7 @@ fn version_21_snapshots_restore_without_headings() {
     w.config.balance.directional_vision = 0.0;
     w.config.balance.vision_scan = 1.0;
     assert_eq!(r.config.balance, w.config.balance);
+    hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v21() == old);
 }
@@ -952,6 +970,7 @@ fn version_29_snapshots_restore_with_the_old_strike() {
     assert_eq!(r.config.balance.strike_fixes, crate::serde_util::before_v30::OLD_VALUE);
     strike_fixes_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
+    hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v29() == old);
 }
@@ -976,6 +995,7 @@ fn version_30_snapshots_restore_without_staggered_decisions() {
     playtest_off(&mut w.config.balance);
     w.last_intents.clear();
     assert_eq!(r.config.balance, w.config.balance);
+    hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v30() == old);
 }
@@ -1000,6 +1020,7 @@ fn version_34_snapshots_restore_without_crowding() {
     w.bonus_slots.clear();
     w.attack_orders.clear();
     assert_eq!(r.config.balance, w.config.balance);
+    hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v34() == old);
     // This version keeps them.
@@ -1076,6 +1097,7 @@ fn version_30_snapshots_restore_without_food_values() {
     playtest_off(&mut w.config.balance);
     w.last_intents.clear();
     assert_eq!(r.config.balance, w.config.balance);
+    hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v30() == old);
 
@@ -1118,6 +1140,7 @@ fn version_31_snapshots_keep_food_values_without_staggered_decisions() {
     playtest_off(&mut w.config.balance);
     w.last_intents.clear();
     assert_eq!(r.config.balance, w.config.balance);
+    hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v31() == old);
 }
@@ -1330,6 +1353,7 @@ fn version_35_snapshots_restore_without_predator_play() {
     predators_off(&mut w.config.balance);
     w.attack_orders.clear();
     assert_eq!(r.config.balance, w.config.balance);
+    hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v35() == old);
     // This version keeps them.
@@ -1338,4 +1362,70 @@ fn version_35_snapshots_restore_without_predator_play() {
     w.attack_orders.insert(a, t);
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!((r.attack_orders.get(&a).copied(), r.config.balance.pack_hunt), (Some(t), 0.5));
+}
+
+#[test]
+fn version_36_snapshots_restore_with_the_old_species_tracker() {
+    let w = fixture_world();
+    let old = w.snapshot_v36();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 36);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let sc = &r.config.scoring;
+    assert_eq!(
+        (sc.species_confirm, sc.species_confirm_adults, sc.species_merge_confirm, sc.species_revive_days),
+        (0, 0.0, 0, 0)
+    );
+    assert!(r.chronicle.species.candidates.is_empty());
+    assert!(r.snapshot_v36() == old);
+    // This version keeps them.
+    let mut w = fixture_world();
+    w.config.scoring.species_confirm = 3;
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.scoring.species_confirm, 3);
+}
+
+/// Version 36 snapshots (before migration deadlines and settle circles)
+/// restore with none, and this version keeps them.
+#[test]
+fn version_36_snapshots_restore_without_group_plans() {
+    use crate::world::groups::{MigrationPlan, Settle};
+    let mut w = fixture_world();
+    let key = (w.organisms[0].owner, 0u8);
+    w.group_plans.migrations.insert(key, MigrationPlan { issued_tick: 3, deadline_tick: 500 });
+    w.group_plans.settles.insert(key, Settle { center: Vec2::new(5.0, 6.0), radius: 4.0, until_tick: 900 });
+    let old = w.snapshot_v36();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 36);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.group_plans, Default::default());
+    assert!(r.snapshot_v36() == old);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.group_plans, w.group_plans);
+}
+
+#[test]
+fn version_41_snapshots_restore_with_the_old_species_tracker() {
+    use crate::world::groups::MigrationPlan;
+    let mut w = fixture_world();
+    let key = (w.organisms[0].owner, 0u8);
+    w.group_plans.migrations.insert(key, MigrationPlan { issued_tick: 3, deadline_tick: 500 });
+    let old = w.snapshot_v41();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 41);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    // Version 41's state (migration deadlines) is kept; the species
+    // hysteresis settings read as 0, the old tracker.
+    assert_eq!(r.group_plans, w.group_plans);
+    let sc = &r.config.scoring;
+    assert_eq!(
+        (sc.species_confirm, sc.species_confirm_adults, sc.species_merge_confirm, sc.species_revive_days),
+        (0, 0.0, 0, 0)
+    );
+    assert!(r.snapshot_v41() == old);
+    hysteresis_off(&mut w);
+    assert!(r.snapshot() == w.snapshot());
 }

@@ -484,6 +484,10 @@ pub struct World {
     /// set by the host; not saved.
     #[cfg_attr(feature = "serde", serde(skip))]
     rally_min_ticks: u64,
+    /// Floor on the claim cooldown in ticks
+    /// (`World::set_claim_cooldown_min_ticks`), set by the host; not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    claim_cooldown_min_ticks: u64,
     /// Group orders that ended on their own, for the host
     /// (`World::take_group_events`); not saved.
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -511,6 +515,18 @@ pub struct World {
     /// Offline protection set by the caller; not saved (`world::offline`).
     #[cfg_attr(feature = "serde", serde(skip))]
     offline: offline::OfflineProtection,
+    /// The newcomer grace's minimum length in ticks, set by the caller
+    /// (`World::set_attack_grace_min_ticks`); not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    grace_min_ticks: u64,
+    /// Each lineage's grace start (`World::grace_start`), derived from
+    /// `lineage_founded`; rebuilt on founding and restore, not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    grace_starts: Vec<u64>,
+    /// The cooldown `grace_starts` was computed with; a change of
+    /// `Balance::attack_grace` falls back to computing afresh.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    grace_starts_cooldown: u64,
     /// Wall-clock time spent in each phase of `step` (for `bench`).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub phase_times: PhaseTimes,
@@ -533,6 +549,11 @@ pub struct World {
     /// whose lineages count as founded at tick 0).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36::list"))]
     lineage_founded: Vec<u64>,
+    /// Migration deadlines and post-arrival settle circles by (player,
+    /// group) (`groups::GroupPlans`; version 41: empty from older
+    /// snapshots, whose migrations get a deadline from the restore).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v41"))]
+    group_plans: groups::GroupPlans,
     /// Each lineage's crowding this tick, indexed like `lineages`: the
     /// litter multiplier and the hunger multiplier
     /// (`Balance::lineage_crowding`; `[1, 1]` when off and for the wild).
@@ -628,11 +649,13 @@ impl World {
             territory_claims: BTreeMap::new(),
             rallies: BTreeMap::new(),
             rally_min_ticks: 0,
+            claim_cooldown_min_ticks: 0,
             group_events: Vec::new(),
             slots_used: BTreeMap::new(),
             bonus_slots: BTreeMap::new(),
             attack_orders: BTreeMap::new(),
             lineage_founded: Vec::new(),
+            group_plans: groups::GroupPlans::default(),
             crowding: Vec::new(),
             clutch_at: IdMap::default(),
             path_scratch: PathScratch::default(),
@@ -643,6 +666,9 @@ impl World {
             den_cells: IdMap::default(),
             lod,
             offline: Default::default(),
+            grace_min_ticks: 0,
+            grace_starts: Vec::new(),
+            grace_starts_cooldown: 0,
             phase_times: PhaseTimes::default(),
             last_intents: Vec::new(),
             config,
@@ -730,6 +756,8 @@ impl World {
         self.territories.retain(|&(p, _), _| p != player);
         self.territory_claims.retain(|&(p, _), _| p != player);
         self.rallies.retain(|&(p, _), _| p != player);
+        self.group_plans.migrations.retain(|&(p, _), _| p != player);
+        self.group_plans.settles.retain(|&(p, _), _| p != player);
     }
 
     /// Retire a player's lineage: every organism they own (agents and
@@ -935,6 +963,7 @@ impl World {
         // Lineages from before version 36 count as founded at tick 0.
         self.lineage_founded.resize(lineage as usize, 0);
         self.lineage_founded.push(self.tick);
+        self.rebuild_grace_starts();
         // What the home search reads of the world, gathered once: founding
         // only adds this lineage's organisms, which it ignores except as a
         // crowd.

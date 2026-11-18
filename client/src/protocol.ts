@@ -307,6 +307,10 @@ export interface GroupView {
   migration?: [number, number];
   /** The way the migration should go (around water and thin ice), from the group's middle to the target (absent: none planned). */
   route?: [number, number][];
+  /** Tick at which the migration ends if the group hasn't gathered at the target (absent: no migration). */
+  migration_deadline_tick?: number;
+  /** Where the group settles after arriving from a migration: members drift back into the circle until `expires_tick` (not a confinement). */
+  settle?: RallyView;
   territory?: TerritoryView;
   rally?: RallyView;
   /** Largest territory radius the group could claim now. */
@@ -333,6 +337,8 @@ export interface NearbyOrganism {
   matured: boolean;
   /** Visible body plan, for the sprite (absent from older servers). */
   look?: Appearance;
+  /** Its lineage is a newcomer under its grace: no other player's animal may attack it, nor it theirs. */
+  protected?: true;
 }
 
 /** `appearance::Appearance`: coarse visible body-plan classes of an adult. */
@@ -427,6 +433,18 @@ export interface StateView {
   balance?: number;
   /** Renown of yours held in escrow on open agreements. */
   escrow?: number;
+  /** Your lineage's newcomer grace while it lasts (absent once over): other players can't attack it, and it can't attack theirs. */
+  grace?: GraceView | null;
+}
+
+/** The newcomer grace left: game days, and at least some real minutes, whichever is longer. */
+export interface GraceView {
+  /** Game days left, to a tenth. */
+  days_left: number;
+  /** The tick it ends on. */
+  until_tick: number;
+  /** Real seconds left at the server's clock, rounded up to tens. */
+  real_seconds_left?: number;
 }
 
 export interface WelcomeMsg {
@@ -936,6 +954,8 @@ export interface LineageStats {
   score?: ScoreBreakdown;
   /** The soft lineage cap and how crowded the lineage is (absent on older servers). */
   crowding?: CrowdingView;
+  /** Egg-laying lineages: their clutches on the ground (absent for live bearers and older servers). */
+  eggs?: { clutches: number; eggs: number; brooded: number };
   legacy: LegacyPoint[];
   alerts: AlertView[];
 }
@@ -1490,6 +1510,8 @@ export interface SpectateLineage {
   look?: Appearance;
   /** `[cell x, cell y, count]` on `Spectate.cell`-tile cells (wild) or `player_cell` (players'). */
   cells: [number, number, number][];
+  /** Under its newcomer grace: counted, but not placed on the map (no cells). */
+  hidden?: boolean;
 }
 
 export interface Spectate {

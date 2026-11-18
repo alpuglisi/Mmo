@@ -74,11 +74,6 @@
 //!   mating slots players bought (`World::bonus_slots`,
 //!   `before_v35::list`), left out while a world snapshot of version 34 or
 //!   before is read (0, off: the old hard lineage cap; none bought).
-//! - `before_v38`: the playtest 2 competitive balance tunables
-//!   (`Balance::egg_hybrid`, `age_spread`, `dormancy_toll`,
-//!   `emergence_lag`), left out while a world snapshot of version 37 or
-//!   before is read or hashed (0, off; 37 is another change's, renumber at
-//!   merge).
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -2003,12 +1998,14 @@ pub mod before_v36 {
     }
 }
 
-/// `#[serde(with = "crate::serde_util::before_v38")]` on the competitive
-/// balance tunables of playtest 2 (`Balance::egg_hybrid`, `age_spread`,
-/// `dormancy_toll`, `emergence_lag`). On a thread holding a
-/// [`before_v38::Guard`] (reading or hashing a snapshot of version 37 or
-/// before) none is written or read: the tunables read as 0 (off).
-pub mod before_v38 {
+/// `#[serde(with = "crate::serde_util::before_v42::list")]` on the species
+/// hysteresis settings (`ScoringConfig::species_confirm` and the rest) and
+/// the species tracker's state for them (`SpeciesTracker::candidates`,
+/// `Species::merging`). On a thread holding a [`before_v42::Guard`] (reading
+/// or hashing a snapshot of version 41 or before) none is written or read:
+/// they read as their defaults, 0, which is the old tracker (a split counts
+/// at its first detection, a merge at once, no re-use of merged identities).
+pub mod before_v42 {
     use std::cell::Cell;
 
     use super::*;
@@ -2017,7 +2014,103 @@ pub mod before_v38 {
         static OLD: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// The competitive balance tunables before version 38: off.
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub mod list {
+        use super::*;
+
+        pub fn serialize<S: Serializer, T: Serialize>(v: &T, s: S) -> Result<S::Ok, S::Error> {
+            if OLD.with(Cell::get) {
+                s.serialize_unit()
+            } else {
+                v.serialize(s)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(d: D) -> Result<T, D::Error> {
+            if OLD.with(Cell::get) {
+                Ok(T::default())
+            } else {
+                T::deserialize(d)
+            }
+        }
+    }
+}
+
+/// What world snapshot version 41 added: migration deadlines and
+/// post-arrival settle circles (`World::group_plans`). On a thread holding
+/// a [`before_v41::Guard`] (reading or hashing a snapshot of version 36 or
+/// before; 37 to 40 are other changes') the field is written as nothing and
+/// read as empty: standing migrations get their deadline from the restore.
+pub mod before_v41 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer, T: Serialize>(v: &T, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(d: D) -> Result<T, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(T::default())
+        } else {
+            T::deserialize(d)
+        }
+    }
+}
+
+/// `#[serde(with = "crate::serde_util::before_v43")]` on the competitive
+/// balance tunables of playtest 2 (`Balance::egg_hybrid`, `age_spread`,
+/// `dormancy_toll`, `emergence_lag`). On a thread holding a
+/// [`before_v43::Guard`] (reading or hashing a snapshot of version 42 or
+/// before) none is written or read: the tunables read as 0 (off).
+pub mod before_v43 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The competitive balance tunables before version 43: off.
     pub const OLD_VALUE: f32 = 0.0;
 
     /// The old layout on this thread while this guard lives.

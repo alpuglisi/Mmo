@@ -203,7 +203,22 @@ pub struct GameConfig {
     /// Shortest a rally stands, in minutes of wall-clock time (at
     /// `tick_ms`): the sim's `RALLY_DAYS` pass in seconds at a fast tick.
     pub rally_min_minutes: f64,
+    /// Shortest the newcomer grace lasts, in minutes of wall-clock time (at
+    /// `tick_ms`): `Balance::attack_grace` days pass in under two minutes at
+    /// a fast tick.
+    pub grace_min_minutes: f64,
+    /// A player hears at most once in this many minutes of wall-clock time
+    /// that one attacker lineage is hunting their animals.
+    pub attack_alert_minutes: f64,
+    /// Shortest wait between a group's territory claims (abandoning in
+    /// between changes nothing), in minutes of wall-clock time: the sim's
+    /// half day passes in seconds at a fast tick.
+    pub claim_cooldown_min_minutes: f64,
 }
+
+/// Fewer drinking-water tiles than this in and around a territory or
+/// rally circle draw a warning in the reply ([`Game::water_warning`]).
+pub const LOW_WATER_TILES: usize = 3;
 
 /// Whether a "species founded" achievement of `player` for `species` on
 /// `day` earns its renown bonus (and a season count), recording it if so.
@@ -222,15 +237,40 @@ fn species_bonus_due(
     let Some(lineage) = t.get(species).and_then(|s| s.main_lineage()) else {
         return false;
     };
-    let redetected = t.species.iter().any(|o| {
-        o.id != species && o.founder == Some(player) && o.merged_into.is_some() && o.main_lineage() == Some(lineage)
-    });
     let cooling = paid.get(&lineage).is_some_and(|&d| day < d + dpy);
-    if redetected || cooling {
+    if species_redetected(t, species, player) || cooling {
         return false;
     }
     paid.insert(lineage, day);
     true
+}
+
+/// Whether `species`, credited to `player`, is a re-detection: an earlier
+/// species of that player from the same lineage merged back, and this one
+/// is it drifting across the threshold again, not a speciation. Worlds from
+/// snapshot version 42 re-use the merged species' identity instead (and
+/// confirm splits first), so this only catches older worlds' records; such
+/// achievements earn nothing and raise no alert, and the counts skip them.
+fn species_redetected(t: &evo_sim::species::SpeciesTracker, species: u32, player: PlayerId) -> bool {
+    let Some(lineage) = t.get(species).and_then(|s| s.main_lineage()) else {
+        return false;
+    };
+    t.species.iter().any(|o| {
+        o.id < species && o.founder == Some(player) && o.merged_into.is_some() && o.main_lineage() == Some(lineage)
+    })
+}
+
+/// Whether a species belongs in the species list: alive with adults, or
+/// extinct after a real life. Left out: living species with no adults of
+/// their own (merging into another, or missed by the last sample) and
+/// species that merged back within a season of appearing (the numbered
+/// copies of a species flapping across the threshold in older worlds).
+fn species_listed(s: &evo_sim::species::Species, season_days: u64) -> bool {
+    match (s.extinct_day, s.merged_into) {
+        (None, _) => s.adults > 0.0,
+        (Some(d), Some(_)) => d.saturating_sub(s.founded_day) >= season_days,
+        (Some(_), None) => s.peak_adults > 0.0,
+    }
 }
 
 /// Most mating requests one player may send another within
@@ -238,6 +278,10 @@ fn species_bonus_due(
 pub const REQUESTS_PER_TARGET: usize = 3;
 /// Most players one player may block.
 pub const MAX_BLOCKED: usize = 200;
+
+/// Tiles a view may reach beyond what the player's animals perceive
+/// ([`Game::view_reach`]): enough for the default view around them.
+pub const VIEW_MARGIN: f32 = 16.0;
 
 /// Share of a bought agreement's fee the buyer forfeits to the seller when
 /// it lapses (at least 1 renown when anything was paid).
@@ -278,6 +322,9 @@ impl Default for GameConfig {
             purchase_deadline_ticks: 30 * 60,
             request_window_ticks: 3600,
             rally_min_minutes: 5.0,
+            grace_min_minutes: 30.0,
+            attack_alert_minutes: 5.0,
+            claim_cooldown_min_minutes: 2.0,
         }
     }
 }
@@ -502,6 +549,9 @@ pub struct Game {
     /// each daily record (`World::legacy_hosts`): the royalty and the score
     /// breakdown read it. Not saved; recomputed on a restore.
     hosts: evo_sim::world::HostTally,
+    /// Tick of the last attack alert by (attacker lineage, victim): at most
+    /// one per [`GameConfig::attack_alert_minutes`]. Not saved.
+    attack_alerts: BTreeMap<(u32, PlayerId), u64>,
     /// Tests: take the plain, slower paths these shortcuts replace (full
     /// hold scans, a fresh index per new connection) to compare against.
     #[cfg(test)]
@@ -693,12 +743,39 @@ impl Game {
             routes: BTreeMap::new(),
             founded_day: BTreeMap::new(),
             hosts,
+            attack_alerts: BTreeMap::new(),
             #[cfg(test)]
             reference: false,
         };
-        let floor = (g.cfg.rally_min_minutes * 60_000.0 / g.cfg.tick_ms.max(1.0)).round() as u64;
-        g.world.set_rally_min_ticks(floor);
+        let minutes = |m: f64| (m * 60_000.0 / g.cfg.tick_ms.max(1.0)).round() as u64;
+        let (rally, claim) = (minutes(g.cfg.rally_min_minutes), minutes(g.cfg.claim_cooldown_min_minutes));
+        g.world.set_rally_min_ticks(rally);
+        g.world.set_claim_cooldown_min_ticks(claim);
+        g.world.set_attack_grace_min_ticks(minutes(g.cfg.grace_min_minutes));
         g
+    }
+
+    /// The player's newcomer grace left (`StateView::grace`), if any.
+    pub(crate) fn grace_view(&self, player: PlayerId) -> Option<GraceView> {
+        let days = self.world.lineage_grace_left(self.lineage_of(player)?)?;
+        let tpd = self.world.config.ticks_per_day.max(1) as f64;
+        let ticks = (days as f64 * tpd).round() as u64;
+        let seconds = (ticks as f64 * self.cfg.tick_ms / 1000.0 / 10.0).ceil() as u64 * 10;
+        Some(GraceView {
+            days_left: (days * 10.0).ceil() / 10.0,
+            until_tick: self.world.tick() + ticks,
+            real_seconds_left: Some(seconds),
+        })
+    }
+
+    /// Mark the neighbours whose lineage is under its newcomer grace
+    /// (`NearbyOrganism::protected`).
+    pub(crate) fn mark_protected(&self, nearby: &mut [NearbyOrganism]) {
+        for n in nearby {
+            if n.owner != WILD && self.world.lineage_grace_left(n.lineage).is_some() {
+                n.protected = Some(true);
+            }
+        }
     }
 
     /// The game-side state to save with a world snapshot.
@@ -998,6 +1075,22 @@ impl Game {
         self.mating_log.get(&player).map(|l| l.iter().cloned().collect()).unwrap_or_default()
     }
 
+    /// An egg-laying lineage's clutches; `None` for live bearers (or a lineage with nobody left to tell).
+    fn eggs_view(&self, lineage: u32) -> Option<EggsView> {
+        let w = &self.world;
+        let lays = w.organisms.iter().find(|o| o.alive && o.lineage == lineage).map(|o| o.traits.birth.lays_eggs());
+        let mine = w.clutches.iter().filter(|c| c.lineage == lineage);
+        let mut v = EggsView::default();
+        for c in mine {
+            v.clutches += 1;
+            v.eggs += c.eggs.len() as u32;
+            if c.guardian.is_some_and(|g| w.organism(g).is_some_and(|o| o.alive)) {
+                v.brooded += 1;
+            }
+        }
+        (lays == Some(true) || v.clutches > 0).then_some(v)
+    }
+
     /// Whether founders founded now start provisioned for winter.
     pub fn winter_provision_now(&self) -> bool {
         self.cfg.winter_provision && self.world.days_until_winter() <= WINTER_PROVISION_DAYS
@@ -1153,8 +1246,12 @@ impl Game {
                 Ok(Some(target_data(Vec2::new(x, y), to, "it can't get there; it goes as near as it can")))
             }
             ClientMsg::PossessAttack { organism, target } => {
+                // Repeating the standing order changes nothing: no new alert.
+                let repeat = self.world.attack_target(organism) == Some(target);
                 self.world.possess_attack(player, organism, target).map_err(e)?;
-                self.alert_attacked(player, organism, target, out);
+                if !repeat {
+                    self.alert_attacked(player, organism, target, out);
+                }
                 Ok(Some(serde_json::json!({ "organism": organism, "target": target })))
             }
             ClientMsg::Release { organism } => self.world.release(player, organism).map(|_| None).map_err(e),
@@ -1180,7 +1277,15 @@ impl Game {
             ClientMsg::ClearMigration { group } => {
                 match group {
                     None => self.world.clear_migration(player),
-                    Some(g) if g < MAX_GROUPS => self.world.clear_migration_group(player, g),
+                    // A group that exists, or one whose order outlived it.
+                    Some(g)
+                        if g < MAX_GROUPS
+                            && (g == 0
+                                || self.world.group_has_members(player, g)
+                                || self.world.migration_order(player, g).is_some()) =>
+                    {
+                        self.world.clear_migration_group(player, g)
+                    }
                     Some(g) => return Err(e(CommandError::NoSuchGroup(g))),
                 }
                 Ok(None)
@@ -1188,7 +1293,9 @@ impl Game {
             ClientMsg::ClaimTerritory { group, x, y, radius } => {
                 finite(&[x, y, radius])?;
                 let t = self.world.claim_territory(player, group, Vec2::new(x, y), radius).map_err(e)?;
-                Ok(Some(serde_json::to_value(TerritoryView::from(t)).unwrap()))
+                let mut data = serde_json::to_value(TerritoryView::from(t)).unwrap();
+                self.water_warning(player, group, t.center, t.radius, &mut data);
+                Ok(Some(data))
             }
             ClientMsg::AbandonTerritory { group } => {
                 self.world.abandon_territory(player, group).map_err(e)?;
@@ -1197,7 +1304,9 @@ impl Game {
             ClientMsg::Rally { group, x, y } => {
                 finite(&[x, y])?;
                 let r = self.world.rally_group(player, group, Vec2::new(x, y)).map_err(e)?;
-                Ok(Some(serde_json::to_value(RallyView::from(r)).unwrap()))
+                let mut data = serde_json::to_value(RallyView::from(r)).unwrap();
+                self.water_warning(player, group, r.center, r.radius, &mut data);
+                Ok(Some(data))
             }
             ClientMsg::CancelRally { group } => {
                 self.world.cancel_rally(player, group).map_err(e)?;
@@ -1221,11 +1330,13 @@ impl Game {
                 finite(&[x, y, radius])?;
                 let p = self.world.map.clamp(Vec2::new(x, y));
                 // Only where the player has organisms (or their lineage's
-                // center): a view anywhere scouted every player's animals.
-                if !self.in_sight(player, p) {
+                // center), and no wider than they perceive there plus a
+                // margin: a view anywhere scouted every player's animals.
+                let reach = self.view_reach(player, p);
+                if reach < 1.0 {
                     return Err(ErrorInfo::new("out_of_sight", "you can only look where your organisms are"));
                 }
-                let radius = radius.clamp(1.0, self.cfg.max_view_radius);
+                let radius = radius.clamp(1.0, self.cfg.max_view_radius.min(reach));
                 let view = ViewWindow { x: p.x, y: p.y, radius };
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.view = Some(view);
@@ -1288,6 +1399,15 @@ impl Game {
             ClientMsg::Bid { listing, amount, mine } => self.bid(player, listing, amount, mine, out),
             ClientMsg::BrowseMarket(q) => Ok(Some(serde_json::to_value(self.market(player, &q)?).unwrap())),
             ClientMsg::MatingPrefs { block, unblock, auto_decline } => {
+                // Only a real player can be blocked: not the wild (0), not a
+                // made-up id.
+                if let Some(p) = block {
+                    let known = self.names.contains_key(&p) || self.world.lineages.iter().any(|l| l.owner == p);
+                    if p == WILD || !known {
+                        return Err(ErrorInfo::new("no_such_player", format!("there is no player {p}"))
+                            .with_detail(serde_json::json!({ "player": p })));
+                    }
+                }
                 let prefs = self.mating_prefs.entry(player).or_default();
                 if let Some(p) = unblock {
                     prefs.blocked.retain(|&b| b != p);
@@ -2294,9 +2414,26 @@ impl Game {
         if a.owner != player {
             return Err(e(CommandError::NotOwned(mine)));
         }
-        let p = self.world.mating_preview(mine, partner).map_err(e)?;
         let partner_seen =
             self.world.organism(partner).is_some_and(|b| b.owner == player || self.in_sight(player, b.pos));
+        // Only a partner the player can see, one on the market, or one in
+        // an offer of theirs: else a preview probed any organism anywhere.
+        let public = || {
+            self.economy.listings.values().any(|l| l.organism == partner)
+                || self.offers.values().any(|o| {
+                    o.status.is_open()
+                        && (o.from == player || o.to == player)
+                        && (o.mine == partner || o.partner == partner)
+                })
+        };
+        if self.world.organism(partner).is_some() && !partner_seen && !public() {
+            return Err(ErrorInfo::new(
+                "out_of_sight",
+                "you can only preview a mating with an animal you can see, one on the market or one in your offers",
+            )
+            .with_detail(serde_json::json!({ "organism": partner })));
+        }
+        let p = self.world.mating_preview(mine, partner).map_err(e)?;
         Ok(MatingPreviewView {
             mine,
             partner,
@@ -2684,6 +2821,15 @@ impl Game {
         }
         let kind = |l: u32| w.lineages.get(l as usize).map_or("an animal", |x| x.name.as_str()).to_string();
         let (owner, theirs, mine) = (t.owner, kind(t.lineage), kind(a.lineage));
+        // One alert per attacker lineage and victim in a while.
+        let window = (self.cfg.attack_alert_minutes * 60_000.0 / self.cfg.tick_ms.max(1.0)).round() as u64;
+        let now = w.tick();
+        let key = (a.lineage, owner);
+        if self.attack_alerts.get(&key).is_some_and(|&t| now.saturating_sub(t) < window) {
+            return;
+        }
+        self.attack_alerts.retain(|_, t| now.saturating_sub(*t) < window);
+        self.attack_alerts.insert(key, now);
         let text = format!("A {theirs} of yours (#{target}) is being hunted by a player's {mine} (#{attacker})");
         self.alert(owner, AlertKind::Attack, text, Some(target), out);
     }
@@ -2825,10 +2971,32 @@ impl Game {
     /// radius of one of their living organisms, or of their lineage's center
     /// (the default view, which also finds a lineage living as cohorts).
     pub fn in_sight(&self, player: PlayerId, p: Vec2) -> bool {
-        let r = self.cfg.max_view_radius;
-        let near = |q: Vec2| (q.x - p.x).abs() <= r && (q.y - p.y).abs() <= r;
-        self.world.organisms.iter().any(|o| o.alive && o.owner == player && near(o.pos))
-            || (self.lineage_of(player).is_some() && near(self.lineage_center(player)))
+        self.view_reach(player, p) >= 0.0
+    }
+
+    /// How far around `p` the player may look: the most, over their living
+    /// organisms, of that organism's sight plus [`VIEW_MARGIN`] less its
+    /// distance to `p` (along the farther axis), or [`VIEW_MARGIN`] less the
+    /// distance from their lineage's center. Negative where they can't see.
+    /// A view's window must fit in it, so a lineage spread over the map
+    /// can't map most of it with a few wide views.
+    pub fn view_reach(&self, player: PlayerId, p: Vec2) -> f32 {
+        let cheb = |q: Vec2| (q.x - p.x).abs().max((q.y - p.y).abs());
+        let mut best = f32::NEG_INFINITY;
+        for o in self.world.organisms.iter().filter(|o| o.alive && o.owner == player) {
+            best = best.max(self.sight(o) + VIEW_MARGIN - cheb(o.pos));
+        }
+        if self.lineage_of(player).is_some() {
+            best = best.max(VIEW_MARGIN - cheb(self.lineage_center(player)));
+        }
+        best
+    }
+
+    /// How far an organism perceives, as the sim's `decide` reckons it
+    /// unalarmed (`Balance::perception_range`, capped at `max_perception`).
+    fn sight(&self, o: &evo_sim::organism::Organism) -> f32 {
+        let c = &self.world.config;
+        (2.0 + c.balance.perception_range * o.traits.stats.perception).min(c.max_perception)
     }
 
     /// The map image (`GET /api/map.png`) as `player` may see it: the
@@ -2836,10 +3004,11 @@ impl Game {
     /// ([`Game::in_sight`]), at `scale` pixels per tile.
     pub fn map_rgb(&self, player: PlayerId, scale: usize) -> (usize, usize, Vec<u8>) {
         let (w, h) = (self.world.map.width, self.world.map.height);
-        // Tiles in sight: each own organism's square of view.
-        let r = self.cfg.max_view_radius.ceil() as i64;
+        // Tiles in sight: each own organism's square of view
+        // ([`Game::view_reach`]).
         let mut seen = vec![false; w * h];
-        let mut mark = |p: Vec2| {
+        let mut mark = |p: Vec2, r: f32| {
+            let r = r.max(0.0).floor() as i64;
             let (cx, cy) = (p.x as i64, p.y as i64);
             for y in (cy - r).max(0)..=(cy + r).min(h as i64 - 1) {
                 for x in (cx - r).max(0)..=(cx + r).min(w as i64 - 1) {
@@ -2847,14 +3016,20 @@ impl Game {
                 }
             }
         };
-        let mut tiles: BTreeSet<(i64, i64)> = BTreeSet::new();
+        // The widest sight per tile (organisms crowd a few tiles).
+        let mut tiles: BTreeMap<(i64, i64), (Vec2, f32)> = BTreeMap::new();
         for o in self.world.organisms.iter().filter(|o| o.alive && o.owner == player) {
-            if tiles.insert((o.pos.x as i64, o.pos.y as i64)) {
-                mark(o.pos);
+            let r = self.sight(o) + VIEW_MARGIN;
+            let e = tiles.entry((o.pos.x as i64, o.pos.y as i64)).or_insert((o.pos, r));
+            if r > e.1 {
+                *e = (o.pos, r);
             }
         }
+        for (p, r) in tiles.into_values() {
+            mark(p, r);
+        }
         if self.lineage_of(player).is_some() {
-            mark(self.lineage_center(player));
+            mark(self.lineage_center(player), VIEW_MARGIN);
         }
         let visible = |o: &evo_sim::organism::Organism| {
             o.owner == player || {
@@ -2950,7 +3125,7 @@ impl Game {
     }
 
     /// Tell players about group orders that ended on their own: a
-    /// migration that arrived, a group left with no members.
+    /// migration that arrived or timed out, a group left with no members.
     fn announce_group_events(&mut self, out: &mut Outbox) {
         use evo_sim::world::commands::GroupEvent;
         for ev in self.world.take_group_events() {
@@ -2973,7 +3148,35 @@ impl Game {
                         self.alert(player, AlertKind::Group, text, None, out);
                     }
                 }
+                GroupEvent::TimedOut { player, group, target, median } => {
+                    self.routes.remove(&(player, group));
+                    let text = format!(
+                        "{} didn't gather at its migration target ({:.0}, {:.0}) in time (half the group is still \
+                         more than {:.0} tiles away); the order has ended. Rally it, or migrate again to a nearer point.",
+                        group_name(group),
+                        target.x,
+                        target.y,
+                        median
+                    );
+                    self.alert(player, AlertKind::Group, text, None, out);
+                }
             }
+        }
+    }
+
+    /// Add the water in and around a territory or rally circle to its
+    /// command's reply (`water_share`, `drinkable_tiles`), and a `warning`
+    /// when there is little to drink: a drought then sends the group out
+    /// of the circle to drink, and a dry circle won't hold it.
+    fn water_warning(&self, player: PlayerId, group: u8, center: Vec2, radius: f32, data: &mut serde_json::Value) {
+        let w = self.world.water_check(player, group, center, radius);
+        data["water_share"] = ((w.water_share * 100.0).round() / 100.0).into();
+        data["drinkable_tiles"] = w.drinkable.into();
+        if w.drinkable < LOW_WATER_TILES {
+            data["warning"] = "Little or no drinking water in or near this circle: the group will leave it to drink, and may die of thirst in a drought.".into();
+        } else if w.water_share > 0.25 {
+            data["warning"] =
+                format!("{:.0}% of this circle is water the group can't stand in.", w.water_share * 100.0).into();
         }
     }
 
@@ -3105,6 +3308,10 @@ impl Game {
             let mut paid = true;
             match a.kind {
                 AchievementKind::SpeciesFounded { species } => {
+                    if species_redetected(&ch.species, species, a.player) {
+                        // No speciation: no bonus, count or alert.
+                        continue;
+                    }
                     paid = species_bonus_due(&ch.species, &mut self.species_bonus, species, a.player, a.day, dpy);
                     if paid {
                         self.season.add_species(a.player);
@@ -3159,9 +3366,11 @@ impl Game {
         let ch = &w.chronicle;
         let t = &ch.species;
         let lineage_name = |l: u32| w.lineages.get(l as usize).map(|x| (x.name.clone(), x.owner)).unwrap_or_default();
+        let season_days = (w.config.days_per_year / 4).max(1) as u64;
         let mut species: Vec<SpeciesView> = t
             .species
             .iter()
+            .filter(|s| species_listed(s, season_days))
             .map(|s| SpeciesView {
                 id: s.id,
                 name: s.name.clone(),
@@ -3262,7 +3471,11 @@ impl Game {
                 e.longevity_days = e.longevity_days.max(life.days(day));
             }
         }
-        for a in &ch.achievements {
+        let real = |a: &&evo_sim::chronicle::Achievement| match a.kind {
+            AchievementKind::SpeciesFounded { species } => !species_redetected(t, species, a.player),
+            _ => true,
+        };
+        for a in ch.achievements.iter().filter(real) {
             let e = tallies.entry(a.player).or_insert_with(|| new(a.player));
             match a.kind {
                 AchievementKind::SpeciesFounded { .. } => e.species_founded += 1,
@@ -3282,6 +3495,7 @@ impl Game {
             .achievements
             .iter()
             .rev()
+            .filter(real)
             .take(200)
             .map(|a| AchievementView {
                 day: a.day,
@@ -3296,7 +3510,7 @@ impl Game {
                 day,
                 detected_day: t.last_detection,
                 samples: t.last_samples,
-                alive: t.alive().count(),
+                alive: species.iter().filter(|s| s.extinct_day.is_none()).count(),
                 species,
                 founded: t
                     .founded
@@ -3508,6 +3722,7 @@ impl Game {
             origins,
             score: self.score_breakdown(player),
             crowding: self.crowding_view(player),
+            eggs: lineage.and_then(|l| self.eggs_view(l)),
             legacy,
             alerts: self.alerts(player),
         }
@@ -3854,6 +4069,16 @@ mod tests {
     }
 
     #[test]
+    fn lineage_stats_tell_egg_layers_their_clutches() {
+        let (mut g, _, _) = game();
+        assert!(g.lineage_stats(1).eggs.is_none(), "a live-bearing lineage has no clutches to show");
+        g.set_name(3, "cat");
+        g.found(3, &FounderDesign::new("Layers", Thermo::Warm, BirthType::IncubatedEggs, 4).founders(6)).unwrap();
+        let e = g.lineage_stats(3).eggs.expect("an egg-laying lineage shows its clutches");
+        assert_eq!(e, EggsView::default());
+    }
+
+    #[test]
     fn refounding_only_after_extinction() {
         let (mut g, _, _) = game();
         let first = g.lineage_of(1).unwrap();
@@ -4035,6 +4260,10 @@ mod tests {
         let far = ClientMsg::Migrate { x: 1.0, y: 1.0, group: Some(9) };
         assert_eq!(code(&mut g, 10, 1, far).as_deref(), Some("no_such_group"));
         assert_eq!(code(&mut g, 10, 1, ClientMsg::ClearMigration { group: Some(9) }).as_deref(), Some("no_such_group"));
+        // Group ids in range but without members don't exist either.
+        let empty = ClientMsg::Migrate { x: 20.0, y: 20.0, group: Some(5) };
+        assert_eq!(code(&mut g, 10, 1, empty).as_deref(), Some("no_such_group"));
+        assert_eq!(code(&mut g, 10, 1, ClientMsg::ClearMigration { group: Some(5) }).as_deref(), Some("no_such_group"));
         assert_eq!(g.world.territory(1, 1).map(|t| (t.center.x, t.center.y)), Some((20.0, 22.0)));
         // Bob can't touch ann's groups: his own group 1 doesn't exist.
         assert_eq!(code(&mut g, 20, 2, ClientMsg::AbandonTerritory { group: 1 }).as_deref(), Some("no_territory"));
@@ -6037,6 +6266,13 @@ mod tests {
             g.command(10, 1, Some(1), ClientMsg::MatingPrefs { block: Some(2), unblock: None, auto_decline: None });
         assert_eq!(reply_data(&out)["blocked"], serde_json::json!([2]));
         assert_eq!(code(&ask(&mut g, 2)), Some("requests_refused".into()));
+        // Not the wild, nor a player who doesn't exist.
+        for p in [WILD, 999] {
+            let out =
+                g.command(10, 1, Some(1), ClientMsg::MatingPrefs { block: Some(p), unblock: None, auto_decline: None });
+            assert_eq!(code(&out), Some("no_such_player".into()), "{p}");
+        }
+        assert_eq!(g.mating_prefs[&1].blocked, vec![2]);
         g.command(10, 1, Some(3), ClientMsg::MatingPrefs { block: None, unblock: Some(2), auto_decline: Some(true) });
         assert_eq!(code(&ask(&mut g, 4)), Some("requests_refused".into()), "auto-decline");
         let out =
@@ -6094,6 +6330,18 @@ mod tests {
         assert_eq!(result(&far).1, Some("out_of_sight".into()));
         let near = g.command(10, 1, Some(2), ClientMsg::SetView { x: 10.0, y: 10.0, radius: 16.0 });
         assert!(result(&near).0, "{near:?}");
+        // And no wider than Ann's animals perceive plus the margin: a wide
+        // view is narrowed, one beyond reach refused (32 tiles away was fine
+        // before, with a 32-tile radius on top).
+        let sight =
+            (g.world.organisms.iter().filter(|o| o.alive && o.owner == 1)).map(|o| g.sight(o)).fold(0.0, f32::max);
+        assert!(sight < 10.0, "{sight}");
+        let wide = g.command(10, 1, Some(2), ClientMsg::SetView { x: 10.0, y: 10.0, radius: 32.0 });
+        let r = reply_data(&wide)["radius"].as_f64().unwrap() as f32;
+        assert!(r + 5.5 <= sight + VIEW_MARGIN + 1e-3 && r >= 1.0, "radius {r}, sight {sight}");
+        let edge = g.command(10, 1, Some(2), ClientMsg::SetView { x: 4.5 + 30.0, y: 4.5, radius: 32.0 });
+        assert_eq!(result(&edge).1, Some("out_of_sight".into()));
+        assert!(!g.in_sight(1, Vec2::new(4.5 + sight + VIEW_MARGIN + 1.0, 4.5)));
         // A listing gives the 16-tile region, not the live position.
         let dam = female(&g, &a);
         let i = g.world.organism_index(dam).unwrap();
@@ -6101,10 +6349,22 @@ mod tests {
         let out = g.command(10, 1, Some(3), ClientMsg::CreateListing { organism: dam, fee: 0, expires_days: None });
         let l = &reply_data(&out)["listing"];
         assert_eq!((l["x"].as_f64(), l["y"].as_f64()), (Some(8.0), Some(8.0)));
-        // A preview's distance to a hidden partner is rounded up to 16 tiles.
+        // A preview needs the partner in sight, on the market or in an
+        // offer; the distance to one out of sight is rounded up to 16 tiles.
         let stud = male(&g, &b);
+        assert_eq!(g.preview_mating(1, dam, stud).unwrap_err().code, "out_of_sight");
+        let out = g.command(20, 2, Some(9), ClientMsg::CreateListing { organism: stud, fee: 0, expires_days: None });
+        assert!(result(&out).0, "{out:?}");
         let p = g.preview_mating(1, dam, stud).unwrap();
         assert_eq!(p.distance % 16.0, 0.0, "{}", p.distance);
+        let listing = reply_data(&out)["listing"]["id"].as_u64().unwrap();
+        g.command(20, 2, Some(10), ClientMsg::WithdrawListing { listing });
+        assert_eq!(g.preview_mating(1, dam, stud).unwrap_err().code, "out_of_sight");
+        // Once in sight, exact.
+        let i = g.world.organism_index(stud).unwrap();
+        g.world.organisms[i].pos = Vec2::new(6.5, 6.5);
+        assert!(g.preview_mating(1, dam, stud).is_ok());
+        g.world.organisms[i].pos = Vec2::new(59.5, 59.5);
         // A rival's pregnant female: a generic refusal; one's own: the reason.
         let bob_dam = female(&g, &b);
         let ann_male = male(&g, &a);
@@ -6146,6 +6406,11 @@ mod tests {
         };
         let mut cfg = evo_sim::WorldConfig::default();
         cfg.scoring.species_extinct_after = 1;
+        // The tracker of worlds before snapshot version 42 (no hysteresis):
+        // what this guards against.
+        cfg.scoring.species_confirm = 0;
+        cfg.scoring.species_merge_confirm = 0;
+        cfg.scoring.species_revive_days = 0;
         let p = DetectParams::from_config(&cfg);
         let mut t = SpeciesTracker::default();
         let name = |l: u32| format!("L{l}");
@@ -6178,6 +6443,12 @@ mod tests {
         let again = founded(t.detect(500, &apart(30), &p, name)).expect("detected again");
         assert_ne!(again, first);
         assert!(!species_bonus_due(&t, &mut paid, again, 1, 500, 120), "a re-detection doesn't pay");
+        // ...nor raise an alert or count; the first one does, and the
+        // flicker copy is left out of the species list.
+        assert!(species_redetected(&t, again, 1) && !species_redetected(&t, first, 1));
+        assert!(!species_listed(&t.species[first as usize], 30), "merged back within a season");
+        assert!(species_listed(&t.species[again as usize], 30));
+        assert!(species_listed(&t.species[0], 30));
         // The cooldown alone: a different species id of the lineage, within a year.
         let mut paid = BTreeMap::new();
         assert!(species_bonus_due(&t, &mut paid, first, 1, 5, 120));
@@ -6447,11 +6718,16 @@ mod tests {
             groups: g.group_views_for(player, &g.world.groups(player)),
             view,
             organisms: own,
-            nearby: nearby.into_iter().map(|(_, n)| n).collect(),
+            nearby: {
+                let mut v: Vec<NearbyOrganism> = nearby.into_iter().map(|(_, n)| n).collect();
+                g.mark_protected(&mut v);
+                v
+            },
             leaderboard: g.leaderboard(),
             offers,
             balance: g.balance(player),
             escrow: g.escrow(player),
+            grace: g.grace_view(player),
         }
     }
 

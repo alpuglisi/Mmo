@@ -82,6 +82,28 @@ pub struct ScoringConfig {
     /// Representative genomes kept per species to match clusters across
     /// detections (farthest-point picks, so every branch is covered).
     pub species_reps: usize,
+    /// Hysteresis (snapshot version 42; 0 or 1 turns each off, as in older
+    /// worlds). A split counts (named, announced, credited) only once its
+    /// cluster has been detected this many times in a row, each time with at
+    /// least `species_min_new` samples, and then has at least
+    /// `species_confirm_adults` estimated adults; until then it is a
+    /// candidate and its members are unclassified. Detections are
+    /// `species_interval_days` apart, so the default 4 is 20 days.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42::list"))]
+    pub species_confirm: u32,
+    /// Estimated adults a candidate needs to be confirmed as a species.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42::list"))]
+    pub species_confirm_adults: f32,
+    /// A species merges into another (goes extinct, merged) only after
+    /// continuing as the same cluster as a larger one this many detections
+    /// in a row; until then it stays alive with no adults of its own.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42::list"))]
+    pub species_merge_confirm: u32,
+    /// A new cluster that matches a species which merged away within this
+    /// many days is that species again (same id and name, no new
+    /// announcement or credit), not a new one. 0: never re-used.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42::list"))]
+    pub species_revive_days: u32,
     /// Era length in years. Each era ends with a final legacy ranking and
     /// niche-dominance awards.
     pub era_years: u32,
@@ -109,6 +131,10 @@ impl Default for ScoringConfig {
             species_min_new: 4,
             species_extinct_after: 2,
             species_reps: 12,
+            species_confirm: 4,
+            species_confirm_adults: 12.0,
+            species_merge_confirm: 4,
+            species_revive_days: 360,
             era_years: 3,
             catastrophes: false,
             catastrophe_chance: 0.4,
@@ -939,34 +965,34 @@ pub struct Balance {
     /// it. 0: no grace.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36"))]
     pub attack_grace: f32,
-    // Competitive balance after playtest 2 (version 38; *Playtest 2:
+    // Competitive balance after playtest 2 (version 43; *Playtest 2:
     // competitive balance* in the README). Off at 0, what snapshots before
-    // version 38 read (`serde_util::before_v38`).
+    // version 43 read (`serde_util::before_v43`).
     /// How much less birth mode counts in the body-plan gap for fertility
     /// (`mating::fertility_gap`): the birth-mode difference is weighted by
     /// `1 − egg_hybrid`. At 0.2, adjacent birth modes (0.35 apart) are 0.28
     /// apart, so an egg layer is a little fertile with close live bearers
     /// instead of sterile with all of them (playtest 2: an egg-laying
     /// lineage was never diluted). Kinship and species keep the full gap.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v38"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v43"))]
     pub egg_hybrid: f32,
     /// Spread of the age at which animals die of old age, as a standard
     /// deviation over the lifespan (`old_age_hazard`): the hazard starts
     /// earlier and rises more slowly, so a boom cohort dies over months
     /// instead of days. 0: the old rule (from 80% of the lifespan, nearly
     /// all within a few days of 84%).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v38"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v43"))]
     pub age_spread: f32,
     /// Chance that a warm-blooded hibernator dies over a whole season of
     /// winter sleep (den collapse, cold snaps, disease), twice as high for
     /// one sleeping its first winter and rising as its fat runs out (up to
     /// twice at none). 0: winter sleep is safe.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v38"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v43"))]
     pub dormancy_toll: f32,
     /// Days after waking from a winter sleep before a hibernator or
     /// brumator can breed (it rebuilds condition first), so sleeping
     /// through winter costs part of the breeding year. 0: none.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v38"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v43"))]
     pub emergence_lag: f32,
 }
 
