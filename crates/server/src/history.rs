@@ -284,6 +284,7 @@ mod tests {
             adults: alive / 2,
             born: 0,
             deaths: BTreeMap::new(),
+            eggs_lost: Default::default(),
             genes: (0..3).map(|g| (format!("g{g}"), 0.5)).collect(),
             morph: None,
         };
@@ -426,6 +427,7 @@ mod tests {
             } else {
                 BTreeMap::new()
             },
+            eggs_lost: Default::default(),
             genes: if genes && alive > 0 {
                 evo_sim::genome::Gene::ALL
                     .iter()

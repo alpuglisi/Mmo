@@ -283,6 +283,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   const unspent = h('p', { class: 'muted small', id: 'design-unspent' });
   // Who this design could interbreed with (wild and rival species), and the market it implies.
   const hybridBox = h('section', { class: 'card hybrid-card', id: 'design-hybrid', hidden: !species, 'aria-live': 'polite' });
+  // Steep banks: the server's check of how much of today's shore these founders can drink from.
+  const waterBox = h('section', { class: 'card hybrid-card hybrid-warn', id: 'design-water', hidden: true, 'aria-live': 'polite' });
   // Founding size against the land's food (playtest 1, finding 4).
   const foodBox = h('p', { class: 'small food-hint', id: 'design-food' });
   // The world the founders land in (drought, catastrophe) and wings a heavy body can't use.
@@ -333,6 +335,21 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       h('p', { class: 'small muted hybrid-confidence', id: 'design-hybrid-confidence' }, a.confidence));
   }
 
+  let waterTimer: ReturnType<typeof setTimeout> | undefined;
+  let waterSeq = 0;
+  /** Ask the server (a moment after the last change) whether the founders can reach most water. */
+  function checkWater(): void {
+    clearTimeout(waterTimer);
+    waterTimer = setTimeout(async () => {
+      const seq = ++waterSeq;
+      const r = await api.designCompatibility(cb.token, payload()).catch(() => null);
+      if (seq !== waterSeq) return;
+      const warning = r?.water_warning;
+      waterBox.hidden = !warning;
+      if (warning) waterBox.replaceChildren(h('h2', {}, 'Drinking water'), h('p', { class: 'hybrid-headline' }, '⚠ ', warning));
+    }, 600);
+  }
+
   /** The body's points in words: cold blood and body size (smaller than the default or past the free size). */
   function bodyParts(body: number): string[] {
     if (!(body > 0)) return [];
@@ -372,6 +389,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       unspent.textContent += ` At ${kg(adultMass(spec))} the body is too heavy to fly: its wings only glide.`;
     }
     renderHybrid();
+    checkWater();
     const food = foundingHint(payload(), world);
     foodBox.textContent = food.text;
     foodBox.className = `small food-hint food-${food.level}`;
@@ -450,7 +468,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       h('aside', { class: 'design-side' }, avatar.el,
         (budgetCard.append(h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, unspent, foodBox, warnBox, rampNote, problem, needName, serverError,
           h('div', { class: 'row' }, submit, reset)), budgetCard),
-        hybridBox),
+        hybridBox,
+        waterBox),
       dock));
   setMode(mode, false);
   update();

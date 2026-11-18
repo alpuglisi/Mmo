@@ -318,6 +318,28 @@ fn species_listed(s: &evo_sim::species::Species, season_days: u64) -> bool {
 /// a grandchild of that player's stud.
 pub const RETIRE_TRANSFER_SHARE: f64 = 0.25;
 
+/// Eggs lost between two counts of a lineage, by cause (none listed at 0).
+fn egg_losses(now: &evo_sim::world::EggCounts, before: &evo_sim::world::EggCounts) -> BTreeMap<String, u64> {
+    [
+        ("chilled", now.chilled.saturating_sub(before.chilled)),
+        ("overheated", now.overheated.saturating_sub(before.overheated)),
+        ("raided", now.raided.saturating_sub(before.raided)),
+    ]
+    .into_iter()
+    .filter(|&(_, n)| n > 0)
+    .map(|(c, n)| (c.to_string(), n))
+    .collect()
+}
+
+/// An egg loss cause in a sentence.
+fn egg_loss_why(cause: &str) -> &'static str {
+    match cause {
+        "chilled" => "chilled: no parent was warming them",
+        "overheated" => "overheated",
+        _ => "eaten by egg raiders",
+    }
+}
+
 /// Most mating requests one player may send another within
 /// `GameConfig::request_window_ticks` (refused with `too_many_requests`).
 pub const REQUESTS_PER_TARGET: usize = 3;
@@ -585,6 +607,8 @@ pub struct Game {
     /// Cumulative birth and death counters at the last day boundary.
     prev_born: BTreeMap<u32, u64>,
     prev_deaths: BTreeMap<(u32, DeathCause), u64>,
+    /// Egg counts per lineage at the last day boundary (egg losses of the day).
+    prev_eggs: BTreeMap<u32, evo_sim::world::EggCounts>,
     alerts: BTreeMap<PlayerId, VecDeque<AlertView>>,
     /// Each player's recent finished matings, newest first (memory only:
     /// `GET /api/matings/history`).
@@ -722,6 +746,10 @@ pub struct SavedGame {
     prev_born: BTreeMap<u32, u64>,
     /// `prev_deaths` as a list (JSON maps need string keys).
     prev_deaths: Vec<((u32, DeathCause), u64)>,
+    /// `prev_eggs` as a list (saves from before it: none, so the first day
+    /// after the restore counts every loss since founding once).
+    #[serde(default)]
+    prev_eggs: Vec<(u32, evo_sim::world::EggCounts)>,
     alerts: BTreeMap<PlayerId, VecDeque<AlertView>>,
     watched: BTreeMap<OrgId, (PlayerId, Watch)>,
     progress: BTreeMap<PlayerId, Progress>,
@@ -868,6 +896,7 @@ impl Game {
             history: VecDeque::new(),
             prev_born: BTreeMap::new(),
             prev_deaths: BTreeMap::new(),
+            prev_eggs: BTreeMap::new(),
             alerts: BTreeMap::new(),
             mating_log: BTreeMap::new(),
             watched: BTreeMap::new(),
@@ -989,6 +1018,7 @@ impl Game {
             next_offer: self.next_offer,
             prev_born: self.prev_born.clone(),
             prev_deaths: self.prev_deaths.iter().map(|(&k, &v)| (k, v)).collect(),
+            prev_eggs: self.prev_eggs.iter().map(|(&k, &v)| (k, v)).collect(),
             alerts: self.alerts.clone(),
             watched: self.watched.clone(),
             progress: self.progress.clone(),
@@ -1059,6 +1089,11 @@ impl Game {
         }
         g.prev_born = saved.prev_born;
         g.prev_deaths = saved.prev_deaths.into_iter().collect();
+        g.prev_eggs = saved.prev_eggs.into_iter().collect();
+        if g.prev_eggs.is_empty() {
+            // Saves from before egg losses were reported: count from now.
+            g.prev_eggs = g.world.counters.eggs.clone();
+        }
         g.alerts = saved.alerts;
         g.watched = saved.watched;
         g.progress = saved.progress;
@@ -1305,7 +1340,10 @@ impl Game {
         let w = &self.world;
         let lays = w.organisms.iter().find(|o| o.alive && o.lineage == lineage).map(|o| o.traits.birth.lays_eggs());
         let mine = w.clutches.iter().filter(|c| c.lineage == lineage);
-        let mut v = EggsView::default();
+        let mut v = EggsView {
+            lost: egg_losses(&w.counters.eggs.get(&lineage).copied().unwrap_or_default(), &Default::default()),
+            ..Default::default()
+        };
         for c in mine {
             v.clutches += 1;
             v.eggs += c.eggs.len() as u32;
@@ -1313,7 +1351,7 @@ impl Game {
                 v.brooded += 1;
             }
         }
-        (lays == Some(true) || v.clutches > 0).then_some(v)
+        (lays == Some(true) || v.clutches > 0 || !v.lost.is_empty()).then_some(v)
     }
 
     /// Whether founders founded now start provisioned for winter.
@@ -4264,7 +4302,8 @@ impl Game {
         for (p, lineage) in players {
             let Some(entry) = record.lineages.iter().find(|e| e.lineage == lineage) else { continue };
             let died: u64 = entry.deaths.values().sum();
-            if entry.born > 0 || died > 0 {
+            let eggs_lost: u64 = entry.eggs_lost.values().sum();
+            if entry.born > 0 || died > 0 || eggs_lost > 0 {
                 let mut causes: Vec<(&String, &u64)> = entry.deaths.iter().collect();
                 causes.sort_by(|a, b| b.1.cmp(a.1));
                 // The day's counts come from the sim's causes: exposure is cold, heat or a winter sleep.
@@ -4276,8 +4315,15 @@ impl Game {
                     }
                 };
                 let causes: Vec<String> = causes.iter().map(|(c, n)| format!("{n} {}", word(c))).collect();
+                let eggs = if eggs_lost > 0 {
+                    let why: Vec<String> =
+                        entry.eggs_lost.iter().map(|(c, n)| format!("{n} {}", egg_loss_why(c))).collect();
+                    format!(" · {eggs_lost} egg{} lost ({})", if eggs_lost == 1 { "" } else { "s" }, why.join(", "))
+                } else {
+                    String::new()
+                };
                 let text = format!(
-                    "Day {}: {} born, {} died{} · {} alive",
+                    "Day {}: {} born, {} died{}{eggs} · {} alive",
                     // The day the births and deaths happened (the one just
                     // ended), counted from 1, as the vitals chart labels it.
                     record.day.max(1),
@@ -4640,6 +4686,19 @@ impl Game {
         (born, deaths)
     }
 
+    /// Eggs lost per lineage since the last day boundary, by cause.
+    fn eggs_lost_since_boundary(&self) -> BTreeMap<u32, BTreeMap<String, u64>> {
+        let mut out = BTreeMap::new();
+        for (&l, now) in &self.world.counters.eggs {
+            let before = self.prev_eggs.get(&l).copied().unwrap_or_default();
+            let lost = egg_losses(now, &before);
+            if !lost.is_empty() {
+                out.insert(l, lost);
+            }
+        }
+        out
+    }
+
     /// Sums of every gene's expressed value per player lineage, with counts.
     fn gene_sums(&self) -> BTreeMap<u32, (usize, [f64; Gene::COUNT])> {
         let mut sums: BTreeMap<u32, (usize, [f64; Gene::COUNT])> = BTreeMap::new();
@@ -4657,8 +4716,10 @@ impl Game {
         let board = self.leaderboard();
         let counts = self.world.population_counts();
         let (born, mut deaths) = self.vitals_since_boundary();
+        let mut eggs_lost = self.eggs_lost_since_boundary();
         self.prev_born = self.world.counters.born.clone();
         self.prev_deaths = self.world.counters.deaths_by_lineage.clone();
+        self.prev_eggs = self.world.counters.eggs.clone();
         let sums = self.gene_sums();
         // Player lineages' body plans, for the family tree.
         let mut plans: BTreeMap<u32, Vec<&evo_sim::morph::Morphology>> = BTreeMap::new();
@@ -4700,6 +4761,7 @@ impl Game {
                         adults: c.adults,
                         born: born.get(&k).copied().unwrap_or(0),
                         deaths: deaths.remove(&k).unwrap_or_default(),
+                        eggs_lost: eggs_lost.remove(&k).unwrap_or_default(),
                         genes: if l.owner == WILD { BTreeMap::new() } else { gene_means(k) },
                         morph: if l.owner == WILD {
                             None
@@ -4762,7 +4824,12 @@ impl Game {
             // happened the day before (the chart and the daily summary agree).
             // The world's first record (day 0) covers no day.
             if r.day > 0 {
-                vitals.push(DayVitals { day: r.day - 1, births: e.born, deaths: e.deaths.clone() });
+                vitals.push(DayVitals {
+                    day: r.day - 1,
+                    births: e.born,
+                    deaths: e.deaths.clone(),
+                    eggs_lost: e.eggs_lost.clone(),
+                });
             }
             if !e.genes.is_empty() {
                 history_days.push(r.day);
@@ -4774,6 +4841,7 @@ impl Game {
         if let Some(l) = lineage {
             let (born, mut deaths) = self.vitals_since_boundary();
             let (births, deaths) = (born.get(&l).copied().unwrap_or(0), deaths.remove(&l).unwrap_or_default());
+            let eggs_lost = self.eggs_lost_since_boundary().remove(&l).unwrap_or_default();
             // Today so far: since the last day boundary, so the day it began
             // (the clock can show the next day for a tick before the record).
             let day = self.world.latest_legacy().map_or(day, |l| l.day);
@@ -4783,8 +4851,11 @@ impl Game {
                     for (cause, n) in deaths {
                         *v.deaths.entry(cause).or_default() += n;
                     }
+                    for (cause, n) in eggs_lost {
+                        *v.eggs_lost.entry(cause).or_default() += n;
+                    }
                 }
-                None => vitals.push(DayVitals { day, births, deaths }),
+                None => vitals.push(DayVitals { day, births, deaths, eggs_lost }),
             }
         }
         let keep = vitals.len().saturating_sub(30);
@@ -5324,6 +5395,37 @@ mod tests {
         g.found(3, &FounderDesign::new("Layers", Thermo::Warm, BirthType::IncubatedEggs, 4).founders(6)).unwrap();
         let e = g.lineage_stats(3).eggs.expect("an egg-laying lineage shows its clutches");
         assert_eq!(e, EggsView::default());
+    }
+
+    /// Playtest 3: a winter founding's clutches vanished with no word. Lost
+    /// eggs show in the lineage stats, the day's vitals and the daily summary.
+    #[test]
+    fn lost_eggs_are_reported() {
+        let (mut g, _, _) = game();
+        g.set_name(3, "cat");
+        let ok =
+            g.found(3, &FounderDesign::new("Layers", Thermo::Warm, BirthType::IncubatedEggs, 4).founders(6)).unwrap();
+        // Past the world's first record (day 0, which covers no day).
+        run_days(&mut g, 1);
+        let counts = g.world.counters.eggs.entry(ok.lineage).or_default();
+        (counts.laid, counts.chilled, counts.raided) = (9, 5, 1);
+        let lost = g.lineage_stats(3).eggs.unwrap().lost;
+        assert_eq!(lost, [("chilled".to_string(), 5), ("raided".to_string(), 1)].into_iter().collect());
+        let out = run_days(&mut g, 1);
+        let summary = alerts_in(&out, 3)
+            .into_iter()
+            .find(|x| x.kind == AlertKind::DailySummary)
+            .expect("a day with lost eggs is summarised");
+        assert!(
+            summary.text.contains("6 eggs lost (5 chilled: no parent was warming them, 1 eaten by egg raiders)"),
+            "{}",
+            summary.text
+        );
+        let vitals: u64 = g.lineage_stats(3).vitals.iter().flat_map(|v| v.eggs_lost.values()).sum();
+        assert_eq!(vitals, 6);
+        // Counted once: the next day reports none.
+        let out = run_days(&mut g, 1);
+        assert!(alerts_in(&out, 3).iter().all(|x| !x.text.contains("eggs lost")));
     }
 
     #[test]
@@ -6969,6 +7071,61 @@ mod tests {
         let f = g.design_compatibility(9, &far);
         assert!(f.rows.iter().all(|r| r.fertility == 0.0 && r.drift_risk == "none"), "{:?}", f.rows);
         assert_eq!((f.fertile_with, f.at_risk), (0, 0));
+    }
+
+    /// Two foundings of one design are always mutually fertile: founder
+    /// variation never opens a sterile gap within a design, the client's
+    /// egg-laying starter included (every pair of 16 founders × 16 adults).
+    #[test]
+    fn two_foundings_of_one_design_are_mutually_fertile() {
+        use evo_sim::presets;
+        let starter = FounderDesign::new("Starter", Thermo::Warm, BirthType::IncubatedEggs, 3)
+            .with(Gene::BodySize, 0.5)
+            .with(Gene::GroupTolerance, 0.9)
+            .with(Gene::Boldness, 0.3)
+            .with(Gene::Fur, 0.6)
+            .with(Gene::FatStores, 0.6)
+            .with(Gene::Hibernation, 0.5)
+            .founders(20);
+        let smoke = starter.clone().with(Gene::BodySize, 0.45).with(Gene::Fur, 0.4).with(Gene::Nose, 0.3);
+        let mut designs = vec![starter, smoke, presets::migrant_design()];
+        designs.extend(presets::player_designs());
+        for (k, d) in designs.iter().enumerate() {
+            for seed in [3, 11] {
+                let world =
+                    build_world(&WorldSettings { seed, width: 64, height: 64, wild: false, ..Default::default() });
+                let mut g = Game::new(world, GameConfig::default());
+                let first = g.found_at_any_price(1, d).unwrap().lineage;
+                let v = g.design_compatibility(2, d);
+                let row = v.rows.iter().find(|r| r.lineage == first).expect("the first founding");
+                assert!(
+                    row.fertile_share >= 1.0 && row.compatible && row.fertility > 0.5,
+                    "design {k} ({}), seed {seed}: {row:?}",
+                    d.name
+                );
+            }
+        }
+    }
+
+    /// Playtest 3: a design that can't climb died of thirst under steep
+    /// banks. The design check says how much shore it can reach and warns
+    /// when it is under half.
+    #[test]
+    fn design_check_warns_when_banks_are_too_steep() {
+        let (mut g, _, _) = game();
+        let walker = FounderDesign::new("W", Thermo::Warm, BirthType::Live, 2).with(Gene::Climbing, 0.0).founders(6);
+        let climber = walker.clone().with(Gene::Climbing, 0.6);
+        let v = g.design_compatibility(9, &walker);
+        assert!(v.shore_access.is_some_and(|s| s > 0.5) && v.water_warning.is_none(), "{v:?}");
+        // Every bank steep.
+        for g in &mut g.world.map.edit_terrain().ground {
+            g.slope = 0.8;
+        }
+        let v = g.design_compatibility(9, &walker);
+        assert_eq!(v.shore_access, Some(0.0));
+        assert!(v.water_warning.as_deref().is_some_and(|w| w.contains("climbing")), "{v:?}");
+        let c = g.design_compatibility(9, &climber);
+        assert_eq!((c.shore_access, c.water_warning), (Some(1.0), None));
     }
 
     #[test]

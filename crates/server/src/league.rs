@@ -709,6 +709,7 @@ mod tests {
                     adults: alive / 2,
                     born: 0,
                     deaths: Default::default(),
+                    eggs_lost: Default::default(),
                     genes: Default::default(),
                     morph: None,
                 })

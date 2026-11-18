@@ -406,6 +406,16 @@ fn hysteresis_off(w: &mut World) {
     }
 }
 
+/// `w` as snapshots before version 47 read it: the playtest 3 founding and
+/// drinking tunables off, no lineage homes.
+fn founding_fixes_off(w: &mut World) {
+    let old = crate::serde_util::before_v47::OLD_VALUE;
+    (w.config.balance.reachable_water, w.config.balance.founding_conditions) = (old, old);
+    for h in &mut w.lineage_homes {
+        *h = None;
+    }
+}
+
 fn predators_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v36::OLD_VALUE;
     b.pack_hunt = old;
@@ -436,6 +446,7 @@ fn version_42_snapshots_restore_without_playtest2_balance() {
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.age_spread, crate::serde_util::before_v43::OLD_VALUE);
     balance43_off(&mut w.config.balance);
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v42() == old);
@@ -478,6 +489,7 @@ fn version_45_snapshots_restore_without_playtest3_balance() {
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.winter_toll, crate::serde_util::before_v46::OLD_VALUE);
     balance46_off(&mut w.config.balance);
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v45() == old);
@@ -636,6 +648,7 @@ fn version_12_snapshots_still_restore() {
     assert_eq!(h.raw_len + 4, SnapshotHeader::read(&w.snapshot_v13()).unwrap().raw_len);
     let r = headings_from(&w, World::restore(&old, Some(w.map.terrain().clone())).unwrap());
     assert_eq!(r.config.balance.nest_predation, 0.0);
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
@@ -727,6 +740,7 @@ fn version_15_snapshots_restore_without_migration_onset() {
     with_v20_params(&mut r, &w);
     assert_eq!(r.config.balance.migration_onset, crate::serde_util::before_v16::OLD_MIGRATION_ONSET);
     w.config.balance.migration_onset = r.config.balance.migration_onset;
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
@@ -748,6 +762,7 @@ fn version_16_snapshots_restore_without_the_home_range() {
     with_v20_params(&mut r, &w);
     assert_eq!(r.config.balance.home_range, crate::config::HomeRangeBalance::default());
     w.config.balance.home_range = r.config.balance.home_range;
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
@@ -811,6 +826,7 @@ fn version_18_snapshots_restore_without_warm_costs() {
     // Version 18 predates version 20's parameters too.
     w.config.balance.fang_grazing = crate::serde_util::before_v20::OLD_VALUE;
     w.config.balance.scale_cover = crate::serde_util::before_v20::OLD_VALUE;
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
@@ -836,6 +852,7 @@ fn version_19_snapshots_restore_without_trait_costs() {
     let mut w = w;
     w.config.balance.fang_grazing = off;
     w.config.balance.scale_cover = off;
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
@@ -867,6 +884,7 @@ fn version_20_snapshots_restore_without_morph_effects() {
     w.config.balance.morph_tail_drag = off;
     w.config.balance.morph_tail_chill = off;
     w.config.balance.morph_long_legs = off;
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
@@ -909,6 +927,7 @@ fn version_21_snapshots_restore_without_headings() {
     assert_eq!(r.config.balance.vision_scan, crate::serde_util::before_v22::scan::OLD_VALUE);
     w.config.balance.directional_vision = 0.0;
     w.config.balance.vision_scan = 1.0;
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
@@ -932,6 +951,7 @@ fn version_23_snapshots_restore_without_morph_legacy() {
     assert_eq!(r.config.balance.morph_legacy, crate::serde_util::before_v24::OLD_VALUE);
     assert!(!r.config.balance.morph_in_legacy());
     w.config.balance.morph_legacy = crate::serde_util::before_v24::OLD_VALUE;
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot_v27() == w.snapshot_v27());
     assert!(r.snapshot_v23() == old);
@@ -952,6 +972,7 @@ fn version_24_snapshots_restore_without_roaming_forage() {
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.roaming_forage, crate::serde_util::before_v25::OLD_VALUE);
     w.config.balance.roaming_forage = crate::serde_util::before_v25::OLD_VALUE;
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot_v27() == w.snapshot_v27());
     assert!(r.snapshot_v24() == old);
@@ -979,6 +1000,7 @@ fn version_25_snapshots_restore_without_carnivore_diet() {
     assert_eq!(r.config.balance.carrion, crate::serde_util::before_v26::OLD_VALUE);
     assert_eq!(r.config.balance.breeding_territory, crate::serde_util::before_v26::OLD_VALUE);
     carnivore_diet_off(&mut w.config.balance);
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot_v27() == w.snapshot_v27());
     assert!(r.snapshot_v25() == old);
@@ -1004,6 +1026,7 @@ fn version_26_snapshots_restore_without_predator_brakes() {
     assert_eq!(r.config.balance.prey_switching, crate::serde_util::before_v27::OLD_VALUE);
     assert_eq!(r.config.balance.condition_litter, crate::serde_util::before_v27::OLD_VALUE);
     predator_brakes_off(&mut w.config.balance);
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot_v27() == w.snapshot_v27());
     assert!(r.snapshot_v26() == old);
@@ -1024,6 +1047,7 @@ fn version_29_snapshots_restore_with_the_old_strike() {
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.strike_fixes, crate::serde_util::before_v30::OLD_VALUE);
     strike_fixes_off(&mut w.config.balance);
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
@@ -1049,6 +1073,7 @@ fn version_30_snapshots_restore_without_staggered_decisions() {
     stagger_off(&mut w.config.balance);
     playtest_off(&mut w.config.balance);
     w.last_intents.clear();
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
@@ -1074,6 +1099,7 @@ fn version_34_snapshots_restore_without_crowding() {
     crowding_off(&mut w.config.balance);
     w.bonus_slots.clear();
     w.attack_orders.clear();
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
@@ -1151,6 +1177,7 @@ fn version_30_snapshots_restore_without_food_values() {
     stagger_off(&mut w.config.balance);
     playtest_off(&mut w.config.balance);
     w.last_intents.clear();
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
@@ -1194,6 +1221,7 @@ fn version_31_snapshots_keep_food_values_without_staggered_decisions() {
     stagger_off(&mut w.config.balance);
     playtest_off(&mut w.config.balance);
     w.last_intents.clear();
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
@@ -1217,6 +1245,7 @@ fn version_32_snapshots_restore_without_playtest_fixes() {
     w.config.balance.desperate_risk = 0.0;
     w.config.balance.founding_food = 0.0;
     crowding_off(&mut w.config.balance);
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot_v32() == old);
 }
@@ -1407,6 +1436,7 @@ fn version_35_snapshots_restore_without_predator_play() {
     assert!(r.attack_orders.is_empty());
     predators_off(&mut w.config.balance);
     w.attack_orders.clear();
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
@@ -1488,6 +1518,7 @@ fn version_41_snapshots_restore_with_the_old_species_tracker() {
     );
     assert!(r.snapshot_v41() == old);
     hysteresis_off(&mut w);
+    founding_fixes_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
 }
 
@@ -1506,6 +1537,7 @@ fn version_43_snapshots_restore_without_playtest2_fixes() {
     assert!(r.toxic_lessons.is_empty());
     playtest2_off(&mut w.config.balance);
     w.toxic_lessons.clear();
+    founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v43() == old);
@@ -1535,4 +1567,26 @@ fn version_44_snapshots_restore_without_migration_headway() {
     assert!(r.snapshot_v44() == old);
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.group_plans.migrations[&key], plan);
+}
+
+#[test]
+fn version_46_snapshots_restore_without_the_founding_fixes() {
+    let mut w = fixture_world();
+    assert!(w.lineage_homes.iter().any(Option::is_some), "foundings record their homes");
+    let old = w.snapshot_v46();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 46);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.reachable_water, r.config.balance.founding_conditions), (0.0, 0.0));
+    assert!(r.lineage_homes.len() == r.lineages.len() && r.lineage_homes.iter().all(Option::is_none));
+    assert!(r.snapshot_v46() == old);
+    founding_fixes_off(&mut w);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    // This version keeps them.
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.lineage_homes, w.lineage_homes);
+    assert_eq!(r.config.balance.founding_conditions, 1.0);
 }

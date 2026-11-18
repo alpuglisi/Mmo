@@ -203,7 +203,7 @@ fn share_inside(w: &mut World, t: Territory, days: u32) -> f32 {
 fn a_territory_keeps_the_group_inside_it() {
     let mut held = world();
     let c = centroid(&members(&held, HERD, 0));
-    let t = held.claim_territory(HERD, 0, c, 7.0).unwrap();
+    let t = held.claim_territory(HERD, 0, c, 5.0).unwrap();
     let mut free = world();
     let (a, b) = (share_inside(&mut held, t, 4), share_inside(&mut free, t, 4));
     assert!(a > 0.8 && a > b + 0.15, "inside the territory: held {a:.2}, free {b:.2}");
