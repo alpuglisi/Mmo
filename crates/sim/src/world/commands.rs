@@ -410,7 +410,7 @@ impl World {
         let (ga, gb) = (&oa.genome, &ob.genome);
         let body_plan_gaps = mating::BODY_PLAN_GENES
             .iter()
-            .zip(mating::plan_weights(self.config.balance.egg_hybrid))
+            .zip(mating::plan_weights(mating::Relief::of(&self.config.balance)))
             .map(|(&g, w)| (g, (ga.expr(g) - gb.expr(g)).abs() * w))
             .filter(|&(_, gap)| gap > mating::BODY_PLAN_FULL)
             .collect();
@@ -1147,6 +1147,11 @@ mod tests {
         let cold = w.found_lineage(2, &FounderDesign::new("c", Thermo::Cold, BirthType::Live, 2).founders(2)).unwrap();
         let sex = |w: &World, id| w.organism(id).unwrap().sex;
         let b = *cold.iter().find(|&&c| sex(&w, c) != sex(&w, warm[0])).unwrap();
+        // Warm × cold: about a third as fertile (`Balance::thermo_hybrid`).
+        let p = w.mating_preview(warm[0], b).unwrap();
+        assert!(p.body_plan_fertility > 0.25 && p.body_plan_fertility < 0.45, "{p:?}");
+        assert_eq!(p.body_plan_gaps.iter().map(|g| g.0).collect::<Vec<_>>(), vec![Gene::Endothermy]);
+        w.config.balance.thermo_hybrid = 0.0;
         let p = w.mating_preview(warm[0], b).unwrap();
         assert_eq!(p.fertility, 0.0);
         assert_eq!(p.body_plan_fertility, 0.0);

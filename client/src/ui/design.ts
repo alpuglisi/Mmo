@@ -287,7 +287,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   const hybridBox = h('section', { class: 'card hybrid-card', id: 'design-hybrid', hidden: !species, 'aria-live': 'polite' });
   // Steep banks: the server's check of how much of today's shore these founders can drink from.
   const waterBox = h('section', { class: 'card hybrid-card hybrid-warn', id: 'design-water', hidden: true, 'aria-live': 'polite' });
-  // A re-founding soon after the last lineage ended founds half the founders.
+  // A re-founding soon after the last lineage ended prices founders double (at least half of them).
   const refoundBox = h('section', { class: 'card hybrid-card hybrid-warn', id: 'design-refound', hidden: true, 'aria-live': 'polite' });
   // Founding size against the land's food (playtest 1, finding 4).
   const foodBox = h('p', { class: 'small food-hint', id: 'design-food' });

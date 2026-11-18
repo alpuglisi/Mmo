@@ -89,6 +89,23 @@ const PATH_SHORT: f32 = 4.0;
 const BUFFET_CHANCE: f32 = 0.05;
 const BUFFET_DAMAGE: f32 = 10.0;
 
+/// Air temperature at which a basking cold-blooded body gets no more
+/// warmth from the sun (`Balance::cold_heat`).
+const COLD_SHADE: f32 = 30.0;
+/// Body temperature past which a cold-blooded body slows and loses water
+/// faster (`Balance::cold_heat`).
+const COLD_SLOW: f32 = 32.0;
+/// Body temperature that starts heat stress for a cold-blooded body under
+/// `Balance::cold_heat` (harm past 8 more: 34 + 8 = 42 °C; 38 + 8 = 46
+/// without it).
+const COLD_HEAT_LIMIT: f32 = 34.0;
+/// Extra hunger of a flier on the move, a share of `Balance::hunger_rate`
+/// per unit of wings at 4 kg (`Balance::flight_upkeep`).
+const FLIGHT_HUNGER: f32 = 0.45;
+/// Extra thirst of a flier on the move, a share of `Balance::thirst_rate`
+/// per unit of wings (`Balance::flight_upkeep`).
+const FLIGHT_THIRST: f32 = 0.35;
+
 /// Hunger multiplier from a cold-blooded body's temperature: a sluggish body
 /// (low `activity`) idles cheaply; above full activity (22 °C) every 10 °C
 /// costs `heat_burn` more (`Balance::cold_heat_burn`), so the food discount
@@ -1126,9 +1143,17 @@ impl World {
         } else {
             let basking = daytime && open && matches!(intent.action, Action::Bask | Action::Rest | Action::Idle);
             let bask = if basking { 10.0 * (1.0 - o.traits.fur_mismatch - coat_mismatch).max(0.0) } else { 0.0 };
+            // With `Balance::cold_heat` the sun's warmth fades as the air
+            // nears 30 °C (it seeks shade), and a body past 32 °C slows.
+            let hot = bal.cold_heat > 0.0;
+            let bask = if hot { bask * ((COLD_SHADE - temp) / 8.0).clamp(0.0, 1.0) } else { bask };
             body_t = temp + bask;
             o.activity = ((body_t - 2.0) / 20.0).clamp(0.15, 1.0);
-            ((6.0 - body_t).max(0.0), (body_t - 38.0).max(0.0))
+            if hot && body_t > COLD_SLOW {
+                o.activity = o.activity.min((1.0 - (body_t - COLD_SLOW) / 12.0).max(0.15));
+            }
+            let limit = if hot { COLD_HEAT_LIMIT } else { 38.0 };
+            ((6.0 - body_t).max(0.0), (body_t - limit).max(0.0))
         };
         // A deep sleeper in its den is safe from the weather.
         let (cold, heat) = if deep {
@@ -1204,12 +1229,24 @@ impl World {
             * travel
             * size_burn
             * dt;
-        let mut thirst = bal.thirst_rate
-            * (1.0 + 0.05 * heat)
-            * (0.8 + 0.4 * size)
-            * if o.traits.warm { 1.0 } else { 0.7 }
-            * size_burn
-            * dt;
+        // A cold-blooded body saves water, less so in the heat
+        // (`Balance::cold_heat`: +5% a degree of body heat past 32 °C).
+        let cold_water = if o.traits.warm {
+            1.0
+        } else if bal.cold_heat > 0.0 {
+            (0.7 + 0.05 * (body_t - COLD_SLOW).max(0.0)).min(1.3)
+        } else {
+            0.7
+        };
+        let mut thirst = bal.thirst_rate * (1.0 + 0.05 * heat) * (0.8 + 0.4 * size) * cold_water * size_burn * dt;
+        // Flight is muscle work at any body temperature
+        // (`Balance::flight_upkeep`), so a flier's low metabolism no longer
+        // pays for it.
+        if bal.flight_upkeep > 0.0 && o.traits.body.can_fly && moved > 0.01 {
+            let wings = o.pheno[Gene::Wings] * bal.flight_upkeep;
+            hunger += bal.hunger_rate * FLIGHT_HUNGER * wings * (o.traits.body.mass / 4.0).powf(0.3) * size_burn * dt;
+            thirst += bal.thirst_rate * FLIGHT_THIRST * wings * (1.0 + 0.05 * heat) * size_burn * dt;
+        }
         if o.dormancy != Dormancy::Awake {
             hunger *= dormant_rate;
             if deep {

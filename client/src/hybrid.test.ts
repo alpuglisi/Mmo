@@ -22,6 +22,20 @@ describe('the body-plan gap', () => {
   });
 });
 
+describe('warm and cold blood', () => {
+  it('are a third as fertile together, not sterile (sim thermo_hybrid 0.7)', () => {
+    const warm = designPlan(design());
+    const cold = designPlan(design({}, { thermo: 'cold' }));
+    const g = gapBetween(warm, cold);
+    expect(g.by).toBe('thermoregulation');
+    expect(g.gap).toBeCloseTo(0.24, 5);
+    expect(fertility(g.gap)).toBeCloseTo(1 / 3, 2);
+    // Abandoned eggs on top still make them sterile.
+    const frog = designPlan(design({}, { thermo: 'cold', birth: 'abandoned_eggs' }));
+    expect(fertility(gapBetween(warm, frog).gap)).toBe(0);
+  });
+});
+
 describe('the builder’s interbreeding check', () => {
   const species = [
     sp(1, 'Steppe antelope'),

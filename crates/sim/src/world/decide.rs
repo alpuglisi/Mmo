@@ -1392,7 +1392,7 @@ impl World {
                 if relief.is_none() {
                     gap
                 } else {
-                    fertility_gap(&v.genes, genes, &mating::plan_weights(relief.egg), relief.eye_weight())
+                    fertility_gap(&v.genes, genes, &mating::plan_weights(relief), relief.eye_weight())
                 }
             }) > 0.0
             // A female in a taken breeding territory isn't courted either

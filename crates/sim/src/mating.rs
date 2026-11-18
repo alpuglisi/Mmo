@@ -89,19 +89,23 @@ pub fn body_plan_gap(a: &Genome, b: &Genome) -> f32 {
 
 /// Position of birth mode in [`BODY_PLAN_GENES`].
 pub const BIRTH_SLOT: usize = 1;
+/// Position of endothermy in [`BODY_PLAN_GENES`].
+pub const THERMO_SLOT: usize = 0;
 
 /// How much less some body-plan differences count for fertility than for
-/// kinship: birth mode (`Balance::egg_hybrid`) and eye count
-/// (`Balance::eye_hybrid`). Both 0: the full body-plan gap.
+/// kinship: birth mode (`Balance::egg_hybrid`), eye count
+/// (`Balance::eye_hybrid`) and warm/cold blood (`Balance::thermo_hybrid`).
+/// All 0: the full body-plan gap.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Relief {
     pub egg: f32,
     pub eye: f32,
+    pub thermo: f32,
 }
 
 impl Relief {
     pub fn of(b: &crate::Balance) -> Relief {
-        Relief { egg: b.egg_hybrid, eye: b.eye_hybrid }
+        Relief { egg: b.egg_hybrid, eye: b.eye_hybrid, thermo: b.thermo_hybrid }
     }
 
     /// Weight of an eye-count step (`1 − eye`).
@@ -110,26 +114,30 @@ impl Relief {
     }
 
     pub fn is_none(self) -> bool {
-        self.egg <= 0.0 && self.eye <= 0.0
+        self.egg <= 0.0 && self.eye <= 0.0 && self.thermo <= 0.0
     }
 }
 
 /// The weight of each [`BODY_PLAN_GENES`] difference in the fertility gap:
-/// 1, birth mode `1 − egg_hybrid` (`Balance::egg_hybrid`).
-pub fn plan_weights(egg_hybrid: f32) -> [f32; 4] {
+/// 1, birth mode `1 − relief.egg` (`Balance::egg_hybrid`), endothermy
+/// `1 − relief.thermo` (`Balance::thermo_hybrid`).
+pub fn plan_weights(relief: Relief) -> [f32; 4] {
     let mut w = [1.0; 4];
-    w[BIRTH_SLOT] = 1.0 - egg_hybrid.clamp(0.0, 1.0);
+    w[BIRTH_SLOT] = 1.0 - relief.egg.clamp(0.0, 1.0);
+    w[THERMO_SLOT] = 1.0 - relief.thermo.clamp(0.0, 1.0);
     w
 }
 
 /// [`body_plan_gap`] for fertility, birth mode weighted by `1 − relief.egg`
 /// (`Balance::egg_hybrid`: adjacent birth modes, 0.35 apart, count 0.28 at
 /// 0.2) and eye-count steps by `1 − relief.eye` (`Balance::eye_hybrid`:
-/// 2 → 5 eyes counts 0.12 at 0.6 instead of a sterile 0.30). The same as
+/// 2 → 5 eyes counts 0.12 at 0.6 instead of a sterile 0.30) and warm/cold
+/// blood by `1 − relief.thermo` (`Balance::thermo_hybrid`: 0.8 apart counts
+/// 0.24 at 0.7, a third as fertile instead of sterile). The same as
 /// [`body_plan_gap`] with no relief. Kinship and species keep the
 /// unweighted gap.
 pub fn fertility_gap(a: &Genome, b: &Genome, relief: Relief) -> f32 {
-    let w = plan_weights(relief.egg);
+    let w = plan_weights(relief);
     let morph = crate::morph::morph_fertility_gap(&a.morph().key(), &b.morph().key(), relief.eye_weight());
     BODY_PLAN_GENES.iter().zip(w).map(|(&g, w)| (a.expr(g) - b.expr(g)).abs() * w).fold(0.0, f32::max).max(morph)
 }
@@ -187,14 +195,38 @@ mod tests {
             Genome::uniform(&d.values(), 1)
         };
         let (live, eggs) = (g(BirthType::Live, Thermo::Warm), g(BirthType::IncubatedEggs, Thermo::Warm));
-        assert_eq!(fertility_with(&live, &eggs, Relief { egg: 0.0, eye: 0.0 }), 0.0);
-        assert_eq!(fertility_with(&live, &eggs, Relief { egg: 0.0, eye: 0.0 }), fertility(&live, &eggs));
-        let f = fertility_with(&live, &eggs, Relief { egg: 0.2, eye: 0.0 });
+        assert_eq!(fertility_with(&live, &eggs, Relief { egg: 0.0, eye: 0.0, thermo: 0.0 }), 0.0);
+        assert_eq!(fertility_with(&live, &eggs, Relief { egg: 0.0, eye: 0.0, thermo: 0.0 }), fertility(&live, &eggs));
+        let f = fertility_with(&live, &eggs, Relief { egg: 0.2, eye: 0.0, thermo: 0.0 });
         assert!(f > 0.05 && f < 0.2, "{f}");
-        assert!((fertility_gap(&live, &eggs, Relief { egg: 0.2, eye: 0.0 }) - 0.28).abs() < 1e-4);
-        assert_eq!(body_plan_gap(&live, &eggs), fertility_gap(&live, &eggs, Relief { egg: 0.0, eye: 0.0 }));
+        assert!((fertility_gap(&live, &eggs, Relief { egg: 0.2, eye: 0.0, thermo: 0.0 }) - 0.28).abs() < 1e-4);
+        assert_eq!(
+            body_plan_gap(&live, &eggs),
+            fertility_gap(&live, &eggs, Relief { egg: 0.0, eye: 0.0, thermo: 0.0 })
+        );
         let cold = g(BirthType::Live, Thermo::Cold);
-        assert_eq!(fertility_with(&live, &cold, Relief { egg: 0.2, eye: 0.0 }), 0.0);
+        assert_eq!(fertility_with(&live, &cold, Relief { egg: 0.2, eye: 0.0, thermo: 0.0 }), 0.0);
+    }
+
+    /// `Balance::thermo_hybrid` makes a warm and a cold lineage of one plan
+    /// partly fertile (about a third at 0.7), not when they also differ in
+    /// a full body-plan gene: a cold frog laying abandoned eggs stays
+    /// sterile with a warm live bearer.
+    #[test]
+    fn thermo_hybrid_softens_only_the_thermo_gap() {
+        let g = |birth: BirthType, thermo: Thermo| {
+            let d = FounderDesign::new("x", thermo, birth, 2);
+            Genome::uniform(&d.values(), 1)
+        };
+        let relief = Relief { egg: 0.2, eye: 0.6, thermo: 0.7 };
+        let (warm, cold) = (g(BirthType::Live, Thermo::Warm), g(BirthType::Live, Thermo::Cold));
+        let f = fertility_with(&warm, &cold, relief);
+        assert!(f > 0.25 && f < 0.4, "{f}");
+        assert_eq!(fertility_with(&warm, &cold, Relief { thermo: 0.0, ..relief }), 0.0);
+        let frog = g(BirthType::AbandonedEggs, Thermo::Cold);
+        assert_eq!(fertility_with(&warm, &frog, relief), 0.0);
+        // Kinship and species keep the full gap.
+        assert!(body_plan_gap(&warm, &cold) > 0.7);
     }
 
     fn chooser(pickiness: f32) -> Phenotype {

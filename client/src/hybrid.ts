@@ -25,6 +25,9 @@ export const GAP_PER_STEP = 0.1;
 /** Weight of an eye-count step in the gap for fertility (sim `1 − Balance::eye_hybrid`, 0.6 by default):
  * 2 → 5 eyes counts 0.12 (fertile), not a sterile 0.30 (playtest 3). Leg steps count fully. */
 export const EYE_WEIGHT = 0.4;
+/** Weight of warm/cold blood in the gap for fertility (sim `1 − Balance::thermo_hybrid`, 0.7 by default):
+ * warm × cold, 0.8 apart, counts 0.24, about a third as fertile, not sterile (playtest 5). */
+export const THERMO_WEIGHT = 0.3;
 
 /** A body plan as the interbreeding rule sees it. */
 export interface BodyPlan {
@@ -62,7 +65,7 @@ export type GapPart = 'thermoregulation' | 'birth' | 'body size' | 'diet' | 'leg
 /** The body-plan gap and the trait that makes it. */
 export function gapBetween(a: BodyPlan, b: BodyPlan): { gap: number; by: GapPart } {
   const parts: [GapPart, number][] = [
-    ['thermoregulation', Math.abs(a.endothermy - b.endothermy)],
+    ['thermoregulation', THERMO_WEIGHT * Math.abs(a.endothermy - b.endothermy)],
     ['birth', BIRTH_WEIGHT * Math.abs(a.birth_mode - b.birth_mode)],
     ['body size', Math.abs(a.body_size - b.body_size)],
     ['diet', Math.abs(a.carnivory - b.carnivory)],

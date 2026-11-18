@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use evo_sim::chronicle::{AchievementKind, Catastrophe, CatastropheKind};
-use evo_sim::design::DesignError;
+use evo_sim::design::{DesignError, DESIGN_BUDGET};
 use evo_sim::math::Vec2;
 use evo_sim::organism::{DeathCause, Dormancy, Organism, Sex};
 use evo_sim::presets::{self, REFERENCE_SIZE};
@@ -557,9 +557,21 @@ pub struct RefoundTerms {
 }
 
 impl RefoundTerms {
-    /// Founders a re-founding gets inside the window: half (at least 2).
-    pub fn founders(&self, founders: u32) -> u32 {
-        (founders / 2).max(2).min(founders)
+    /// Founders a re-founding of `design` gets inside the window: founders
+    /// cost double points, so as many of its founders as fit the budget at
+    /// that price ([`RefoundTerms::cost`]), and at least half (at least 2).
+    /// A design with points to spare gets more than half (playtest 5: the
+    /// half rule charged the full points for half the founders).
+    pub fn founders(&self, design: &FounderDesign) -> u32 {
+        let n = design.founders;
+        let half = (n / 2).max(2).min(n);
+        (half..=n).rev().find(|&k| Self::cost(design, k) <= DESIGN_BUDGET + 1e-3).unwrap_or(half)
+    }
+
+    /// Points `design` with `founders` founders costs inside the window:
+    /// its cost with the founders' points counted twice.
+    pub fn cost(design: &FounderDesign, founders: u32) -> f32 {
+        design.clone().founders(founders).point_cost() + evo_sim::design::founder_cost(founders)
     }
 }
 
@@ -1518,14 +1530,15 @@ impl Game {
             return Err(FoundError::BadName("it looks like another player's name".into()));
         }
         // Re-founding soon after the player's last lineage ended (retired or
-        // died out) founds half the founders ([`Game::refound_terms`]):
+        // died out) prices founders double ([`Game::refound_terms`]):
         // ending a lineage and founding again was a free re-roll (fresh, fed
         // founders at a new spot; playtests 3 and 4).
         if let Some(t) = self.refound_terms(player) {
-            let n = t.founders(design.founders);
-            if self.lineage_of(player).is_none_or(|_| self.is_extinct(player)) && n < design.founders {
+            let n = t.founders(design);
+            if self.lineage_of(player).is_none_or(|_| self.is_extinct(player)) {
                 let fewer = design.clone().founders(n);
                 let mut ok = self.found_at_any_price(player, &fewer)?;
+                ok.cost = RefoundTerms::cost(design, n);
                 ok.requested = design.founders;
                 ok.reduced = Some(t.reason.clone());
                 let text = format!("Re-founded: {n} of {} founders ({}).", design.founders, t.reason);
@@ -1540,7 +1553,7 @@ impl Game {
     }
 
     /// Simulated days after a lineage ends (retired or died out) during which
-    /// a re-founding gets half the founders: a ranked season, and at least
+    /// a re-founding prices founders double: a ranked season, and at least
     /// [`REFOUND_MINUTES`] of wall-clock time at this tick (a 60-day season
     /// passes in 5 minutes at a 100 ms tick).
     pub fn refound_window_days(&self) -> u64 {
@@ -1576,7 +1589,7 @@ impl Game {
                 until_day: ended + window,
                 minutes_left: minutes_left as u64,
                 reason: format!(
-                    "your last lineage {how} on day {}: re-founding within {window} days (about {} real minutes) founds half the founders",
+                    "your last lineage {how} on day {}: re-founding within {window} days (about {} real minutes), founders cost double points (you get as many as the budget then buys, at least half)",
                     ended + 1,
                     (window as f64 * self.world.config.ticks_per_day as f64 * self.cfg.tick_ms / 60_000.0).round()
                 ),
@@ -1584,10 +1597,10 @@ impl Game {
         })
     }
 
-    /// The founders a re-founding gets now: half of `founders` (at least 2)
-    /// inside the window ([`Game::refound_terms`]), None otherwise.
-    pub fn refound_founders(&self, player: PlayerId, founders: u32) -> Option<u32> {
-        self.refound_terms(player).map(|t| t.founders(founders))
+    /// The founders a re-founding of `design` gets now inside the window
+    /// ([`Game::refound_terms`], [`RefoundTerms::founders`]), None otherwise.
+    pub fn refound_founders(&self, player: PlayerId, design: &FounderDesign) -> Option<u32> {
+        self.refound_terms(player).map(|t| t.founders(design))
     }
 
     /// [`Game::found`] without the point-budget check, for offline tools
@@ -7005,7 +7018,9 @@ mod tests {
             m => panic!("{m:?}"),
         };
         assert_eq!(err.code, "incompatible_body_plans");
-        assert!(err.message.contains("warm-bloodedness"), "{}", err.message);
+        // Warm × cold alone is partly fertile (`Balance::thermo_hybrid`):
+        // the abandoned eggs make the pair sterile.
+        assert!(err.message.contains("birth mode") && !err.message.contains("warm"), "{}", err.message);
         assert_eq!(err.detail.unwrap()["genes"][0]["gene"], "endothermy");
         assert_eq!(out.len(), 1, "the other player is not asked");
         assert_eq!(g.world.mating_slots_left(1), g.world.config.mating_slots_per_season);
@@ -7515,8 +7530,10 @@ mod tests {
         assert_eq!(g.offer_deadline(&o), 100 + HOLD_MAX_DAYS * tpd);
     }
 
-    /// Re-founding within a ranked season's length of retiring founds half
-    /// the founders; after an extinction, or later, the full design.
+    /// Re-founding within a ranked season's length of retiring prices
+    /// founders double: a design that fills the budget gets about half its
+    /// founders, one with points to spare gets all it asks for, and the
+    /// cost reported is what was founded; after the window, the full design.
     #[test]
     fn refounding_soon_after_retiring_costs_founders() {
         let (mut g, _, _) = game();
@@ -7527,26 +7544,34 @@ mod tests {
         assert_eq!(g.refound_window_days(), 4);
         let l = g.lineage_of(1).unwrap();
         g.retire(1, l).unwrap();
-        let ok = g.found(1, &design("A2").founders(10)).unwrap();
-        assert_eq!((ok.founders.len(), ok.requested), (5, 10));
+        let full = (2..200).take_while(|&n| design("A2").founders(n).point_cost() <= DESIGN_BUDGET).last().unwrap();
+        let ok = g.found(1, &design("A2").founders(full)).unwrap();
+        let n = ok.founders.len() as u32;
+        assert!(n >= full / 2 && n < full, "{n} of {full}");
+        assert_eq!(ok.requested, full);
         assert!(ok.reduced.as_deref().unwrap().contains("retired"), "{:?}", ok.reduced);
-        assert!(ok.cost < design("A2").founders(10).point_cost() + 1e-6);
+        assert!(ok.cost <= DESIGN_BUDGET + 1e-3 && ok.cost > DESIGN_BUDGET - 5.0, "{}", ok.cost);
         // The alert goes out live with the next tick.
         g.world.step();
         let out = g.after_tick();
-        assert!(alerts_in(&out, 1).iter().any(|a| a.text.starts_with("Re-founded: 5 of 10 founders")), "{out:?}");
+        let said = format!("Re-founded: {n} of {full} founders");
+        assert!(alerts_in(&out, 1).iter().any(|a| a.text.starts_with(&said)), "{out:?}");
         let l = g.lineage_of(1).unwrap();
         g.retire(1, l).unwrap();
         run_days(&mut g, 5);
         let ok = g.found(1, &design("A3").founders(10)).unwrap();
         assert_eq!(ok.founders.len(), 10, "long after the retire: the full design");
-        assert_eq!(g.refound_founders(2, 10), None, "Bob's lineage lives");
-        // Dying out counts too (not only retiring).
+        assert_eq!(g.refound_founders(2, &design("B")), None, "Bob's lineage lives");
+        // Dying out counts too (not only retiring); a cheap design gets all
+        // its founders, charged double.
         wipe_out(&mut g, 2);
         run_days(&mut g, 1);
         let t = g.refound_terms(2).expect("re-founding after dying out");
         assert!(t.reason.contains("died out"), "{}", t.reason);
-        assert_eq!(g.found(2, &design("B2").founders(10)).unwrap().founders.len(), 5);
+        let cheap = design("B2").founders(10);
+        let ok = g.found(2, &cheap).unwrap();
+        assert_eq!(ok.founders.len(), 10);
+        assert!((ok.cost - cheap.point_cost() - evo_sim::design::founder_cost(10)).abs() < 1e-4);
     }
 
     /// The window is at least 30 real minutes: a 4-day season at 1 s a tick
@@ -7808,6 +7833,10 @@ mod tests {
         sp.lineages = vec![(mine, 60.0)];
         sp.origin = evo_sim::species::SpeciesOrigin::Founding;
         assert_eq!(g.species_namer(&sp), Some(1));
+        // Once named, the namer stays whoever comes to lead it.
+        g.economy.named_species.insert(sp.id, 1);
+        sp.lineages = vec![(wild, 90.0), (mine, 10.0)];
+        assert_eq!(g.species_namer(&sp), Some(1));
     }
 
     /// An auction lasts at least the wall-clock floor, whatever was asked.
@@ -7881,6 +7910,49 @@ mod tests {
         let f = g.design_compatibility(9, &far);
         assert!(f.rows.iter().all(|r| r.fertility == 0.0 && r.drift_risk == "none"), "{:?}", f.rows);
         assert_eq!((f.fertile_with, f.at_risk), (0, 0));
+    }
+
+    /// The design check warns a warm-blooded design that abandons its eggs
+    /// (playtest 5: 252 chilled, none hatched), and no other.
+    #[test]
+    fn warm_abandoned_eggs_are_warned() {
+        let (g, _, _) = game();
+        let warm = FounderDesign::new("W", Thermo::Warm, BirthType::AbandonedEggs, 4).founders(6);
+        let w = g.design_compatibility(9, &warm).egg_warning.expect("warned");
+        assert!(w.contains("24 °C") && w.contains("incubated"), "{w}");
+        for (t, b) in [(Thermo::Cold, BirthType::AbandonedEggs), (Thermo::Warm, BirthType::IncubatedEggs)] {
+            let d = FounderDesign::new("O", t, b, 4).founders(6);
+            assert_eq!(g.design_compatibility(9, &d).egg_warning, None);
+        }
+    }
+
+    /// Warm and cold lineages of one plan are partly fertile
+    /// (`Balance::thermo_hybrid`, playtest 5: cold blood walled the market
+    /// off), the playtest 5 flier with a plain warm grazer too; off, sterile.
+    #[test]
+    fn warm_and_cold_lineages_are_partly_fertile() {
+        let (mut g, _, _) = game();
+        let cold = FounderDesign::new("C", Thermo::Cold, BirthType::Live, 2).founders(6);
+        let flier = FounderDesign::new("Fl", Thermo::Cold, BirthType::Live, 3)
+            .with(Gene::BodySize, 0.45)
+            .with(Gene::Wings, 0.8)
+            .with(Gene::Toxins, 0.8)
+            .with(Gene::Coloration, 0.8)
+            .with(Gene::Brumation, 0.6)
+            .with(Gene::Scales, 0.4)
+            .founders(10);
+        for d in [&cold, &flier] {
+            let v = g.design_compatibility(9, d);
+            eprintln!(
+                "{} vs warm live: {:?}",
+                d.name,
+                v.rows.iter().map(|r| (r.fertility, r.fertile_share, r.limiting.clone())).collect::<Vec<_>>()
+            );
+            assert!(v.rows.iter().all(|r| r.fertility > 0.0 && r.fertility < 0.6), "{:?}", v.rows);
+        }
+        g.world.config.balance.thermo_hybrid = 0.0;
+        let v = g.design_compatibility(9, &cold);
+        assert!(v.rows.iter().all(|r| r.fertility == 0.0), "{:?}", v.rows);
     }
 
     /// Two foundings of one design are always mutually fertile: founder
@@ -9205,6 +9277,9 @@ mod tests {
         cfg.scoring.species_confirm = 0;
         cfg.scoring.species_merge_confirm = 0;
         cfg.scoring.species_revive_days = 0;
+        // Owners clustered together, so a player's lineage can bridge to a
+        // wild one (`Balance::species_credit` off).
+        cfg.balance.species_credit = 0.0;
         let p = DetectParams::from_config(&cfg);
         let mut t = SpeciesTracker::default();
         let name = |l: u32| format!("L{l}");

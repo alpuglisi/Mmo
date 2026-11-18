@@ -492,6 +492,23 @@ fn led_by_player(samples: &[Sample], members: &[usize]) -> bool {
     by.values().any(|&(n, owner)| owner != WILD && n * 2.0 > total)
 }
 
+/// [`cluster`] over each owner's samples apart (the wild ecosystem's
+/// together), owners in order (`DetectParams::owner_species`): no cluster
+/// mixes owners, so a player's lineage neither joins a rival's or a wild
+/// species nor links two of them through its animals.
+pub fn cluster_by_owner(samples: &[Sample], rule: &LinkRule) -> Vec<Vec<usize>> {
+    let mut by: BTreeMap<PlayerId, Vec<usize>> = BTreeMap::new();
+    for (i, s) in samples.iter().enumerate() {
+        by.entry(s.owner).or_default().push(i);
+    }
+    let mut out = Vec::new();
+    for idx in by.values() {
+        let part: Vec<Sample> = idx.iter().map(|&i| samples[i].clone()).collect();
+        out.extend(cluster(&part, rule).into_iter().map(|c| c.into_iter().map(|j| idx[j]).collect::<Vec<_>>()));
+    }
+    out
+}
+
 /// Up to `k` farthest-point picks (by L1 distance over expressed values),
 /// starting from the first member.
 fn pick_reps(samples: &[Sample], members: &[usize], k: usize) -> Vec<Expr> {
@@ -532,6 +549,10 @@ pub struct DetectParams {
     /// of whose adults are one player lineage's is split from its
     /// wild-owned members and never continues an initial wild species.
     pub player_species: bool,
+    /// Species credit by owner (`Balance::species_credit`): each owner's
+    /// samples are clustered apart, and a species continues only as a
+    /// cluster of its main lineage's owner.
+    pub owner_species: bool,
 }
 
 impl DetectParams {
@@ -546,6 +567,7 @@ impl DetectParams {
             merge_confirm: cfg.scoring.species_merge_confirm,
             revive_days: cfg.scoring.species_revive_days as u64,
             player_species: cfg.balance.player_species > 0.0,
+            owner_species: cfg.balance.species_credit > 0.0,
         }
     }
 }
@@ -568,7 +590,7 @@ impl SpeciesTracker {
         p: &DetectParams,
         name_of: impl Fn(u32) -> String,
     ) -> Vec<SpeciesEvent> {
-        let mut clusters = cluster(samples, &p.rule);
+        let mut clusters = if p.owner_species { cluster_by_owner(samples, &p.rule) } else { cluster(samples, &p.rule) };
         let first = self.last_detection.is_none();
         // Player species identity: a cluster led by a player lineage keeps
         // its own identity apart from the wild animals it interbreeds with
@@ -609,13 +631,21 @@ impl SpeciesTracker {
             })
             .collect();
         // Each old species continues as the cluster it overlaps most; an
-        // initial wild species never as a player-led cluster.
+        // initial wild species never as a player-led cluster; with
+        // `owner_species`, only as a cluster of its main lineage's owner
+        // (when that lineage was sampled).
+        let owner_of: BTreeMap<u32, PlayerId> =
+            if p.owner_species { samples.iter().map(|s| (s.lineage, s.owner)).collect() } else { BTreeMap::new() };
+        let cluster_owner: Vec<Option<PlayerId>> =
+            clusters.iter().map(|m| m.first().map(|&i| samples[i].owner)).collect();
         let successor: Vec<Option<usize>> = (0..live.len())
             .map(|k| {
                 let sp = &self.species[live[k]];
                 let wild_initial = sp.origin == SpeciesOrigin::Initial && sp.founder.is_none() && sp.dominant == WILD;
+                let owner = sp.main_lineage().and_then(|l| owner_of.get(&l).copied());
                 let (c, n) = (0..clusters.len()).fold((0, 0), |b, c| {
-                    if overlap[c][k] > b.1 && !(wild_initial && player_led[c]) {
+                    let foreign = owner.is_some_and(|o| cluster_owner[c] != Some(o));
+                    if overlap[c][k] > b.1 && !(wild_initial && player_led[c]) && !foreign {
                         (c, overlap[c][k])
                     } else {
                         b
@@ -877,6 +907,8 @@ mod tests {
         cfg.scoring.species_confirm = 0;
         cfg.scoring.species_merge_confirm = 0;
         cfg.scoring.species_revive_days = 0;
+        // Before species credit by owner (tested on its own).
+        cfg.balance.species_credit = 0.0;
         DetectParams::from_config(&cfg)
     }
 
@@ -888,6 +920,7 @@ mod tests {
         cfg.scoring.species_confirm_adults = 5.0;
         cfg.scoring.species_merge_confirm = 3;
         cfg.scoring.species_revive_days = 100;
+        cfg.balance.species_credit = 0.0;
         DetectParams::from_config(&cfg)
     }
 
@@ -990,6 +1023,7 @@ mod tests {
         let run = |on: bool, player_n: usize| {
             let mut p = params();
             p.player_species = on;
+            p.owner_species = false;
             let mut t = SpeciesTracker::default();
             t.detect(0, &wild, &p, |l| format!("L{l}"));
             let mut day1 = group(&base(), 30, 0, WILD, 2);
@@ -1011,6 +1045,55 @@ mod tests {
         // A minority player lineage stays inside the mixed wild species.
         let t = run(true, 10);
         assert_eq!(t.alive().count(), 1);
+    }
+
+    /// Species credit by owner (`DetectParams::owner_species`): a player's
+    /// copy of a rival's design is its own species, credited to its player,
+    /// and the rival keeps its species; a small player lineage beside a
+    /// wild species is its own; and player intermediates no longer chain
+    /// two wild species into one.
+    #[test]
+    fn species_are_credited_by_owner() {
+        let run = |on: bool, day0: &[Sample], day1: &[Sample]| {
+            let mut p = params();
+            p.owner_species = on;
+            let mut t = SpeciesTracker::default();
+            t.detect(0, day0, &p, |l| format!("L{l}"));
+            t.detect(1, day1, &p, |l| format!("L{l}"));
+            t
+        };
+        let names = |t: &SpeciesTracker| t.alive().map(|s| (s.lineages.clone(), s.founder)).collect::<Vec<_>>();
+        // Player 2 copies player 1's design and outgrows it.
+        let wild = group(&base().with(Gene::Carnivory, 0.9), 20, 9, WILD, 1);
+        let mut day0 = wild.clone();
+        day0.extend(group(&base(), 20, 1, 1, 2));
+        let mut day1 = day0.clone();
+        day1.extend(group(&base(), 40, 2, 2, 3));
+        let t = run(false, &day0, &day1);
+        assert_eq!(t.alive().count(), 2, "{:?}", names(&t));
+        let t = run(true, &day0, &day1);
+        assert_eq!(t.alive().count(), 3, "{:?}", names(&t));
+        let copy = t.alive().find(|s| s.lineages.iter().any(|&(l, _)| l == 2)).unwrap();
+        assert_eq!((copy.lineages.len(), copy.founder), (1, Some(2)));
+        let first = t.alive().find(|s| s.lineages.iter().any(|&(l, _)| l == 1)).unwrap();
+        assert_eq!((first.lineages.len(), first.dominant), (1, 1));
+        // A small player lineage beside a wild species.
+        let voles = group(&base(), 30, 0, WILD, 4);
+        let mut day1 = voles.clone();
+        day1.extend(group(&base(), 6, 1, 3, 5));
+        let t = run(true, &voles, &day1);
+        assert_eq!(t.alive().count(), 2, "{:?}", names(&t));
+        assert!(t.species[0].lineages.iter().all(|&(l, _)| l == 0));
+        // Player intermediates between two wild species.
+        let mut wild2 = group(&base(), 20, 0, WILD, 6);
+        wild2.extend(group(&base().with(Gene::BodySize, 0.66), 20, 5, WILD, 7));
+        let mut day1 = wild2.clone();
+        day1.extend(group(&base().with(Gene::BodySize, 0.42), 10, 1, 4, 8));
+        day1.extend(group(&base().with(Gene::BodySize, 0.54), 10, 1, 4, 9));
+        assert_eq!(cluster(&day1, &rule()).iter().filter(|c| c.len() >= 4).count(), 1, "bridged");
+        let t = run(true, &wild2, &day1);
+        let wilds: Vec<_> = t.alive().filter(|s| s.lineages.iter().all(|&(l, _)| l == 0 || l == 5)).collect();
+        assert_eq!(wilds.len(), 2, "{:?}", names(&t));
     }
 
     fn base() -> FounderDesign {

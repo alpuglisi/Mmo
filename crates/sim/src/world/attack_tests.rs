@@ -442,6 +442,9 @@ fn strong_avoidance_holds_for_a_whole_day() {
     for &j in &preys {
         w.organisms[j].pheno.0[Gene::Coloration.index()] = 0.6;
     }
+    // Capped (`Balance::avoid_cap`): an honest signal is not immunity.
+    assert!((w.toxic_avoidance(hl, &w.organisms[preys[0]]) - w.config.balance.avoid_cap).abs() < 1e-6);
+    w.config.balance.avoid_cap = 0.0;
     assert!(w.toxic_avoidance(hl, &w.organisms[preys[0]]) > 0.87);
     for &i in &pk {
         w.organisms[i].needs.hunger = 80.0;
@@ -493,6 +496,8 @@ fn a_hunter_poisoned_by_drab_prey_teaches_its_lineage_to_pass_it_up() {
     for &j in &preys {
         w.organisms[j].pheno.0[Gene::Coloration.index()] = 1.0;
     }
+    assert!((w.toxic_avoidance(hl, &w.organisms[spare]) - w.config.balance.avoid_cap).abs() < 1e-6);
+    w.config.balance.avoid_cap = 0.0;
     assert!((w.toxic_avoidance(hl, &w.organisms[spare]) - 1.0).abs() < 1e-6);
     let it = w.decide(pk[1]);
     assert!(!it.target_org.is_some_and(|j| preys.contains(&j)), "{it:?}");

@@ -66,7 +66,14 @@ impl World {
         }
         let c = q.pheno[crate::Gene::Coloration].clamp(0.0, 1.0);
         let drab = if self.config.balance.toxic_avoidance > 0.0 { RECOGNIZE_DRAB_STRONG } else { RECOGNIZE_DRAB };
-        lesson * (drab + (1.0 - drab) * c)
+        let avoid = lesson * (drab + (1.0 - drab) * c);
+        // An honest signal is not immunity (`Balance::avoid_cap`).
+        let cap = self.config.balance.avoid_cap;
+        if cap > 0.0 {
+            avoid.min(cap)
+        } else {
+            avoid
+        }
     }
 
     /// Share of a poisoning a hunter of lineage `predator` takes from prey
