@@ -271,6 +271,10 @@ pub enum ClientMsg {
     /// share fertile), the drift risk, and the body-plan gene that keeps
     /// you apart. Data: [`CompatibilityView`].
     Compatibility,
+    /// A survey: rivals' groups and territories within 64 tiles of your
+    /// main group, in 8-tile cells, now (30 renown plus 1 per 10 of your
+    /// animals alive). Data: [`SurveyView`].
+    Survey,
     /// The requester of an accepted agreement whose animal died sends
     /// `mine` instead, within the deadline (the same checks as buying).
     /// Data: `{offer}`.
@@ -374,6 +378,7 @@ impl ClientMsg {
             ClientMsg::Compatibility => "compatibility",
             ClientMsg::Provision => "provision",
             ClientMsg::SubstituteMating { .. } => "substitute_mating",
+            ClientMsg::Survey => "survey",
             ClientMsg::SetNameplate { .. } => "set_nameplate",
             ClientMsg::NameSpecies { .. } => "name_species",
             ClientMsg::Nameplates => "nameplates",
@@ -426,6 +431,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "nameplates",
     "provision",
     "substitute_mating",
+    "survey",
     "end_grace",
 ];
 
@@ -1070,6 +1076,9 @@ pub struct OfferView {
     /// another with `substitute_mating` before `expires_tick`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lost: Option<String>,
+    /// While `lost`: the sex a substitute must be (the partner's other).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substitute_sex: Option<String>,
 }
 
 /// `OfferView::meet`.
@@ -1871,6 +1880,9 @@ pub struct ShopView {
     /// Adults a provision would feed now (the price is per adult).
     #[serde(default)]
     pub provision_size: usize,
+    /// The price of a survey now.
+    #[serde(default)]
+    pub survey_price: u64,
     #[serde(default)]
     pub provisions_bought: u32,
     #[serde(default)]
@@ -1988,10 +2000,43 @@ pub struct RefoundView {
     /// about how many wall-clock minutes until then.
     pub until_day: u64,
     pub minutes_left: u64,
+    /// Renown the re-founding costs now (after a retirement: doubling with
+    /// each re-founding in the window; at most the balance).
+    #[serde(default)]
+    pub fee: u64,
     pub reason: String,
 }
 
 /// One player's standing over a season of the history.
+/// A survey's findings (`survey`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SurveyView {
+    /// Renown it cost.
+    pub price: u64,
+    /// Where it was taken from (your main group's middle) and how far it saw.
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+    pub groups: Vec<SurveyGroup>,
+    /// The shop after (the next survey's price).
+    pub shop: ShopView,
+}
+
+/// A rival group a survey saw.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SurveyGroup {
+    pub player: PlayerId,
+    pub name: String,
+    /// The centre of the 8-tile cell its middle is in.
+    pub x: f32,
+    pub y: f32,
+    /// Members, rounded to tens.
+    pub members: usize,
+    /// Its claimed territory, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub territory: Option<[f32; 3]>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SeasonRow {
     pub player: PlayerId,

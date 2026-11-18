@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use evo_sim::chronicle::{AchievementKind, Catastrophe, CatastropheKind};
-use evo_sim::design::{DesignError, DESIGN_BUDGET};
+use evo_sim::design::DesignError;
 use evo_sim::math::Vec2;
 use evo_sim::organism::{DeathCause, Dormancy, Organism, Sex};
 use evo_sim::presets::{self, REFERENCE_SIZE};
@@ -572,6 +572,8 @@ pub struct FoundOk {
     pub requested: u32,
     /// Why fewer were founded, if they were.
     pub reduced: Option<String>,
+    /// Renown the re-founding cost (0 for a founding outside the window).
+    pub refound_fee: u64,
     /// Whether the new lineage has a newcomer grace, and why (or why not).
     pub grace: Option<String>,
 }
@@ -586,26 +588,42 @@ pub struct RefoundTerms {
     pub minutes_left: u64,
     /// Said to the player.
     pub reason: String,
+    /// Renown this re-founding costs ([`refound_fee`]: doubling with each
+    /// re-founding already made in the window; at most the balance; none
+    /// after dying out, only after a retirement).
+    pub fee: u64,
+    /// Re-foundings already made within the window.
+    pub count: u32,
 }
 
 impl RefoundTerms {
-    /// Founders a re-founding of `design` gets inside the window: founders
-    /// cost double points, so as many of its founders as fit the budget at
-    /// that price ([`RefoundTerms::cost`]), and at least half (at least 2).
-    /// A design with points to spare gets more than half (playtest 5: the
-    /// half rule charged the full points for half the founders).
+    /// Founders a re-founding of `design` gets inside the window: half,
+    /// rounded up (at least 2), whatever the budget. (Playtest 6: "founders
+    /// cost double" took nothing from a design of 20 founders or fewer,
+    /// and players re-founded four times in 45 minutes.)
     pub fn founders(&self, design: &FounderDesign) -> u32 {
         let n = design.founders;
-        let half = (n / 2).max(2).min(n);
-        (half..=n).rev().find(|&k| Self::cost(design, k) <= DESIGN_BUDGET + 1e-3).unwrap_or(half)
+        n.div_ceil(2).max(2).min(n)
     }
 
-    /// Points `design` with `founders` founders costs inside the window:
-    /// its cost with the founders' points counted twice.
+    /// Points `design` with `founders` founders costs (its plain cost).
     pub fn cost(design: &FounderDesign, founders: u32) -> f32 {
-        design.clone().founders(founders).point_cost() + evo_sim::design::founder_cost(founders)
+        design.clone().founders(founders).point_cost()
     }
 }
+
+/// Renown a re-founding within the window costs: [`REFOUND_FEE`] for the
+/// first, doubling with each one already made in the window.
+pub fn refound_fee(count: u32) -> u64 {
+    REFOUND_FEE.saturating_mul(1u64.checked_shl(count.min(40)).unwrap_or(u64::MAX))
+}
+
+/// How far toward the partner's animal (the paid side) an agreement's
+/// meeting point lies, from the requester's (0.5: halfway).
+pub const MEET_TOWARD_PARTNER: f32 = 0.75;
+
+/// Renown for the first re-founding within the window (see [`refound_fee`]).
+pub const REFOUND_FEE: u64 = 100;
 
 /// Wall-clock minutes a re-founding counts as soon after a lineage ended,
 /// at the least ([`Game::refound_window_days`]).
@@ -669,11 +687,20 @@ struct Offer {
     /// a lapse or cancel then forfeits nothing.
     #[serde(default)]
     excused: bool,
-    /// The partner's animal slept while the requester's was awake: a lapse
-    /// forfeits nothing (the requester mustn't pay for the other side's
-    /// sleep).
+    /// Ticks the partner's animal slept while the requester's was awake:
+    /// the hold fee shrinks by that share of [`Offer::held`] (the requester
+    /// doesn't pay for the other side's sleep; one tick used to forgive it
+    /// all).
     #[serde(default)]
-    partner_slept: bool,
+    slept: u64,
+    /// Ticks the agreement has been accepted.
+    #[serde(default)]
+    held: u64,
+    /// The last tick the requester's animal was possessed or under an
+    /// order (its own or its group's): a death soon after is not excused
+    /// (playtest 6: walking a possessed animal into a pack to get a refund).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    steered: Option<u64>,
     /// Ticks the deadline has waited for a sleeper (at most
     /// [`HOLD_MAX_DAYS`] of them).
     #[serde(default)]
@@ -1665,7 +1692,19 @@ impl Game {
                 ok.cost = RefoundTerms::cost(design, n);
                 ok.requested = design.founders;
                 ok.reduced = Some(t.reason.clone());
-                let text = format!("Re-founded: {n} of {} founders ({}).", design.founders, t.reason);
+                // The renown fee, at most what they have (a player without
+                // renown can still play; the halved founders still apply).
+                let fee = t.fee.min(self.balance(player));
+                if fee > 0 {
+                    let text = format!("Re-founding fee (re-founding {} within the window)", t.count + 1);
+                    let _ = self.post(player, -(fee as i64), LedgerKind::Purchase, text, None, None);
+                }
+                ok.refound_fee = fee;
+                let (today, window) = (self.world.day(), self.refound_window_days());
+                let days = self.economy.refound_days.entry(player).or_default();
+                days.retain(|&d| d + window > today);
+                days.push(today);
+                let text = format!("Re-founded: {n} of {} founders, {fee} renown ({}).", design.founders, t.reason);
                 // Live: delivered with the next tick's messages.
                 let mut out: Outbox = Vec::new();
                 self.alert(player, AlertKind::Milestone, text, None, &mut out);
@@ -1722,10 +1761,16 @@ impl Game {
             let days_left = ended + window - today;
             let minutes_left =
                 (days_left as f64 * self.world.config.ticks_per_day as f64 * self.cfg.tick_ms / 60_000.0).ceil();
+            let count =
+                self.economy.refound_days.get(&player).map_or(0, |d| d.iter().filter(|&&x| x + window > today).count())
+                    as u32;
             RefoundTerms {
                 until_day: ended + window,
                 minutes_left: minutes_left as u64,
                 reason: format!("your last lineage {how} on day {}: {}", ended + 1, self.refound_rule()),
+                // The fee is for a deliberate re-roll: after a retirement.
+                fee: if how == "retired" { refound_fee(count) } else { 0 },
+                count,
             }
         })
     }
@@ -1735,7 +1780,7 @@ impl Game {
     pub fn refound_rule(&self) -> String {
         let window = self.refound_window_days();
         format!(
-            "re-founding within {window} days (about {} real minutes), founders cost double points (you get as many as the budget then buys, at least half)",
+            "re-founding within {window} days (about {} real minutes) founds half your founders (rounded up) and, after a retirement, costs {REFOUND_FEE} renown, doubling with each re-founding in that time",
             (window as f64 * self.world.config.ticks_per_day as f64 * self.cfg.tick_ms / 60_000.0).round()
         )
     }
@@ -1792,7 +1837,7 @@ impl Game {
         if let Some(text) = &grace {
             self.founding_notes.push((player, text.clone()));
         }
-        Ok(FoundOk { lineage, founders, cost: design.point_cost(), requested, reduced: None, grace })
+        Ok(FoundOk { lineage, founders, cost: design.point_cost(), requested, reduced: None, refound_fee: 0, grace })
     }
 
     /// The partner organism of an open offer (0 for an offer to a lineage
@@ -2192,6 +2237,7 @@ impl Game {
                     Ok(o) => Ok(Some(serde_json::to_value(o).unwrap())),
                 }
             }
+            ClientMsg::Survey => Ok(Some(serde_json::to_value(self.survey(player)?).unwrap())),
             ClientMsg::SubstituteMating { request, mine } => self.substitute_mating(player, request, mine, out),
             ClientMsg::CancelMating { request } => {
                 let offer = self.offer_for(request, player)?;
@@ -2233,8 +2279,20 @@ impl Game {
             }
             ClientMsg::BuyListing { listing, mine } => self.buy_listing(player, listing, mine, out),
             ClientMsg::CreateAuction { organism, reserve, days, ticks } => {
+                let asked = match (days, ticks) {
+                    (None, Some(t)) => t,
+                    (d, _) => d.unwrap_or(1) as u64 * self.world.config.ticks_per_day as u64,
+                };
                 let l = self.create_auction(player, organism, reserve, days, ticks)?;
-                Ok(Some(serde_json::json!({ "listing": self.listing_view(&l, None) })))
+                let lasts = l.expires_tick.unwrap_or_default().saturating_sub(self.world.tick());
+                // Say when the wall-clock floor lengthened it (it was silent).
+                let note = (lasts > asked).then(|| {
+                    format!(
+                        "lengthened to {lasts} ticks (about {:.0} real minutes): auctions run at least that long",
+                        lasts as f64 * self.cfg.tick_ms / 60_000.0
+                    )
+                });
+                Ok(Some(serde_json::json!({ "listing": self.listing_view(&l, None), "note": note })))
             }
             ClientMsg::Bid { listing, amount, mine } => self.bid(player, listing, amount, mine, out),
             ClientMsg::BrowseMarket(q) => Ok(Some(serde_json::to_value(self.market(player, &q)?).unwrap())),
@@ -2601,7 +2659,9 @@ impl Game {
             meet: None,
             lost: None,
             excused: false,
-            partner_slept: false,
+            slept: 0,
+            held: 0,
+            steered: None,
             paused: 0,
         };
         self.offers.insert(id, offer);
@@ -3726,21 +3786,44 @@ impl Game {
                 o.lost.as_deref().unwrap_or("died")
             );
         }
-        if o.partner_slept {
-            return format!("nothing is forfeit: {}'s #{} slept through part of it", self.name(o.to), o.partner);
-        }
-        let fee = if o.escrow > 0 { (o.escrow * LAPSE_FEE_PERCENT / 100).max(LAPSE_FEE_MIN).min(o.escrow) } else { 0 };
+        let full = if o.escrow > 0 { (o.escrow * LAPSE_FEE_PERCENT / 100).max(LAPSE_FEE_MIN).min(o.escrow) } else { 0 };
+        // Less the share of the hold the partner's animal slept through
+        // while the requester's was awake.
+        let fee = (full * o.held.saturating_sub(o.slept)).checked_div(o.held).unwrap_or(full);
+        let slept = if fee < full {
+            format!(
+                " ({}'s #{} slept through {}% of the hold)",
+                self.name(o.to),
+                o.partner,
+                o.slept * 100 / o.held.max(1)
+            )
+        } else {
+            String::new()
+        };
         if fee > 0 {
-            self.offers.get_mut(&id).unwrap().escrow -= fee;
-            let what = o.listing.map_or(format!("offer #{id}"), |l| format!("listing #{l}"));
-            let text = format!("Hold fee: {fee} renown from {} for {what} ({why})", self.name(o.from));
-            let _ = self.post(o.to, fee as i64, LedgerKind::Sale, text, Some(id), o.listing);
-            format!("{fee} renown of the fee is forfeit to {}", self.name(o.to))
+            let net = self.pay_from_escrow(id, fee, &format!("Hold fee from {} ({why})", self.name(o.from)));
+            format!("{fee} renown of the fee is forfeit to {} ({net} after the market fee){slept}", self.name(o.to))
+        } else if full > 0 {
+            format!("nothing is forfeit{slept}")
         } else if self.world.forfeit_mating_slot(o.from) {
             "a mating slot is forfeit".to_string()
         } else {
             "nothing was forfeit".to_string()
         }
+    }
+
+    /// Pay `amount` of open offer `id`'s escrow to the partner's owner,
+    /// less the market fee (destroyed), before the offer closes (the rest
+    /// is refunded). The net paid.
+    fn pay_from_escrow(&mut self, id: u64, amount: u64, text: &str) -> u64 {
+        let o = self.offers[&id].clone();
+        let amount = amount.min(o.escrow);
+        self.offers.get_mut(&id).unwrap().escrow -= amount;
+        let net = amount - economy::market_fee(amount);
+        let what = o.listing.map_or(format!("offer #{id}"), |l| format!("listing #{l}"));
+        let text = format!("{text} for {what}: {amount} renown, {net} after the market fee");
+        let _ = self.post(o.to, net as i64, LedgerKind::Sale, text, Some(id), o.listing);
+        net
     }
 
     /// How an offer's partner animal reads in texts: `#id`, or for an offer
@@ -3932,6 +4015,9 @@ impl Game {
             lineage: o.lineage.filter(|_| o.partner == 0),
             meet: (o.status == OfferStatus::Accepted).then(|| self.meet_view(o)).flatten(),
             lost: o.lost.clone().filter(|_| o.status == OfferStatus::Accepted),
+            substitute_sex: o.lost.as_ref().filter(|_| o.status == OfferStatus::Accepted).and_then(|_| {
+                self.world.organism(o.partner).map(|p| if p.sex == Sex::Female { "male" } else { "female" }.to_string())
+            }),
         }
     }
 
@@ -3949,17 +4035,20 @@ impl Game {
                 .message
                 .replace(&format!("organism {} ", o.mine), "")
                 .replace(" before the mating", "");
-            let excused = matches!(
-                cause,
-                Some(
-                    DeathCause::Predation
-                        | DeathCause::Disease
-                        | DeathCause::Recessive
-                        | DeathCause::Attrition
-                        | DeathCause::WinterSleep
-                        | DeathCause::Journey
-                )
-            );
+            let tpd = self.world.config.ticks_per_day as u64;
+            let steered = o.steered.is_some_and(|t| t + tpd >= self.world.tick());
+            let excused = !steered
+                && matches!(
+                    cause,
+                    Some(
+                        DeathCause::Predation
+                            | DeathCause::Disease
+                            | DeathCause::Recessive
+                            | DeathCause::Attrition
+                            | DeathCause::WinterSleep
+                            | DeathCause::Journey
+                    )
+                );
             let x = self.offers.get_mut(&id).unwrap();
             x.lost = Some(how.clone());
             x.excused = excused;
@@ -4007,11 +4096,22 @@ impl Game {
         mine: OrgId,
         out: &mut Outbox,
     ) -> Result<Option<serde_json::Value>, ErrorInfo> {
-        let o = self.offer_for(request, player)?;
-        if o.from != player || o.status != OfferStatus::Accepted {
+        let o = self.offer_for(request, player).map_err(|_| {
+            ErrorInfo::new(
+                "unknown_offer",
+                format!(
+                    "no open offer {request} involving you (it may have closed or expired): \
+                     only an accepted agreement whose animal died takes another"
+                ),
+            )
+        })?;
+        if o.from != player {
+            return Err(ErrorInfo::new("not_substitutable", "only the requester can send another animal"));
+        }
+        if o.status != OfferStatus::Accepted {
             return Err(ErrorInfo::new(
                 "not_substitutable",
-                "only the requester of an accepted agreement can send another animal",
+                format!("offer {request} isn't accepted yet: nothing to substitute (cancel it and ask again)"),
             ));
         }
         if self.world.organism(o.mine).is_some() {
@@ -4052,9 +4152,12 @@ impl Game {
     fn start_rendezvous(&mut self, id: u64) {
         let Some(o) = self.offers.get(&id) else { return };
         let (a, b) = (o.mine, o.partner);
+        // Fixed at acceptance, three quarters of the way to the partner (the
+        // seller's side): the buyer can't steer it to their own pack
+        // (playtest 6: lure-and-eat).
         let meet = match o.meet {
             Some((x, y)) => Some(Vec2::new(x, y)),
-            None => self.world.meeting_point(a, b),
+            None => self.world.meeting_point_toward(a, b, MEET_TOWARD_PARTNER),
         };
         if let Some(m) = meet {
             self.offers.get_mut(&id).unwrap().meet = Some((m.x, m.y));
@@ -4126,8 +4229,24 @@ impl Game {
                     o.paused += 1;
                     o.accepted_tick = Some(o.accepted_tick.unwrap_or(o.created_tick).saturating_add(1));
                 }
+            }
+            if accepted {
+                let steered = self.world.organism(mine).is_some_and(|x| {
+                    x.possessed_by.is_some()
+                        || x.order.is_some()
+                        || self
+                            .world
+                            .groups(x.owner)
+                            .iter()
+                            .any(|g| g.id == x.group && (g.migration.is_some() || g.rally.is_some()))
+                });
+                let o = self.offers.get_mut(&id).unwrap();
+                o.held += 1;
                 if sb && !sa {
-                    o.partner_slept = true;
+                    o.slept += 1;
+                }
+                if steered {
+                    o.steered = Some(tick);
                 }
             }
             let o = &self.offers[&id];
@@ -4168,7 +4287,31 @@ impl Game {
                 _ => {
                     // A pending offer fails too: there is nothing left to accept.
                     let missing = if self.world.organism(mine).is_none() { mine } else { partner };
-                    let info = self.gone(missing);
+                    // The partner's animal killed by the requester's own
+                    // lineage: no refund (playtest 6: lure the seller's
+                    // animal to a pack, eat it, get the price back).
+                    let buyer_lineage = self.lineage_of(self.offers[&id].from);
+                    let eaten_by_buyer = accepted
+                        && missing == partner
+                        && buyer_lineage.is_some()
+                        && self
+                            .world
+                            .organisms
+                            .iter()
+                            .any(|x| x.id == partner && !x.alive && x.killer == buyer_lineage);
+                    if eaten_by_buyer {
+                        let escrow = self.offers[&id].escrow;
+                        let from = self.name(self.offers[&id].from);
+                        self.pay_from_escrow(id, escrow, &format!("Price kept: {from}'s lineage killed the partner"));
+                    }
+                    let info = if eaten_by_buyer {
+                        ErrorInfo::new(
+                            "died",
+                            format!("#{partner} was killed by the buyer's own lineage before the mating: the price is paid, not refunded"),
+                        )
+                    } else {
+                        self.gone(missing)
+                    };
                     self.close(id, OfferStatus::Failed, None, Some(info), &mut out);
                 }
             }
@@ -8580,55 +8723,73 @@ mod tests {
             meet: None,
             lost: None,
             excused: false,
-            partner_slept: false,
+            slept: 0,
+            held: 0,
+            steered: None,
             paused: 0,
         };
         let tpd = g.world.config.ticks_per_day as u64;
         assert_eq!(g.offer_deadline(&o), 100 + HOLD_MAX_DAYS * tpd);
     }
 
-    /// Re-founding within a ranked season's length of retiring prices
-    /// founders double: a design that fills the budget gets about half its
-    /// founders, one with points to spare gets all it asks for, and the
-    /// cost reported is what was founded; after the window, the full design.
+    /// Re-founding within the window of a lineage ending founds half the
+    /// founders (rounded up) whatever the budget, and costs a renown fee
+    /// doubling with each re-founding in the window (capped at the
+    /// balance); after the window, the full design and no fee. The
+    /// reinforcement and provision windows don't reset.
     #[test]
-    fn refounding_soon_after_retiring_costs_founders() {
+    fn refounding_soon_after_retiring_costs_founders_and_renown() {
         let (mut g, _, _) = game();
         g.cfg.season_days = 4;
         // A slow clock (a minute a tick): the real-time floor (30 minutes)
         // is 30 ticks, under a day.
         g.cfg.tick_ms = 60_000.0;
         assert_eq!(g.refound_window_days(), 4);
+        let _ = g.post(1, 1000, LedgerKind::Income, "test".into(), None, None);
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)), (true, None));
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::Provision)), (true, None));
         let l = g.lineage_of(1).unwrap();
         g.retire(1, l).unwrap();
-        let full = (2..200).take_while(|&n| design("A2").founders(n).point_cost() <= DESIGN_BUDGET).last().unwrap();
-        let ok = g.found(1, &design("A2").founders(full)).unwrap();
-        let n = ok.founders.len() as u32;
-        assert!(n >= full / 2 && n < full, "{n} of {full}");
-        assert_eq!(ok.requested, full);
+        let before = g.balance(1);
+        let ok = g.found(1, &design("A2").founders(11)).unwrap();
+        assert_eq!((ok.founders.len(), ok.requested), (6, 11), "half, rounded up");
         assert!(ok.reduced.as_deref().unwrap().contains("retired"), "{:?}", ok.reduced);
-        assert!(ok.cost <= DESIGN_BUDGET + 1e-3 && ok.cost > DESIGN_BUDGET - 5.0, "{}", ok.cost);
+        assert!((ok.cost - design("A2").founders(6).point_cost()).abs() < 1e-4);
+        assert_eq!((ok.refound_fee, g.balance(1)), (REFOUND_FEE, before - REFOUND_FEE));
         // The alert goes out live with the next tick.
         g.world.step();
         let out = g.after_tick();
-        let said = format!("Re-founded: {n} of {full} founders");
-        assert!(alerts_in(&out, 1).iter().any(|a| a.text.starts_with(&said)), "{out:?}");
+        assert!(
+            alerts_in(&out, 1).iter().any(|a| a.text.starts_with("Re-founded: 6 of 11 founders, 100 renown")),
+            "{out:?}"
+        );
+        // The reinforcement window didn't reset.
+        let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
+        assert_eq!((shop.reinforcements_bought, shop.provisions_bought), (1, 1), "the limits carry over");
+        // Again within the window: the fee doubles; then capped at the balance.
+        let l = g.lineage_of(1).unwrap();
+        g.retire(1, l).unwrap();
+        let ok = g.found(1, &design("A3").founders(10)).unwrap();
+        assert_eq!((ok.founders.len(), ok.refound_fee), (5, 2 * REFOUND_FEE));
+        g.economy.balances.insert(1, 50);
+        let l = g.lineage_of(1).unwrap();
+        g.retire(1, l).unwrap();
+        let ok = g.found(1, &design("A4").founders(10)).unwrap();
+        assert_eq!((ok.refound_fee, g.balance(1)), (50, 0), "at most the balance");
+        // Long after: the full design, free.
         let l = g.lineage_of(1).unwrap();
         g.retire(1, l).unwrap();
         run_days(&mut g, 5);
-        let ok = g.found(1, &design("A3").founders(10)).unwrap();
-        assert_eq!(ok.founders.len(), 10, "long after the retire: the full design");
+        let ok = g.found(1, &design("A5").founders(10)).unwrap();
+        assert_eq!((ok.founders.len(), ok.refound_fee), (10, 0), "long after the retire: the full design");
         assert_eq!(g.refound_founders(2, &design("B")), None, "Bob's lineage lives");
-        // Dying out counts too (not only retiring); a cheap design gets all
-        // its founders, charged double.
+        // Dying out counts too (not only retiring).
         wipe_out(&mut g, 2);
         run_days(&mut g, 1);
         let t = g.refound_terms(2).expect("re-founding after dying out");
         assert!(t.reason.contains("died out"), "{}", t.reason);
-        let cheap = design("B2").founders(10);
-        let ok = g.found(2, &cheap).unwrap();
-        assert_eq!(ok.founders.len(), 10);
-        assert!((ok.cost - cheap.point_cost() - evo_sim::design::founder_cost(10)).abs() < 1e-4);
+        let ok = g.found(2, &design("B2").founders(10)).unwrap();
+        assert_eq!((ok.founders.len(), ok.refound_fee), (5, 0), "no fee after dying out");
     }
 
     /// The window is at least 30 real minutes: a 4-day season at 1 s a tick
@@ -9987,7 +10148,7 @@ mod tests {
         place_together(&mut r, ma, fb);
         r.after_tick();
         assert!(!r.offers.contains_key(&id));
-        assert_eq!(r.balance(1), economy::FOUNDING_GRANT + 6, "less the market fee (at least 1)");
+        assert_eq!(r.balance(1), economy::FOUNDING_GRANT + 7, "no market fee below 10");
         // A layout-1 saved game (no version, no economy, offers without
         // escrow): the economy is left for the server to seed from the store.
         let mut old: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -10175,10 +10336,102 @@ mod tests {
         }
     }
 
+    /// Playtest 6's market holes: a buyer's animal possessed when it is
+    /// eaten isn't excused; the partner eaten by the buyer's own lineage
+    /// pays the seller, not refunds; the meeting point lies on the seller's
+    /// side; a hold fee pays the market fee; an auction lengthened to the
+    /// floor says so.
+    #[test]
+    fn steered_deaths_and_lured_partners_pay_the_seller() {
+        let (mut g, a, b) = game();
+        g.cfg.purchase_deadline_ticks = 30;
+        let dam = female(&g, &a);
+        let stud = male(&g, &b);
+        not_pregnant(&mut g, &[dam]);
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: dam, fee: 40, expires_days: None });
+        let listing = data(&out)["listing"]["id"].as_u64().unwrap();
+        g.economy.balances.insert(2, 100);
+        g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().pos = Vec2::new(10.0, 10.0);
+        g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().pos = Vec2::new(50.0, 50.0);
+        let out = g.command(20, 2, None, ClientMsg::BuyListing { listing, mine: stud });
+        assert!(result(&out).0, "{out:?}");
+        let id = *g.offers.keys().next().unwrap();
+        // The meeting point is on the seller's side of the midpoint.
+        let (mx, my) = g.offers[&id].meet.unwrap();
+        assert!(Vec2::new(mx, my).dist(Vec2::new(10.0, 10.0)) < Vec2::new(mx, my).dist(Vec2::new(50.0, 50.0)));
+        // Bob possesses his stud and it is "eaten": not excused.
+        g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().possessed_by = Some(2);
+        g.world.step();
+        g.after_tick();
+        let o = g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap();
+        o.alive = false;
+        o.death = Some(DeathCause::Predation);
+        g.world.step();
+        g.after_tick();
+        assert!(g.offers[&id].lost.is_some() && !g.offers[&id].excused, "steered into it");
+        let out = g.command(20, 2, None, ClientMsg::CancelMating { request: id });
+        assert!(result(&out).0);
+        let sale =
+            g.ledger(1, 50).into_iter().find(|e| e.kind == LedgerKind::Sale && e.offer == Some(id)).map(|e| e.delta);
+        assert_eq!(sale, Some(9), "the hold fee (10) less the market fee (1)");
+
+        // A second purchase: the dam is killed by Bob's own lineage.
+        let stud2 =
+            b.iter().copied().find(|&i| i != stud && g.world.organism(i).is_some_and(|o| o.sex == Sex::Male)).unwrap();
+        g.world.organisms.iter_mut().find(|o| o.id == stud2).unwrap().pos = Vec2::new(50.0, 50.0);
+        let out = g.command(20, 2, None, ClientMsg::BuyListing { listing, mine: stud2 });
+        assert!(result(&out).0, "{out:?}");
+        let id = *g.offers.keys().next().unwrap();
+        let bob = g.lineage_of(2);
+        let o = g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap();
+        o.alive = false;
+        o.death = Some(DeathCause::Predation);
+        o.killer = bob;
+        g.world.step();
+        g.after_tick();
+        assert!(!g.offers.contains_key(&id));
+        let sale =
+            g.ledger(1, 50).into_iter().find(|e| e.kind == LedgerKind::Sale && e.offer == Some(id)).map(|e| e.delta);
+        assert_eq!(sale, Some(36), "the price (40) less the market fee (4): no refund");
+        let refund = g.ledger(2, 50).into_iter().find(|e| e.kind == LedgerKind::Refund && e.offer == Some(id));
+        assert!(refund.is_none());
+
+        // An auction asked for 1 tick runs the floor, and says so.
+        let fa = a
+            .iter()
+            .copied()
+            .find(|&i| g.world.organism(i).is_some_and(|o| o.sex == Sex::Female && o.pregnancy.is_none()))
+            .unwrap();
+        let out =
+            g.command(10, 1, None, ClientMsg::CreateAuction { organism: fa, reserve: 5, days: None, ticks: Some(1) });
+        assert!(data(&out)["note"].as_str().unwrap().contains("lengthened"), "{out:?}");
+    }
+
+    /// A survey shows rivals' groups near your main group, coarsely, for
+    /// renown scaled by your lineage's size.
+    #[test]
+    fn a_survey_sees_rival_groups_nearby_for_renown() {
+        let (mut g, a, b) = game();
+        let _ = g.post(1, 1000, LedgerKind::Income, "test".into(), None, None);
+        let here = g.world.organism(a[0]).unwrap().pos;
+        for &id in &b {
+            g.world.organisms.iter_mut().find(|o| o.id == id).unwrap().pos = here + Vec2::new(5.0, 3.0);
+        }
+        let before = g.balance(1);
+        let price = economy::survey_price(g.owner_population(1));
+        let v: crate::protocol::SurveyView =
+            serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::Survey))).unwrap();
+        assert_eq!((v.price, g.balance(1)), (price, before - price));
+        let bob = v.groups.iter().find(|x| x.player == 2).expect("bob's group seen");
+        assert_eq!((bob.x % 8.0, bob.y % 8.0), (4.0, 4.0), "coarse cells");
+        assert_eq!(bob.members % 10, 0);
+        assert!(v.groups.iter().all(|x| x.player != 1), "not your own");
+    }
+
     /// A pending request naming a listed animal doesn't make it busy (a
     /// free request blocked a listed dam for its 10 minutes); the deadline
-    /// waits while either animal sleeps, and a lapse doesn't charge the
-    /// buyer for the seller's animal sleeping.
+    /// waits while either animal sleeps, and a lapse charges the buyer the
+    /// hold fee less the share the seller's animal slept through.
     #[test]
     fn pending_requests_dont_block_listings_and_one_sleeper_pauses_the_deadline() {
         let (mut g, a, b) = game();
@@ -10209,7 +10462,7 @@ mod tests {
             g.after_tick();
         }
         assert!(g.offer_deadline(&g.offers[&id]) >= before + 3, "the deadline waited");
-        assert!(g.offers[&id].partner_slept);
+        assert_eq!(g.offers[&id].slept, 3);
         g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().dormancy = Dormancy::Awake;
         for _ in 0..12 {
             g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().pos = Vec2::new(4.0, 4.0);
@@ -10218,9 +10471,15 @@ mod tests {
             g.after_tick();
         }
         assert!(!g.offers.contains_key(&id), "it lapsed");
-        let refund =
-            g.ledger(2, 50).into_iter().find(|e| e.kind == LedgerKind::Refund && e.offer == Some(id)).map(|e| e.delta);
-        assert_eq!(refund, Some(20), "the buyer pays nothing for the seller's dam sleeping");
+        let refund = g
+            .ledger(2, 50)
+            .into_iter()
+            .find(|e| e.kind == LedgerKind::Refund && e.offer == Some(id))
+            .map(|e| e.delta)
+            .unwrap();
+        // The hold fee (5) less the share the dam slept through (3 ticks of
+        // the hold): more than the full forfeit's refund, less than all.
+        assert!(refund > 15 && refund < 20, "prorated: {refund}");
     }
 
     /// Cancelling a bought dam before the deadline isn't a free hold: the

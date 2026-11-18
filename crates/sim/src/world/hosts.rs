@@ -294,8 +294,14 @@ impl World {
     /// there is none) that `a`'s body can stand on, so the walk doesn't end
     /// in a lake.
     pub fn meeting_point(&self, a: OrgId, b: OrgId) -> Option<Vec2> {
+        self.meeting_point_toward(a, b, 0.5)
+    }
+
+    /// [`World::meeting_point`] at fraction `t` of the way from `a` to `b`
+    /// (0.5: the midpoint) instead of halfway.
+    pub fn meeting_point_toward(&self, a: OrgId, b: OrgId, t: f32) -> Option<Vec2> {
         let (x, y) = (self.organism(a)?, self.organism(b)?);
-        let mid = self.map.clamp((x.pos + y.pos) * 0.5);
+        let mid = self.map.clamp(x.pos + (y.pos - x.pos) * t.clamp(0.0, 1.0));
         let dry =
             |p: Vec2| self.map.tile_at(p).water_depth <= 0.0 && self.passable_for(x, p) && self.passable_for(y, p);
         if dry(mid) {

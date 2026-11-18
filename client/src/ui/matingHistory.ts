@@ -44,11 +44,13 @@ export function offerUpdateText(o: OfferView, outcome: MatingOutcome | undefined
 
 export function outcomeText(o: MatingOutcome | undefined): string | null {
   if (!o) return null;
-  // Fertility is the chance a pairing conceives; the failure chance is the separate risk an override of
-  // preferences fails outright (0 within both preferences), so show it only when there was one.
+  // Fertility is the chance a pairing conceives; the failure chance is the separate risk that a pairing
+  // outside the animals' preferences fails outright. A conception needs neither explained; a miss says why
+  // it may have missed (playtest 6: "Conceived · 54% risk the override failed" read as a contradiction).
   const odds = `${Math.round(o.fertility * 100)}% chance to conceive`;
-  const risk = o.failure_chance > 0 ? ` · ${Math.round(o.failure_chance * 100)}% risk the override failed` : '';
-  return `${o.conceived ? 'Conceived' : 'Not conceived'} (${odds})${risk}`;
+  if (o.conceived) return `Conceived (${odds})`;
+  const risk = o.failure_chance > 0 ? `; outside their preferences, it also had a ${Math.round(o.failure_chance * 100)}% chance to fail outright` : '';
+  return `Not conceived (${odds}${risk})`;
 }
 
 export function historyRows(closed: OfferEntry[], log: MatingRecord[], limit = 30): HistoryRow[] {

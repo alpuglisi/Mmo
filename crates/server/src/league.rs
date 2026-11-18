@@ -31,7 +31,7 @@ use crate::store::DailyRecord;
 /// Sales a player needs in a season to be ranked in the stud market.
 pub const MARKET_TITLE_SALES: u32 = 2;
 /// Different buyers those sales need.
-pub const MARKET_TITLE_BUYERS: usize = 1;
+pub const MARKET_TITLE_BUYERS: usize = 2;
 
 /// Default length of a ranked season, in simulated days (half a default
 /// 120-day year; an era is 3 years).
@@ -70,9 +70,9 @@ pub enum Category {
     Species,
     /// Renown earned from stud fees (escrow paid out) during the season.
     /// Ranked only with at least [`MARKET_TITLE_SALES`] sales to at least
-    /// [`MARKET_TITLE_BUYERS`] buyer, so two sales win it in a short season
-    /// (one paid offer used to win it, and paying a rival handed them the
-    /// title).
+    /// [`MARKET_TITLE_BUYERS`] different buyers (playtest 6: two colluders
+    /// farmed it with one buyer; one paid offer used to win it, and paying
+    /// a rival handed them the title).
     Market,
     /// Catastrophes survived (a lineage founded before it began and alive
     /// at its end) during the season. Its title goes to no one when every
@@ -977,9 +977,11 @@ mod tests {
         n.add_sale(1, 2, 80);
         assert_eq!(market(&n), None, "one sale isn't a stud market");
         n.add_sale(1, 2, 10);
-        // Two sales (even to one buyer, at diminishing credit) make a stud
-        // market: a 60-day season is minutes long at a fast clock.
-        assert_eq!(market(&n), Some(85.0));
+        // Two sales to one buyer don't (playtest 6: two colluders farmed
+        // the title); a second buyer does.
+        assert_eq!(market(&n), None);
+        n.add_sale(1, 3, 10);
+        assert!(market(&n).is_some());
         let restored: SeasonTracker = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
         assert_eq!(restored, t);
     }

@@ -443,7 +443,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       refoundBox.hidden = !rf;
       if (rf) {
         refoundBox.replaceChildren(h('h2', {}, 'Re-founding soon'),
-          h('p', { class: 'hybrid-headline' }, '⚠ ', `Founding now gives ${rf.founders} of your ${rf.requested} founders, costing ${rf.cost.toFixed(1)} points.`),
+          h('p', { class: 'hybrid-headline' }, '⚠ ', `Founding now gives ${rf.founders} of your ${rf.requested} founders, costing ${rf.cost.toFixed(1)} points${rf.fee ? ` and ${rf.fee} renown` : ''}.`),
           h('p', { class: 'small', id: 'design-refound-reason' }, `${serverText(rf.reason)}. The full design founds again from day ${rf.until_day + 1} (about ${rf.minutes_left} real minute${rf.minutes_left === 1 ? '' : 's'}).`));
       }
     }, 600);
@@ -543,7 +543,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       saveLastDesign(cb.player, spec);
       if (r.reduced && r.requested) {
         const all = r.founders.length >= r.requested;
-        await confirmDialog({ id: 'founded-reduced', title: all ? `Founded all ${r.founders.length} founders, at the re-founding price` : `Founded ${r.founders.length} of ${r.requested} founders`, body: `${r.reduced.charAt(0).toUpperCase()}${r.reduced.slice(1)}.`, ok: 'Go to the map', cancel: false });
+        await confirmDialog({ id: 'founded-reduced', title: all ? `Founded all ${r.founders.length} founders, at the re-founding price` : `Founded ${r.founders.length} of ${r.requested} founders`, body: `${r.refound_fee ? `It cost ${r.refound_fee} renown. ` : ''}${r.reduced.charAt(0).toUpperCase()}${r.reduced.slice(1)}.`, ok: 'Go to the map', cancel: false });
       }
       cb.onFounded(r);
     } catch (e) {

@@ -110,6 +110,20 @@ pub const PROVISION_PRICE: u64 = PROVISION_SIZE as u64 * PROVISION_PER_ANIMAL;
 pub const PROVISION_AMOUNT: f32 = 50.0;
 pub const MAX_PROVISIONS_PER_SEASON: u32 = 3;
 
+/// A survey (`survey`): where rivals' groups and territories are within
+/// [`SURVEY_RADIUS`] tiles of your main group, coarsely (8-tile cells), at
+/// that moment. Information, not share: a sink for leaders' renown that
+/// scales with the lineage, [`SURVEY_BASE`] plus a renown per
+/// [`SURVEY_PER_ANIMALS`] animals alive (playtest 6: 4,800–10,000 unspent).
+pub const SURVEY_BASE: u64 = 30;
+pub const SURVEY_PER_ANIMALS: u64 = 10;
+pub const SURVEY_RADIUS: f32 = 64.0;
+
+/// The price of a survey for a lineage of `alive` animals.
+pub fn survey_price(alive: usize) -> u64 {
+    SURVEY_BASE + alive as u64 / SURVEY_PER_ANIMALS
+}
+
 /// Renown for a first nameplate (a cosmetic sink for leaders).
 pub const NAMEPLATE_PRICE: u64 = 500;
 /// Renown to change a nameplate afterwards.
@@ -133,11 +147,15 @@ pub const MAX_REINFORCEMENTS_PER_SEASON: u32 = 2;
 pub const REINFORCE_MAX_SHARE: f64 = 0.2;
 
 /// The market fee kept from a payout of `amount`: [`MARKET_FEE_PERCENT`]
-/// rounded to the nearest renown (halves up), so every price loses about a
-/// tenth: 1–4 pay none, 5–14 pay 1, 15–24 pay 2. (Playtest 5: with "at
+/// rounded to the nearest renown (halves up), and none below 10: 1–9 pay
+/// none, 10–14 pay 1, 15–24 pay 2. (Playtest 5: with "at
 /// least 1" a 2-renown sale lost half and 3–9 lost 11–33%; listings are
 /// at least 5 renown now, so small prices no longer dodge it.)
 pub fn market_fee(amount: u64) -> u64 {
+    // Below 10 none (playtest 6: a 5-renown sale lost a fifth).
+    if amount < 10 {
+        return 0;
+    }
     (amount * MARKET_FEE_PERCENT + 50) / 100
 }
 
@@ -278,6 +296,10 @@ pub struct Economy {
     /// The day each player's last lineage ended, retired or died out
     /// (re-founding soon after costs founders: `Game::refound_terms`).
     pub retired_day: BTreeMap<PlayerId, u64>,
+    /// The simulated days of each player's recent re-foundings within the
+    /// window (`Game::refound_terms`: each one doubles the next's fee).
+    #[serde(default)]
+    pub refound_days: BTreeMap<PlayerId, Vec<u64>>,
     /// Players whose last lineage died out (rather than was retired), for
     /// the wording.
     pub died_out: BTreeSet<PlayerId>,
@@ -434,7 +456,7 @@ mod tests {
     #[test]
     fn shop_prices_rise_and_fees_and_royalties_round() {
         assert_eq!(
-            (market_fee(0), market_fee(2), market_fee(4), market_fee(5), market_fee(14), market_fee(15)),
+            (market_fee(0), market_fee(5), market_fee(9), market_fee(10), market_fee(14), market_fee(15)),
             (0, 0, 0, 1, 1, 2)
         );
         assert_eq!(market_fee(40), 4);

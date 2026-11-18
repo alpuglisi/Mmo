@@ -10,11 +10,12 @@
 import { reconcile, setText } from './reconcile';
 import { createPicker, type PickItem } from './picker';
 import type { GameModel } from '../model';
-import type { ClientMsg, CompatibilityView, LedgerView, ListingView, MarketSort, MarketView, OrgId, ResultMsg, ShopView } from '../protocol';
+import type { ClientMsg, CompatibilityView, LedgerView, ListingView, MarketSort, MarketView, OrgId, ResultMsg, ShopView, SurveyView } from '../protocol';
 import { parseCompatibilityView, parseLedgerView, parseMarketView, parseShopView } from '../protocol';
 import { confirmDialog } from './confirm';
 import { h, pct } from './dom';
 import { traitName } from './traitNames';
+import { commandLabel } from '../errors';
 import './market.css';
 import {
   auctionText, expiryText, balanceText, bidProblem, buyProblem, COMPAT_CONFIDENCE, compatRowText, DEFAULT_FILTER, shopText, ledgerRows, ledgerTotals, listingCompat,
@@ -71,7 +72,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   const listOrg = listPick.el;
   const listKind = h('select', { id: 'market-list-kind' },
     h('option', { value: 'fixed' }, 'fixed fee'), h('option', { value: 'auction' }, 'auction'));
-  const fee = h('input', { id: 'market-fee', type: 'number', min: 0, step: 1, value: 10 });
+  // Every listing is at least 5 renown (server LISTING_MIN_FEE).
+  const fee = h('input', { id: 'market-fee', type: 'number', min: 5, step: 1, value: 10 });
   const expiry = h('input', { id: 'market-expiry', type: 'number', min: 1, max: 365, placeholder: 'never' });
   const auctionDays = h('input', { id: 'market-auction-days', type: 'number', min: 1, max: 30, value: 1 });
   const feeLabel = h('label', {}, 'Fee (renown)', fee);
@@ -98,7 +100,10 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     }
     const r = await deps.send(msg);
     if (r.ok) {
-      model.toast('info', msg.type === 'create_auction' ? `#${organism} auctioned from ${price} renown.` : `#${organism} listed for ${price} renown.`);
+      model.dismissErrors(commandLabel(msg.type));
+      const note = (r.data as { note?: string } | undefined)?.note;
+      model.toast('info', msg.type === 'create_auction'
+        ? `#${organism} auctioned from ${price} renown${note ? ` (${note})` : ''}.` : `#${organism} listed for ${price} renown.`);
       await refresh();
     }
   });
@@ -245,6 +250,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     return h('div', { class: 'listing', 'data-listing': id, 'data-organism': l.organism, 'data-kind': l.kind },
       h('div', { class: 'listing-head' },
         h('strong', {}, `${l.role === 'stud' ? 'Stud' : 'Dam'} #${l.organism}`),
+        h('span', { class: 'pregnant-tag', hidden: true }, ' · pregnant: buyers wait until she has given birth'),
         h('span', { class: 'muted' }, ` · ${l.owner_name}'s ${l.lineage_name}`),
         h('span', { class: 'fee' })),
       l.auction && h('div', { class: 'small auction-line' }),
@@ -278,6 +284,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     const slots = s?.slots_left ?? 0;
     const a = l.auction;
     card.classList.toggle('busy', l.busy);
+    const preg = card.querySelector<HTMLElement>('.pregnant-tag');
+    if (preg) preg.hidden = !(l.pregnant && l.sex === 'female');
     card.classList.toggle('auction', !!a);
     setText(card.querySelector('.fee')!, a ? `${a.high_bid ?? a.reserve} renown` : `${l.fee} renown`);
     const auctionLine = card.querySelector('.auction-line');
@@ -411,6 +419,9 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   const provBtn = h('button', { id: 'shop-provision', class: 'secondary' }) as HTMLButtonElement;
   const provNote = h('span', { class: 'muted small' });
   provBtn.addEventListener('click', async () => {
+    // Quote from a fresh shop: the lineage may have grown since it was shown (playtest 6: quoted 120, fed 140).
+    const fresh = await deps.send({ type: 'renown_shop' });
+    shop = (fresh.ok && parseShopView(fresh.data)) || shop;
     const s = shop;
     if (s && !(await confirmDialog({ id: 'provision-confirm', title: `Buy a provision for ${s.provision_price} renown?`, ok: 'Buy',
       body: `Your lineage's ${s.provision_size ?? 20} hungriest or thirstiest adults get 50 off their hunger and thirst, once.` }))) return;
@@ -421,6 +432,23 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       model.toast('info', `${d?.fed ?? 0} adults fed and watered.`);
       render();
     }
+  });
+  // A survey (a sink that scales): rival groups near your main group, now.
+  const surveyBtn = h('button', { id: 'shop-survey', class: 'secondary' }) as HTMLButtonElement;
+  const surveyNote = h('span', { class: 'muted small' }, 'Where rivals\' groups and territories are within 64 tiles of your main group, roughly, right now.');
+  const surveyOut = h('ul', { id: 'shop-survey-result', class: 'small', hidden: true });
+  surveyBtn.addEventListener('click', async () => {
+    const s = shop;
+    if (s && !window.confirm(`Survey for ${s.survey_price ?? '?'} renown? You see where rivals' groups and territories near your main group are now (to the nearest 8 tiles).`)) return;
+    const r = await deps.send({ type: 'survey' });
+    if (!r.ok) return;
+    const v = r.data as SurveyView;
+    shop = parseShopView(v.shop) ?? shop;
+    surveyOut.hidden = false;
+    surveyOut.replaceChildren(...(v.groups.length
+      ? v.groups.map((g) => h('li', {}, `${g.name}: about ${g.members} animals near ${g.x}, ${g.y}${g.territory ? ` · territory at ${g.territory[0]}, ${g.territory[1]} (radius ${g.territory[2]})` : ''}`))
+      : [h('li', { class: 'muted' }, `No rival groups within ${v.radius} tiles of ${v.x}, ${v.y}.`)]));
+    render();
   });
   // The cosmetic nameplate (a sink for leaders): built once, updated in place.
   const plateColor = h('select', { id: 'shop-nameplate-color' }) as HTMLSelectElement;
@@ -457,7 +485,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     setText(plateNote, `Cosmetic: shown with your name.${s.species_name_price ? ` Naming a species your lineage founded costs ${s.species_name_price}.` : ''}`);
   }
   const provRow = h('div', { class: 'row', hidden: true }, provBtn, provNote);
-  const shopBody = h('div', { hidden: true }, shopText_, h('div', { class: 'row' }, slotBtn, slotNote), h('div', { class: 'row' }, reinBtn, reinNote), provRow, plateRow);
+  const surveyRow = h('div', { hidden: true }, h('div', { class: 'row' }, surveyBtn, surveyNote), surveyOut);
+  const shopBody = h('div', { hidden: true }, shopText_, h('div', { class: 'row' }, slotBtn, slotNote), h('div', { class: 'row' }, reinBtn, reinNote), provRow, surveyRow, plateRow);
   const shopLoading = h('p', { class: 'muted small' }, 'Loading…');
   shopEl.replaceChildren(shopLoading, shopBody);
 
@@ -482,6 +511,11 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       provBtn.title = s.provision_blocked ?? `The ${n} neediest adults get 50 off hunger and thirst`;
       setText(provBtn, `Provision (${n} adults fed): ${s.provision_price} renown`);
       setText(provNote, s.provision_blocked ?? `Priced per adult fed (twice as much above ${s.reinforce_max_alive} alive); at most ${s.provisions_max ?? '?'} a ranked season (${s.provisions_bought ?? 0} bought).`);
+    }
+    surveyRow.hidden = s.survey_price === undefined;
+    if (s.survey_price !== undefined) {
+      surveyBtn.disabled = s.balance < s.survey_price;
+      setText(surveyBtn, `Survey nearby rivals: ${s.survey_price} renown`);
     }
     renderNameplate(s);
   }
