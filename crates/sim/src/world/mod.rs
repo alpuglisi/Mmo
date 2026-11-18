@@ -660,12 +660,12 @@ pub struct World {
     /// saved.
     #[cfg_attr(feature = "serde", serde(skip))]
     crowding: Vec<[f32; 2]>,
-    /// Each player's living animals as the tick starts, for the pack
-    /// larder (`apply::player_pack_larder`): the same in the sequential
-    /// and parallel apply, whatever dies mid-tick. Recomputed before every
-    /// tick, so not saved.
+    /// Each player's room for the pack larder as the tick starts (0–1,
+    /// `apply::player_pack_larder`, `World::refresh_pack_room`): the same in
+    /// the sequential and parallel apply, whatever dies mid-tick.
+    /// Recomputed before every tick, so not saved.
     #[cfg_attr(feature = "serde", serde(skip))]
-    bands: BTreeMap<PlayerId, usize>,
+    pack_room: BTreeMap<PlayerId, f32>,
 }
 
 /// Steps from water a founder's tile needs (`Balance::dry_sites`).
@@ -773,7 +773,7 @@ impl World {
             attack_events: Vec::new(),
             toxic_lessons: BTreeMap::new(),
             crowding: Vec::new(),
-            bands: BTreeMap::new(),
+            pack_room: BTreeMap::new(),
             clutch_at: IdMap::default(),
             path_scratch: PathScratch::default(),
             season_offset: Map::seasonal_offset(0, config.days_per_year),
@@ -920,10 +920,46 @@ impl World {
         removed
     }
 
-    /// `owner`'s living animals as this tick started (the pack larder's
-    /// band size).
-    pub(crate) fn band_size(&self, owner: PlayerId) -> usize {
-        self.bands.get(&owner).copied().unwrap_or(0)
+    /// `owner`'s room for the pack larder as this tick started (0–1).
+    pub(crate) fn pack_room(&self, owner: PlayerId) -> f32 {
+        self.pack_room.get(&owner).copied().unwrap_or(0.0)
+    }
+
+    /// Each player's room for the pack larder (`apply::player_pack_larder`):
+    /// with `Balance::prey_larder`, by the prey there is per hunter (plant
+    /// eaters not the player's, per pack hunter of the player's: full from
+    /// `apply::PREY_FULL`, none at `apply::PREY_NONE`); without it, by the
+    /// band's size (full up to `apply::BAND_SMALL` animals, none from
+    /// `apply::BAND_CROWD`).
+    fn refresh_pack_room(&mut self) {
+        self.pack_room.clear();
+        let bal = &self.config.balance;
+        if bal.player_packs <= 0.0 {
+            return;
+        }
+        if bal.prey_larder <= 0.0 {
+            for (&p, &n) in &self.owner_counts {
+                let room = (apply::BAND_CROWD - n as f32) / (apply::BAND_CROWD - apply::BAND_SMALL);
+                self.pack_room.insert(p, room.clamp(0.0, 1.0));
+            }
+            return;
+        }
+        let (mut grazers, mut grazers_of, mut hunters) =
+            (0usize, BTreeMap::<PlayerId, usize>::new(), BTreeMap::<PlayerId, usize>::new());
+        for o in self.organisms.iter().filter(|o| o.alive) {
+            if o.traits.carnivory <= decide::HUNTER_CARNIVORY {
+                grazers += 1;
+                *grazers_of.entry(o.owner).or_default() += 1;
+            } else if decide::player_pack(bal, o) {
+                *hunters.entry(o.owner).or_default() += 1;
+            }
+        }
+        let (full, none) = apply::prey_per_hunter();
+        for (p, h) in hunters {
+            let prey = grazers - grazers_of.get(&p).copied().unwrap_or(0);
+            let per = prey as f32 / h.max(1) as f32;
+            self.pack_room.insert(p, ((per - none) / (full - none)).clamp(0.0, 1.0));
+        }
     }
 
     pub fn owner_count(&self, owner: PlayerId) -> usize {
@@ -1674,6 +1710,18 @@ impl World {
 
     /// `kill` by another organism (`killer`): predation, or a hunter killed
     /// by prey that fought back.
+    /// Hunter `i` killed by prey `prey` fighting back: the prey's lineage
+    /// is remembered (`Organism::killer`) for the notice, but it isn't a
+    /// kill by the prey's lineage (`Counters::kills_by_lineage`), nor
+    /// predation (playtest 6: a hunter gored by a herd was "eaten by" it).
+    pub(super) fn kill_fighting_back(&mut self, i: usize, prey: usize) {
+        if !self.organisms[i].alive {
+            return;
+        }
+        self.organisms[i].killer = Some(self.organisms[prey].lineage);
+        self.kill(i, DeathCause::FoughtBack);
+    }
+
     fn kill_by(&mut self, i: usize, killer: usize) {
         if !self.organisms[i].alive {
             return;
@@ -1722,9 +1770,7 @@ impl World {
         // Lineage crowding from the organisms as the tick starts (the same
         // after a restore, which keeps no cache).
         self.refresh_crowding();
-        if self.config.balance.player_packs > 0.0 {
-            self.bands.clone_from(&self.owner_counts);
-        }
+        self.refresh_pack_room();
         if self.config.lod.enabled && self.tick.is_multiple_of(self.config.ticks_per_hour()) {
             self.lod_update();
         }
@@ -1976,6 +2022,9 @@ mod winter_tests {
             .founders(12);
         for seed in 1..4 {
             let mut w = small_world(seed);
+            // (The spots this test checks were found without the
+            // prey-scaled pack larder, version 58.)
+            w.config.balance.prey_larder = 0.0;
             w.run_days(2);
             let found = |w: &mut World| {
                 let ids = w.found_lineage_unchecked(77, &d);

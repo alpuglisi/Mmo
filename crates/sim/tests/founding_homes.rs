@@ -45,6 +45,8 @@ fn homes_hash() -> u64 {
         // change the days the world grows first.
         config.balance.dry_beds = 0.0;
         config.balance.drink_reach = 0.0;
+        // Playtest 6 (version 58): the prey-scaled pack larder.
+        config.balance.prey_larder = 0.0;
         // Playtest 5 (version 52): brooders keeping their nests, young
         // following and escaping rising water change the days the world
         // grows first.

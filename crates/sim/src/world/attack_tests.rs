@@ -621,7 +621,7 @@ fn player_packs_share_their_kills() {
     for &i in &[mine, wild, loner] {
         w.organisms[i].needs.hunger = 60.0;
     }
-    let larder = |w: &World, i: usize| super::apply::player_pack_larder(&b, &w.organisms[i], 10);
+    let larder = |w: &World, i: usize| super::apply::player_pack_larder(&b, &w.organisms[i], 1.0);
     assert!(super::decide::player_pack(&b, &w.organisms[mine]));
     assert!(larder(&w, mine) > 0.15, "{}", larder(&w, mine));
     assert_eq!((larder(&w, wild), larder(&w, loner)), (0.0, 0.0));
@@ -633,8 +633,55 @@ fn player_packs_share_their_kills() {
     let mut off = b;
     off.player_packs = 0.0;
     assert!(!super::decide::player_pack(&off, &w.organisms[mine]));
-    assert_eq!(super::apply::player_pack_larder(&off, &w.organisms[mine], 10), 0.0);
+    assert_eq!(super::apply::player_pack_larder(&off, &w.organisms[mine], 1.0), 0.0);
     // A big population competes for its kills rather than sharing them.
-    assert_eq!(super::apply::player_pack_larder(&b, &w.organisms[mine], 400), 0.0);
-    assert!(super::apply::player_pack_larder(&b, &w.organisms[mine], 100) < larder(&w, mine));
+    assert_eq!(super::apply::player_pack_larder(&b, &w.organisms[mine], 0.0), 0.0);
+    assert!(super::apply::player_pack_larder(&b, &w.organisms[mine], 0.5) < larder(&w, mine));
+}
+
+/// Playtest 6: a hunter killed by prey fighting back was "eaten by" the
+/// plant eaters' lineage. It dies fighting back now (`FoughtBack`), the prey
+/// remembered but not credited with a kill; killed by another hunter, it is
+/// still predation.
+#[test]
+fn a_hunter_killed_by_its_prey_is_not_eaten() {
+    let mut w = world();
+    let a = place(&mut w, HUNTER, &hunter(), Vec2::new(10.5, 10.5));
+    let prey = place(&mut w, PREY, &walker(), Vec2::new(11.0, 10.5));
+    let rival = place(&mut w, PREY, &hunter(), Vec2::new(12.0, 10.5));
+    let b = place(&mut w, HUNTER, &hunter(), Vec2::new(12.5, 10.5));
+    let kills = w.counters.kills_by_lineage.clone();
+    w.hunter_killed_by(a, prey);
+    let o = &w.organisms[a];
+    assert_eq!((o.alive, o.death, o.killer), (false, Some(DeathCause::FoughtBack), Some(w.organisms[prey].lineage)));
+    assert_eq!(w.counters.kills_by_lineage, kills, "no kill credited to the prey");
+    w.hunter_killed_by(b, rival);
+    assert_eq!(w.organisms[b].death, Some(DeathCause::Predation));
+}
+
+/// Playtest 6: the prey count behind the territory and rally warnings
+/// counted burrowed voles, poisonous herds and other predators, and warned
+/// only under half a prey animal per hunter. Only prey the pack can take
+/// counts now, and the warning compares what it feeds with the pack.
+#[test]
+fn the_prey_check_counts_only_prey_the_pack_can_take() {
+    let mut w = world();
+    let pack: Vec<usize> = (0..3).map(|k| place(&mut w, HUNTER, &hunter(), Vec2::new(10.5 + k as f32, 10.5))).collect();
+    for &i in &pack {
+        grown(&mut w, i);
+    }
+    let prey: Vec<usize> = (0..6).map(|k| place(&mut w, PREY, &walker(), Vec2::new(12.5, 8.5 + k as f32))).collect();
+    let rival = place(&mut w, PREY, &hunter(), Vec2::new(13.5, 10.5));
+    grown(&mut w, rival);
+    let c = Vec2::new(11.5, 10.5);
+    let all = w.prey_check(HUNTER, 0, c, 4.0).expect("a meat eaters' group");
+    assert_eq!((all.prey, all.members), (6, 3), "{all:?}");
+    // Down a burrow: out of reach.
+    w.organisms[prey[0]].sheltered = true;
+    w.organisms[prey[1]].sheltered = true;
+    let fewer = w.prey_check(HUNTER, 0, c, 4.0).unwrap();
+    assert_eq!(fewer.prey, 4);
+    assert!(fewer.feeds <= all.feeds);
+    // Six small walkers can't carry three hunters for good.
+    assert!(all.feeds < all.members, "{all:?}");
 }

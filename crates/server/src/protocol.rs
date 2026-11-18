@@ -885,6 +885,7 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             Overlaps => "overlaps",
             BadRadius => "bad_radius",
             OwnTarget(_) => "own_target",
+            NotAHunter(_) => "not_a_hunter",
             OutOfSight(_) => "target_out_of_sight",
             TooBig { .. } => "too_big",
             Sheltered(_) => "sheltered",
@@ -2228,6 +2229,7 @@ pub fn death_name(c: evo_sim::organism::DeathCause) -> &'static str {
         Journey => "journey",
         WinterSleep => "winter_sleep",
         Heat => "heat",
+        FoughtBack => "killed_by_prey",
     }
 }
 

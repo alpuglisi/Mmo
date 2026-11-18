@@ -28,6 +28,9 @@ fn busy_world() -> World {
     // would hold no cohorts (`staggered_busy_world_continues_exactly`
     // covers staggering).
     config.balance.decide_interval = 1.0;
+    // The world this test needs (harmful recessives, …) was found without
+    // the prey-scaled pack larder (version 58), which moves it.
+    config.balance.prey_larder = 0.0;
     config.scoring.catastrophes = true;
     config.scoring.catastrophe_first_year = 0;
     config.scoring.species_interval_days = 1;
@@ -515,6 +518,12 @@ fn balance56_off(b: &mut crate::Balance) {
 fn playtest5_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v57::OLD_VALUE;
     (b.dry_beds, b.drink_reach) = (old, old);
+    playtest6_off(b);
+}
+
+/// The playtest 6 predator tunable as snapshots before version 58 read it.
+fn playtest6_off(b: &mut crate::Balance) {
+    b.prey_larder = crate::serde_util::before_v58::OLD_VALUE;
 }
 
 /// Version 55 snapshots (before the playtest 5 balance rules) restore with
@@ -1773,4 +1782,25 @@ fn version_56_snapshots_restore_without_playtest5_survival() {
     let w = fixture_world();
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!((r.config.balance.dry_beds, r.config.balance.drink_reach), (1.0, 1.0));
+}
+
+/// Version 57 snapshots (before the playtest 6 predator rule) restore
+/// with it off, and are otherwise the same world.
+#[test]
+fn version_57_snapshots_restore_without_prey_larder() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v57();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 57);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.prey_larder, 0.0);
+    assert!(r.snapshot_v57() == old);
+    playtest6_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    // This version keeps it.
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.prey_larder, 1.0);
 }

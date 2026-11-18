@@ -158,6 +158,8 @@ pub enum CommandError {
     BadRadius,
     /// An attack order on one of the player's own organisms.
     OwnTarget(OrgId),
+    /// A plant eater can't be ordered to attack ([`HERBIVORE_ATTACK`]).
+    NotAHunter(OrgId),
     /// The target is farther than the possessed organism can see.
     OutOfSight(OrgId),
     /// The target is heavier than the attacker (with its pack-mates around)
@@ -222,6 +224,9 @@ impl fmt::Display for CommandError {
                 share * 100.0
             ),
             CommandError::OwnTarget(id) => write!(f, "organism {id} is yours; you can't attack your own animals"),
+            CommandError::NotAHunter(id) => {
+                write!(f, "organism {id} is a plant eater: it doesn't hunt (it fights back only when attacked)")
+            }
             CommandError::OutOfSight(id) => write!(f, "organism {id} is out of sight; get closer first"),
             CommandError::TooBig { mass, limit } => {
                 let kg = |x: f32| if x < 10.0 { format!("{x:.1}") } else { format!("{x:.0}") };
@@ -299,6 +304,9 @@ pub struct MatingPreview {
 /// How far past `World::attack_range` an attack order is given and kept,
 /// as a multiple of it.
 pub const ORDER_KEPT: f32 = 1.5;
+/// Carnivory below which an animal can't be ordered to attack
+/// (`World::possess_attack`): a plant eater.
+pub const HERBIVORE_ATTACK: f32 = 0.3;
 
 /// Foundings of at most this many founders keep their grace through their
 /// first winter when it would end late in autumn or during it
@@ -494,6 +502,11 @@ impl World {
         let q = &self.organisms[j];
         if q.owner == player || j == i {
             return Err(CommandError::OwnTarget(target));
+        }
+        // Plant eaters don't hunt (playtest 6: a possessed grazer one-shot a
+        // fox on orders); they fight back when attacked, by the strike rules.
+        if o.traits.carnivory < HERBIVORE_ATTACK {
+            return Err(CommandError::NotAHunter(id));
         }
         // As far as a standing order is kept (`World::settle_orders`): the
         // player's view lags the world by a second or two, and in a chase

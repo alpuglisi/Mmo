@@ -412,7 +412,9 @@ impl World {
     /// not after predation (the hunter leaves the carcass) or drowning.
     pub(super) fn leave_carrion(&mut self, i: usize, cause: DeathCause) {
         let carrion = self.config.balance.carrion;
-        if carrion > 0.0 && !matches!(cause, DeathCause::Drowning | DeathCause::Predation) {
+        // (A hunter killed fighting its prey left no carcass as predation
+        // and still doesn't.)
+        if carrion > 0.0 && !matches!(cause, DeathCause::Drowning | DeathCause::Predation | DeathCause::FoughtBack) {
             let o = &self.organisms[i];
             let lean = if cause == DeathCause::Starvation { 0.5 } else { 1.0 };
             let meat = o.mass() * self.config.balance.meat_per_kg * carrion * lean;
@@ -788,6 +790,17 @@ impl World {
         drink_from(&self.map, dt, &mut self.organisms[i]);
     }
 
+    /// Hunter `i` killed in its fight with prey `j`: by a plant eater, a
+    /// death fighting back (`DeathCause::FoughtBack`, not predation); by
+    /// another hunter, predation as before.
+    pub(super) fn hunter_killed_by(&mut self, i: usize, j: usize) {
+        if self.organisms[j].traits.carnivory <= super::decide::HUNTER_CARNIVORY {
+            self.kill_fighting_back(i, j);
+        } else {
+            self.kill_by(i, j);
+        }
+    }
+
     fn attack(&mut self, i: usize, j: usize, rng: &mut SimRng) {
         let (a, b) = (&self.organisms[i], &self.organisms[j]);
         // A hunter whose last prey broke free is still recovering.
@@ -884,7 +897,7 @@ impl World {
             let a = &mut self.organisms[i];
             a.health -= self.config.balance.fight_damage * prey_fights * rng.gen::<f32>();
             if a.alive && a.health <= 0.0 {
-                self.kill_by(i, j);
+                self.hunter_killed_by(i, j);
                 return;
             }
         }
@@ -911,7 +924,7 @@ impl World {
             a.needs.energy = (a.needs.energy - 8.0).max(0.0);
             a.health -= prey_power * 8.0 * rng.gen::<f32>();
             if a.alive && a.health <= 0.0 {
-                self.kill_by(i, j);
+                self.hunter_killed_by(i, j);
             }
             let b = &mut self.organisms[j];
             b.needs.energy = (b.needs.energy - 5.0).max(0.0);
@@ -1210,7 +1223,7 @@ impl World {
                     * lean_times(o.needs.hunger));
         // A player's pack shares its kills: in lean times the band's meals
         // carry a hungry member (`Balance::player_packs`, by the meat gut).
-        let diet = diet * (1.0 - player_pack_larder(&bal, o, self.band_size(o.owner)));
+        let diet = diet * (1.0 - player_pack_larder(&bal, o, self.pack_room(o.owner)));
         // Crowding: competition with many kin, felt by group-intolerant organisms.
         let crowd = 1.0 + bal.crowding * (o.kin_nearby as f32 - 8.0).max(0.0) * (1.0 - o.pheno[Gene::GroupTolerance]);
         // Competition in a lineage crowded past its soft cap
@@ -1618,19 +1631,39 @@ pub(crate) const LARDER_SPAN: f32 = 30.0;
 pub(crate) const BAND_SMALL: f32 = 60.0;
 /// Head count at which a player's pack no longer shares as a band.
 pub(crate) const BAND_CROWD: f32 = 100.0;
+/// With `Balance::prey_larder`: prey per hunter (plant eaters not the
+/// player's, per pack hunter of the player's) from which the larder is
+/// full, and at which it is gone: a pack grows as far as the prey there is
+/// carries it, and no further (playtest 6: a pack capped near 100 by the
+/// band rule couldn't compete; playtest 3: a larder at any size let a
+/// strong pack overshoot).
+pub(crate) const PREY_FULL: f32 = 20.0;
+/// Prey per hunter at which the larder is gone ([`PREY_FULL`]).
+pub(crate) const PREY_NONE: f32 = 8.0;
+
+/// `(PREY_FULL, PREY_NONE)`, overridable for studies with `EVO_PREY_FULL`
+/// and `EVO_PREY_NONE` (temporary).
+pub(crate) fn prey_per_hunter() -> (f32, f32) {
+    static K: std::sync::OnceLock<(f32, f32)> = std::sync::OnceLock::new();
+    *K.get_or_init(|| {
+        let v = |n: &str, d: f32| std::env::var(n).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
+        (v("EVO_PREY_FULL", PREY_FULL), v("EVO_PREY_NONE", PREY_NONE))
+    })
+}
 
 /// The share of hunger `o` is spared as a player's pack hunter whose
-/// owner has `band` animals: in lean times its band's kills carry it
-/// ([`PACK_LARDER`], from hunger [`LARDER_FROM`] to full at
-/// `LARDER_FROM + LARDER_SPAN`), by its meat gut and pack instinct, while
-/// the band is small ([`BAND_SMALL`] to [`BAND_CROWD`]). A fed one is
-/// spared nothing; 0 for wild animals, loners and with the rule off.
-pub(crate) fn player_pack_larder(bal: &crate::Balance, o: &Organism, band: usize) -> f32 {
+/// owner has `room` for it (0–1, `World::refresh_pack_room`: by the prey
+/// per hunter with `Balance::prey_larder`, else by the band's size): in
+/// lean times its band's kills carry it ([`PACK_LARDER`], from hunger
+/// [`LARDER_FROM`] to full at `LARDER_FROM + LARDER_SPAN`), by its meat gut
+/// and pack instinct. A fed one is spared nothing; 0 for wild animals,
+/// loners and with the rule off.
+pub(crate) fn player_pack_larder(bal: &crate::Balance, o: &Organism, room: f32) -> f32 {
     if !super::decide::player_pack(bal, o) {
         return 0.0;
     }
     let lean = ((o.needs.hunger - LARDER_FROM) / LARDER_SPAN).clamp(0.0, 1.0);
-    let small = ((BAND_CROWD - band as f32) / (BAND_CROWD - BAND_SMALL)).clamp(0.0, 1.0);
+    let small = room.clamp(0.0, 1.0);
     PACK_LARDER
         * lean
         * small

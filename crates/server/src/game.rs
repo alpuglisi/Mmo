@@ -395,10 +395,16 @@ pub const OFFLINE_IDLE_MINUTES: f64 = 10.0;
 pub const MIN_AUCTION_MINUTES: f64 = 5.0;
 
 /// A lineage is starving (`Game::lineage_warnings`) when this share of it
-/// died of hunger or thirst in a day…
-pub const STARVING_SHARE: f64 = 0.05;
-/// …and at least this many did.
+/// died of hunger or thirst in a day (2%: playtest 6's big lineages lost
+/// 20–75 a day for weeks under the old 5%)…
+pub const STARVING_SHARE: f64 = 0.02;
+/// …or at least this many did, whatever its size…
+pub const STARVING_FLOOR: u64 = 15;
+/// …and never fewer than this.
 pub const STARVING_MIN: u64 = 5;
+/// Cold deaths in a day that raise the cold warning (playtest 6: 11–23 a
+/// day in a severe winter, unflagged).
+pub const COLD_MIN: u64 = 5;
 /// Near the hard cap from this share of it (alerted once per approach)…
 pub const NEAR_CAP_SHARE: f64 = 0.9;
 /// …and alerted again only after dropping below this share.
@@ -4310,7 +4316,8 @@ impl Game {
         }
         self.attack_alerts.retain(|_, t| now.saturating_sub(*t) < window);
         self.attack_alerts.insert(key, now);
-        let text = format!("#{target} of your {theirs} is being hunted by a player's {mine} (#{attacker}).");
+        let hunter = self.name(a.owner);
+        let text = format!("#{target} of your {theirs} is being hunted by {hunter}'s {mine} (#{attacker}).");
         self.alert(owner, AlertKind::Attack, text, Some(target), out);
     }
 
@@ -4757,7 +4764,10 @@ impl Game {
             let (starved, thirst) = (n("starved"), n("thirst"));
             let died = starved + thirst;
             let base = e.alive as u64 + e.deaths.values().sum::<u64>();
-            if died >= STARVING_MIN && base > 0 && died as f64 >= STARVING_SHARE * base as f64 {
+            if died >= STARVING_MIN
+                && base > 0
+                && (died >= STARVING_FLOOR || died as f64 >= STARVING_SHARE * base as f64)
+            {
                 let litter = self.crowding_view(player).map_or(1.0, |c| c.litter);
                 let why = if litter >= FULL_LITTER {
                     "Litters are still full size, so the population cap isn't the cause: their ground can't feed them."
@@ -4786,15 +4796,23 @@ impl Game {
                     "Move groups to better ground (the Food layer shows it), split big herds, keep them near water."
                         .into()
                 };
-                out.push(LineageWarning {
-                    kind: "starving".into(),
-                    text: format!(
-                        "Your lineage is going hungry: on day {} {starved} starved and {thirst} died of thirst ({:.0}% of it). \
-                         {why} {advice}",
-                        r.day.max(1),
-                        100.0 * died as f64 / base as f64
-                    ),
-                });
+                // Said as it is: all thirst is no hunger (playtest 6).
+                let pct = 100.0 * died as f64 / base as f64;
+                let day = r.day.max(1);
+                let text = if starved == 0 {
+                    format!(
+                        "Your lineage is dying of thirst: on day {day} {thirst} died of thirst ({pct:.0}% of it). Keep groups \
+                         near water that lasts (lakes, big rivers); in a drought small pools and streams dry up first."
+                    )
+                } else if thirst == 0 {
+                    format!("Your lineage is going hungry: on day {day} {starved} starved ({pct:.0}% of it). {why} {advice}")
+                } else {
+                    format!(
+                        "Your lineage is going hungry and thirsty: on day {day} {starved} starved and {thirst} died of thirst \
+                         ({pct:.0}% of it). {why} {advice}"
+                    )
+                };
+                out.push(LineageWarning { kind: "starving".into(), text });
             }
             // Heat (playtest 5: about 45 summer deaths filed as "cold, heat or
             // winter sleep" with no word on why).
@@ -4813,11 +4831,30 @@ impl Game {
                 });
             }
         }
+        // Cold (playtest 6: 11–23 a day died of cold in a severe winter with
+        // no lineage alert).
+        if let Some((r, e)) =
+            self.history.back().and_then(|r| r.lineages.iter().find(|e| e.lineage == lineage).map(|e| (r, e)))
+        {
+            let cold = e.deaths.get("cold").copied().unwrap_or(0);
+            if cold >= COLD_MIN {
+                out.push(LineageWarning {
+                    kind: "cold".into(),
+                    text: format!(
+                        "The cold is killing your animals: {cold} died of cold on day {}. Fur, fat and bigger bodies hold \
+                         heat; a winter sleep (fattened first), burrows, forest cover or warmer, lower ground help.",
+                        r.day.max(1)
+                    ),
+                });
+            }
+        }
         // Being hunted (playtest 5: 5–21 eaten a day, and one alert all game).
         if let Some((day, by)) = self.hunted.get(&player) {
             let eaten: u64 = by.iter().map(|&(_, n)| n).sum();
             let alive = w.population_counts().get(lineage as usize).map_or(0, |c| c.alive) as u64;
-            if eaten >= HUNTED_MIN || (eaten >= 2 && eaten * 25 >= alive.max(1)) {
+            // Scaled with the lineage (playtest 6): 5 a day, or half a
+            // percent of a big one, or 4% of a small one.
+            if eaten >= HUNTED_MIN.max(alive / 200) || (eaten >= 2 && eaten * 25 >= alive.max(1)) {
                 let who: Vec<String> =
                     by.iter().take(3).map(|&(l, n)| format!("{} ({n})", self.hunter_words(l))).collect();
                 out.push(LineageWarning {
@@ -5143,9 +5180,13 @@ impl Game {
         }
         if let Some(p) = self.world.prey_check(player, group, center, radius) {
             data["prey_nearby"] = p.prey.into();
-            if p.prey * 2 < p.members {
-                warnings
-                    .push(format!("Only {} prey animals in or near this circle for {} hunters.", p.prey, p.members));
+            data["prey_feeds"] = p.feeds.into();
+            if p.feeds < p.members {
+                warnings.push(format!(
+                    "The prey your hunters can take in or near this circle ({} animals: no burrowers, poisonous kinds or \
+                     other hunters) feeds about {} of the group's {} for good; expect hunger.",
+                    p.prey, p.feeds, p.members
+                ));
             }
         }
         if let Some(m) = self.world.group_middle(player, group) {
@@ -5253,7 +5294,17 @@ impl Game {
                 match held {
                     Some((center, radius, what)) if g.members > 0 => {
                         let (x, y) = (center.x, center.y);
-                        let fix = if what == "territory" {
+                        // Mostly asleep: it can't be moved now (playtest 6:
+                        // a sleeping herd was told to move).
+                        let (mut n, mut asleep) = (0usize, 0usize);
+                        for o in self.world.organisms.iter().filter(|o| o.alive && o.owner == p && o.group == g.id) {
+                            n += 1;
+                            asleep += usize::from(o.dormancy.is_deep());
+                        }
+                        let sleeping = n > 0 && asleep * 2 >= n;
+                        let fix = if sleeping {
+                            "most of the group is asleep and moves only when it wakes; plan where it goes then"
+                        } else if what == "territory" {
                             "abandon it or move the group"
                         } else {
                             "migrate the group to better ground"
@@ -5288,20 +5339,26 @@ impl Game {
                         let outgrown = !bare && food.is_some_and(|f| f.supports < f.members);
                         if self.condition_begins((p, g.id, 2), outgrown) {
                             let f = food.expect("checked");
+                            let advice = if sleeping {
+                                "Most of the group is asleep and moves only when it wakes: split it, move it or claim more \
+                                 ground then."
+                            } else {
+                                "Split the group, move it, or claim more ground before they go hungry."
+                            };
                             texts.push(format!(
                                 "{name} has outgrown its {what} at ({x:.0}, {y:.0}): it feeds about {} of the group's {} \
-                                 animals now. Split the group, move it, or claim more ground before they go hungry.",
+                                 animals now. {advice}",
                                 f.supports, f.members
                             ));
                         }
                         let prey = self.world.prey_check(p, g.id, center, radius);
-                        let short = prey.is_some_and(|q| q.prey * 2 < q.members);
+                        let short = prey.is_some_and(|q| q.feeds < q.members);
                         if self.condition_begins((p, g.id, 3), short) {
                             let q = prey.expect("checked");
                             texts.push(format!(
-                                "Only {} prey animals in or near {name}'s {what} at ({x:.0}, {y:.0}) for {} hunters: \
-                                 move the pack to where prey is.",
-                                q.prey, q.members
+                                "The prey {name} can take in or near its {what} at ({x:.0}, {y:.0}) ({} animals) feeds about \
+                                 {} of its {} hunters for good: move the pack to where prey is, or split it.",
+                                q.prey, q.feeds, q.members
                             ));
                         }
                     }
@@ -5452,8 +5509,18 @@ impl Game {
                 } else {
                     String::new()
                 };
+                // Who ate them (playtest 6: only founders' deaths named the
+                // hunter).
+                let hunters = match self.hunted.get(&p) {
+                    Some((day, by)) if *day == record.day && !by.is_empty() => {
+                        let who: Vec<String> =
+                            by.iter().take(3).map(|&(l, n)| format!("{} ({n})", self.hunter_words(l))).collect();
+                        format!(" · eaten by {}", who.join(", "))
+                    }
+                    _ => String::new(),
+                };
                 let text = format!(
-                    "Day {}: {} born, {} died{}{eggs} · {} alive",
+                    "Day {}: {} born, {} died{}{hunters}{eggs} · {} alive",
                     // The day the births and deaths happened (the one just
                     // ended), counted from 1, as the vitals chart labels it.
                     record.day.max(1),
@@ -6239,6 +6306,7 @@ fn death_words(why: Why) -> &'static str {
         Why::Of(Some(DeathCause::Journey)) => "died on a journey",
         Why::Of(Some(DeathCause::WinterSleep)) => "died in its winter sleep",
         Why::Of(Some(DeathCause::Heat)) => "died of heat",
+        Why::Of(Some(DeathCause::FoughtBack)) => "was killed by its prey fighting back",
         Why::Of(None) => "died",
     }
 }
@@ -6262,6 +6330,7 @@ fn death_count_words(why: Why, n: usize) -> String {
         Why::Of(Some(DeathCause::Journey)) => "on a journey",
         Why::Of(Some(DeathCause::WinterSleep)) => "in their winter sleep",
         Why::Of(Some(DeathCause::Heat)) => "of heat",
+        Why::Of(Some(DeathCause::FoughtBack)) => "killed by their prey fighting back",
         Why::Of(None) => "of an unrecorded cause",
     };
     format!("{n} {what}")
