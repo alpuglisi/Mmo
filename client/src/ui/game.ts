@@ -684,6 +684,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   window.addEventListener('keydown', onKey);
   cleanups.push(() => window.removeEventListener('keydown', onKey));
 
+  // A group order's reply says what becomes of its brooding parents.
+  const broodingToast = (data: unknown) => {
+    const note = (data as { brooding_note?: string } | undefined)?.brooding_note;
+    if (note) model.toast('info', note);
+  };
   view.onClick = async (c) => {
     if (mode === 'migrate') {
       setMode('select');
@@ -696,6 +701,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (r?.ok) {
         model.toast('info', `${who} migrating toward (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? `: ${t.note}` : ''}`);
         if (t.warning) model.toast('error', `Migrate: ${t.warning}`);
+        broodingToast(r.data);
       } else if (r?.error) {
         model.toast('error', `Migrate: ${r.error.message}`);
       }
@@ -710,6 +716,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         const t = r.data as { x: number; y: number; radius: number; warning?: string; note?: string };
         model.toast('info', `${groupName(id)} gathering at (${t.x.toFixed(0)}, ${t.y.toFixed(0)}), within ${t.radius.toFixed(1)} tiles${t.note ? ` (${t.note})` : ''}`);
         if (t.warning) model.toast('error', `Rally: ${t.warning}`);
+        broodingToast(r.data);
       }
       return;
     }
@@ -728,6 +735,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         if (t.pending) model.toast('info', `${groupName(g.id)} is migrating to (${t.x.toFixed(0)}, ${t.y.toFixed(0)}): ${t.note ?? 'it claims the territory when it arrives'}`);
         else model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? ` (${t.note})` : ''}`);
         if (t.warning) model.toast('error', `Territory: ${t.warning}`);
+        broodingToast(r.data);
       }
       return;
     }

@@ -8520,6 +8520,74 @@ autumn, and late winter. The three searches are the old one, with
 
 `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31`: 11.93
 (± 0.11), the same as before. A new world's founding is unchanged.
+### Playtest 5: eggs and young
+
+Playtest 5 (`docs/playtest-5.md` M10 and its egg items) lost the warm
+egg-laying hibernator's eggs and young to its own orders:
+
+- a migrate, claim or rally order pulled brooding parents more than 12
+  tiles off their nests. The migration's pull (0.55 × obedience heed)
+  outranked guarding the nest (0.6), so the clutches chilled;
+- the young were left behind: only adults took group orders;
+- the year's last clutches chilled when their parents bedded down for
+  winter on them;
+- the starter drowned 2 founders on its lakeshore, struggling on toward its
+  old target when the water rose under it;
+- reinforcement clones kept generation 0 (a founder's free first winter).
+
+**`Balance::brood_care` (1)**, on by default from snapshot version 55
+(provisional; 52 is the heat death cause, 53 and 54 other changes), off at 0 for older saves (`serde_util::before_v55`):
+
+- **Brooders stay.** A parent on a nest takes no migrate, patrol, rally or
+  home order. Its pull back to the nest grows with its distance from it, up
+  to 1.2 at 6 tiles. Once the eggs hatch it follows the order again.
+- **The order says so.** The reply to a migrate, claim or rally order counts
+  the group's brooding parents (`brooding`) and says what becomes of them
+  (`brooding_note`, shown as a toast). With the tunable on, the note says
+  they stay on their nests until the eggs hatch. With it off, it says
+  "N clutches will be left behind and may chill".
+- **The young follow.** Weaned juveniles take their group's migration
+  order. Dependent young keep following their mothers, who migrate. When
+  they took the order themselves they outran their mothers and died on the
+  journey: 38 alive at the end of the measurement below (before the merge),
+  against 81 with
+  the tunable off.
+- **No late clutches.** A winter-sleeping egg layer conceives no clutch that
+  would hatch in the second half of the year (gestation plus incubation
+  after today).
+- **Out of the water.** An awake non-flyer on a tile too deep for it makes
+  for the nearest tile it can stand on, within 5 tiles, before anything
+  else. Sleeping animals are another item.
+- **Clones.** Reinforcements are a generation after the adult they copy.
+  They were already young adults.
+
+**Measured** (`examples/eggcare.rs`, 6 seeds). The warm incubated-egg
+hibernator (50 founders, obedience 0.85) is founded into grown 96×96
+worlds and ordered to migrate to a random point every 15 days for 240 days:
+
+| `brood_care` | Hatched | Chilled | Raided | Alive at day 240 |
+| --- | --- | --- | --- | --- |
+| 0 | 938 | 2,162 | 331 | 55 |
+| 1 | 1,058 | 184 | 90 | 94 |
+
+Chilled eggs fell from 2.3× the hatched count to 0.17×, so `egg_attendance`
+needs no retuning. About half as many clutches are laid, mostly because the
+late clutches are gone. Two parts were tested by switching each off, each
+on its own (before merging main, when 81 were alive with the tunable off):
+
+- with the late-clutch rule off, 1,194 eggs chilled;
+- with every juvenile taking the order, only 38 animals were alive at the
+  end (against 115 with no juvenile taking it). This was the cause of the
+  dependent-young rule above.
+
+Per seed, the number alive is noisy (2 to 24).
+
+**Starter.** `crates/sim/tests/founding_safety.rs` rebuilds the playtest's
+world (seed 37) and founds the starter design on day 30. All 20 founders
+are alive after 30 days with no drowning; the playtest's drowning didn't
+reproduce there. The case stays as a regression test, and the escape from
+the water covers what happened.
+
 ### Playtest 4: balance
 
 Playtest 4 (`docs/playtest-4.md`, findings 1, 4, 6, 13, 18, 23 here) still
@@ -8617,9 +8685,9 @@ first player's species, small player lineages into wild species, and the
 wild Red fox into the Meadow vole species. Re-founding charged full points
 for half the founders.
 
-**Sim rules, on by default from snapshot version 53** (taken as 52 and
-renumbered at merge after `DeathCause::Heat`), off at 0 for older saves
-(`serde_util::before_v53`):
+**Sim rules, on by default from snapshot version 56** (taken as 52 and
+renumbered at merge after versions 52–55), off at 0 for older saves
+(`serde_util::before_v56`):
 
 | Tunable (default) | Rule |
 | --- | --- |
@@ -8671,6 +8739,20 @@ The warm herds (Big, Broker) and the egg layer gain.
 Cold peaked at 503 animals and the flier died out on one seed, and the egg
 layer took 18. At 0.5 the fliers took 6 and the egg layer 15. At **0.25**
 the result is as above.
+
+**Wild cold-blooded species.** `predlong 4` on seeds 41–48, defaults
+against `--set cold_heat=0 --set thermo_hybrid=0`. No prey is lost on any
+seed either way. The marsh newts' lowest counts are 19–53 (20–45 with the
+rules off) and the toxic frogs' 38–42 (unchanged). Both lay abandoned eggs,
+so warm/cold fertility doesn't touch them. Fox and pack hunters survive 7
+and 8 of 8 (8 and 8 off; viable 7 and 8 either way).
+
+**Checks**:
+
+| Check | Result |
+| --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.77 (± 0.16; 11.82 with the five tunables off). Every lineage survives 12 of 12. |
+| tests, fmt, both clippy, client typecheck/test/build | pass |
 
 ## Genetics validation
 

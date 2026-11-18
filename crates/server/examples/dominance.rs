@@ -28,10 +28,10 @@
 //! - **Loophole** founds Rulebender5's small egg-incubating cold flier as a
 //!   half-size re-found (22 founders) on `--loophole-day` (default 334).
 //!
-//! Two arms on the same seeds. **Playtest 5 rules**: the version 53
+//! Two arms on the same seeds. **Playtest 5 rules**: the version 56
 //! tunables off (`thermo_hybrid`, `flight_upkeep`, `avoid_cap`,
 //! `cold_heat`, `species_credit`), or with `--baseline playtest2` playtest
-//! 2's (the version 43 to 53 rules off, the old soft cap), each founded at
+//! 2's (the version 43 to 56 rules off, the old soft cap), each founded at
 //! any price. **New rules**:
 //! today's defaults, each design fitted to today's prices by dropping
 //! founders.
@@ -284,7 +284,7 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         }
     }
     if !new_rules {
-        // Default: playtest 5's rules (the version 53 tunables off: cold
+        // Default: playtest 5's rules (the version 56 tunables off: cold
         // blood sterile with warm, no flight upkeep, uncapped learned
         // avoidance, no cold-blooded heat limit, species by cluster).
         let b = &mut g.world.config.balance;
