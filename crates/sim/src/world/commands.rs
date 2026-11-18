@@ -15,7 +15,7 @@ use crate::organism::{Action, Dormancy, OrgId, Sex};
 use crate::pathfinding::{enter_cost, Outcome};
 use crate::rng::{rng_for, stream};
 use crate::stats::Body;
-use crate::terrain::{passable, traverse, Map, Tile, Weather};
+use crate::terrain::{can_stand, traverse, Map, Tile, Weather};
 
 /// Organisms must physically meet for a directed mating.
 pub const MEETING_DISTANCE: f32 = 1.5;
@@ -54,10 +54,13 @@ pub enum GroupEvent {
     /// The group has no living members left: its migration, territory and
     /// rally are gone.
     Emptied { player: PlayerId, group: u8 },
-    /// The migration passed its deadline (`World::migration_timeout_ticks`)
-    /// without the group gathering at the target: the order is ended.
+    /// The migration stalled (`groups::MIGRATE_STALL_DAYS`) or passed its
+    /// hard limit (`World::migration_timeout_ticks`) without the group
+    /// gathering at the target: the order is ended.
     /// `median` is the median member's distance to the target then.
-    TimedOut { player: PlayerId, group: u8, target: Vec2, median: f32 },
+    /// `dormant_share` is the share of the group that was dormant then
+    /// (hibernating or estivating animals can't walk).
+    TimedOut { player: PlayerId, group: u8, target: Vec2, median: f32, dormant_share: f32 },
 }
 
 /// How an attack order ended on its own (`World::take_attack_events`). A
@@ -149,6 +152,8 @@ pub enum CommandError {
     OwnGrace {
         days_left: f32,
     },
+    /// `end_grace` with no grace to end.
+    NoGrace,
 }
 
 impl fmt::Display for CommandError {
@@ -198,12 +203,15 @@ impl fmt::Display for CommandError {
                     kg(*limit)
                 )
             }
-            CommandError::Sheltered(id) => write!(f, "organism {id} is safe in its burrow"),
+            CommandError::Sheltered(id) => {
+                write!(f, "organism {id} is down in its burrow, out of reach: wait for it to come out")
+            }
             CommandError::NewcomerGrace { days_left } => write!(
                 f,
                 "that lineage was founded only recently; it can't be attacked for another {:.0} days",
                 days_left.ceil()
             ),
+            CommandError::NoGrace => write!(f, "your lineage has no newcomer grace to end"),
             CommandError::OwnGrace { days_left } => write!(
                 f,
                 "your lineage is still under its newcomer grace; it can't attack other players for another {:.0} days",
@@ -352,7 +360,7 @@ impl World {
             mating::mismatch(&female.pheno, male.display()).max(mating::mismatch(&male.pheno, female.display()));
         let cost = mating::override_cost(mismatch, self.config.override_k);
         let failure_chance = mating::override_failure_chance(cost);
-        let fertility = mating::fertility_with(&female.genome, &male.genome, self.config.balance.egg_hybrid)
+        let fertility = mating::fertility_with(&female.genome, &male.genome, mating::Relief::of(&self.config.balance))
             * self.disease_fertility(f, m);
         (mismatch, cost, failure_chance, fertility)
     }
@@ -369,10 +377,9 @@ impl World {
         let (f, m) = if oa.sex == Sex::Female { (ia, ib) } else { (ib, ia) };
         let (mismatch, cost, failure_chance, fertility) = self.directed_terms(f, m);
         let (ga, gb) = (&oa.genome, &ob.genome);
-        let egg_hybrid = self.config.balance.egg_hybrid;
         let body_plan_gaps = mating::BODY_PLAN_GENES
             .iter()
-            .zip(mating::plan_weights(egg_hybrid))
+            .zip(mating::plan_weights(self.config.balance.egg_hybrid))
             .map(|(&g, w)| (g, (ga.expr(g) - gb.expr(g)).abs() * w))
             .filter(|&(_, gap)| gap > mating::BODY_PLAN_FULL)
             .collect();
@@ -381,7 +388,11 @@ impl World {
             cost,
             failure_chance,
             fertility,
-            body_plan_fertility: mating::fertility_from_gap(mating::fertility_gap(ga, gb, egg_hybrid)),
+            body_plan_fertility: mating::fertility_from_gap(mating::fertility_gap(
+                ga,
+                gb,
+                mating::Relief::of(&self.config.balance),
+            )),
             distance_fertility: mating::distance_fertility(ga.distance(gb)),
             body_plan_gaps,
             distance: oa.pos.dist(ob.pos),
@@ -505,25 +516,61 @@ impl World {
     /// twice the grace of the one before (`World::grace_start`): re-founding
     /// doesn't start it over.
     pub fn lineage_grace_left(&self, l: u32) -> Option<f32> {
-        let grace = self.config.balance.attack_grace;
-        if grace <= 0.0 {
+        let tpd = self.config.ticks_per_day.max(1) as u64;
+        self.lineage_grace_ticks(l).map(|left| left as f32 / tpd as f32)
+    }
+
+    /// Ticks of newcomer grace lineage `l` has left (`World::lineage_grace_left`).
+    /// None once its owner ended it (`World::end_grace`).
+    pub fn lineage_grace_ticks(&self, l: u32) -> Option<u64> {
+        if self.config.balance.attack_grace <= 0.0 {
             return None;
         }
         let owner = self.lineages.get(l as usize)?.owner;
         if owner == crate::WILD {
             return None;
         }
-        let tpd = self.config.ticks_per_day.max(1) as u64;
-        let length = ((grace * tpd as f32).round() as u64).max(self.grace_min_ticks);
         let start = match self.grace_starts.get(l as usize) {
             Some(&t) if self.grace_starts_cooldown == self.grace_cooldown() => t,
             _ => self.grace_start(l)?,
         };
-        if start == 0 {
+        if start == 0 || self.grace_waived.get(&owner).is_some_and(|&t| t >= start) {
             return None;
         }
-        let left = length.saturating_sub(self.tick.saturating_sub(start));
-        (left > 0).then(|| left as f32 / tpd as f32)
+        let left = self.grace_length().saturating_sub(self.tick.saturating_sub(start));
+        (left > 0).then_some(left)
+    }
+
+    /// How long a newcomer grace lasts in ticks: `Balance::attack_grace`
+    /// days, or `World::set_attack_grace_min_ticks` if that is longer.
+    pub fn grace_length(&self) -> u64 {
+        let tpd = self.config.ticks_per_day.max(1) as f32;
+        ((self.config.balance.attack_grace.max(0.0) * tpd).round() as u64).max(self.grace_min_ticks)
+    }
+
+    /// End the player's newcomer grace now (a predator's owner wants to
+    /// hunt): their animals may attack other players' and be attacked.
+    /// Re-founding within the cooldown doesn't bring it back
+    /// (`World::grace_start`). `NoGrace` if they have none.
+    pub fn end_grace(&mut self, player: PlayerId) -> Result<(), CommandError> {
+        let graced = (0..self.lineages.len() as u32)
+            .any(|l| self.lineages[l as usize].owner == player && self.lineage_grace_ticks(l).is_some());
+        if !graced {
+            return Err(CommandError::NoGrace);
+        }
+        self.grace_waived.insert(player, self.tick);
+        Ok(())
+    }
+
+    /// When each player ended their grace (`World::end_grace`), for the
+    /// host to save; not in the snapshot.
+    pub fn grace_waived(&self) -> &std::collections::BTreeMap<PlayerId, u64> {
+        &self.grace_waived
+    }
+
+    /// Restore [`World::grace_waived`] (from the host's saved game).
+    pub fn set_grace_waived(&mut self, waived: std::collections::BTreeMap<PlayerId, u64>) {
+        self.grace_waived = waived;
     }
 
     /// When lineage `l`'s newcomer grace started (`World::lineage_grace_left`):
@@ -544,10 +591,12 @@ impl World {
         Some(start)
     }
 
-    /// How soon after one founding the owner's next still continues its grace.
+    /// How soon after one founding the owner's next still continues its
+    /// grace: twice the grace's whole length (its real-time minimum
+    /// included), so a re-founding never starts afresh a grace that would
+    /// still be running; the time left carries over.
     fn grace_cooldown(&self) -> u64 {
-        let tpd = self.config.ticks_per_day.max(1) as f32;
-        (2.0 * self.config.balance.attack_grace.max(0.0) * tpd).round() as u64
+        2 * self.grace_length()
     }
 
     /// Recomputes every lineage's grace start (after founding or restoring).
@@ -560,6 +609,7 @@ impl World {
     /// says (the server's minimum of real minutes; not saved).
     pub fn set_attack_grace_min_ticks(&mut self, ticks: u64) {
         self.grace_min_ticks = ticks;
+        self.rebuild_grace_starts();
     }
 
     /// Whether hunter `a` is kept off prey `b` by founding grace
@@ -630,8 +680,10 @@ impl World {
             Outcome::Partial => Ok(goal),
             Outcome::None => match nearest {
                 Some(k) => Ok(center(k)),
-                None if tile(from) == tile(goal) => Ok(goal),
-                None => Err(CommandError::Unreachable),
+                // The search never left the start (an organism stranded on a
+                // tile it can't use): no better guess than the target; it
+                // struggles toward it as before.
+                None => Ok(goal),
             },
         }
     }
@@ -801,7 +853,7 @@ impl World {
         let key = (player, group);
         self.migrate_orders.insert(key, target);
         let deadline = self.tick + self.migration_timeout_ticks(middle.map_or(0.0, |m| m.dist(target)));
-        self.group_plans.migrations.insert(key, MigrationPlan { issued_tick: self.tick, deadline_tick: deadline });
+        self.group_plans.migrations.insert(key, MigrationPlan::new(self.tick, deadline));
         self.territories.remove(&key);
         self.rallies.remove(&key);
         self.group_plans.settles.remove(&key);
@@ -821,6 +873,7 @@ impl World {
         let old = self.group_plans.migrations.get(&key).copied();
         let target = self.command_migrate_group(player, group, target)?;
         if let (Some(old), Some(new)) = (old, self.group_plans.migrations.get_mut(&key)) {
+            // The new way starts its headway afresh, from now.
             new.issued_tick = old.issued_tick;
             new.deadline_tick = new.deadline_tick.max(old.deadline_tick);
         }
@@ -930,14 +983,16 @@ impl World {
     }
 
     /// Whether at least half of `bodies` could stand on tile `k` even with
-    /// its ice gone (any tile with no bodies to check).
+    /// its ice gone, without swimming (`terrain::can_stand`: a strong
+    /// swimmer can cross a lake, but a herd can't live in one); any tile
+    /// with no bodies to check.
     pub(super) fn standable_tile(&self, bodies: &[Body], k: usize) -> bool {
         if bodies.is_empty() {
             return true;
         }
         let tile = Tile { ice: 0.0, ..self.map.tiles[k].clone() };
         let g = &self.map.ground()[k];
-        2 * bodies.iter().filter(|b| passable(b, g, &tile)).count() >= bodies.len()
+        2 * bodies.iter().filter(|b| can_stand(b, g, &tile)).count() >= bodies.len()
     }
 
     /// The point nearest `target` (itself if it qualifies) on a tile at

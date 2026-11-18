@@ -139,7 +139,10 @@ async fn a_long_running_worlds_history_stays_bounded() {
     };
     assert!(genes(true).iter().all(|&n| n > 30) && !genes(true).is_empty(), "{mine}");
     assert!(genes(false).iter().all(|&n| n <= 3), "{mine}");
-    let capped = get(addr, "/api/leaderboard/history?limit=100000&genes=false").await;
+    let anonymous = get(addr, "/api/leaderboard/history?limit=100000&genes=false").await;
+    assert_eq!(anonymous.as_array().unwrap().len(), 60, "logged out: at most 60 days");
+    let (_, capped) =
+        json_req(addr, Method::GET, "/api/leaderboard/history?limit=100000&genes=false", Some(&tokens[0]), None).await;
     assert_eq!(capped.as_array().unwrap().len(), history::MAX_LIMIT);
     assert!(capped.as_array().unwrap().iter().all(|d| d["lineages"]
         .as_array()

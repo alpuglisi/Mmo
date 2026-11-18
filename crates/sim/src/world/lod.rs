@@ -1507,15 +1507,22 @@ impl World {
                 0.0
             };
             let attrition = bal.adult_mortality * rep.pace;
-            // Winter sleep's toll on warm hibernators (`Balance::dormancy_toll`).
-            let toll = if x.dormant
-                && matches!(rep.probe.traits.seasonal.winter, Some((crate::stats::WinterForm::Hibernation, _)))
-            {
-                let cap = bal.fat_capacity * (1.0 + rep.fat_stores);
-                super::seasonal::dormancy_toll_rate(&bal, self.config.days_per_season() as f32, c.fat / cap.max(1e-3))
-            } else {
-                0.0
+            // Winter sleep's toll (`Balance::dormancy_toll`, `winter_toll`);
+            // juveniles pay it as first-year sleepers, below.
+            let toll = match rep.probe.traits.seasonal.winter {
+                Some((form, _)) if x.dormant && super::seasonal::pays_toll(&bal, form) => {
+                    let cap = bal.fat_capacity * (1.0 + rep.fat_stores);
+                    super::seasonal::dormancy_toll_rate(
+                        &bal,
+                        self.config.days_per_season() as f32,
+                        c.fat / cap.max(1e-3),
+                        false,
+                    )
+                }
+                _ => 0.0,
             };
+            let first_year = if bal.winter_toll > 0.0 { 1.5 } else { 2.0 };
+            let toll_cause = if bal.winter_toll > 0.0 { DeathCause::WinterSleep } else { DeathCause::Exposure };
 
             // Deaths by bucket and sex.
             let mat = rep.maturity as f64;
@@ -1540,7 +1547,7 @@ impl World {
                 let causes: [(f32, DeathCause); 7] = [
                     (old, DeathCause::OldAge),
                     (if adult { attrition } else { cfg.juvenile_mortality }, DeathCause::Attrition),
-                    (if adult { toll } else { 2.0 * toll }, DeathCause::Exposure),
+                    (if adult { toll } else { first_year * toll }, toll_cause),
                     (if adult { 0.0 } else { larval }, DeathCause::Attrition),
                     (starve, DeathCause::Starvation),
                     (thirst, DeathCause::Thirst),

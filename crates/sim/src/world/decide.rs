@@ -183,8 +183,8 @@ fn body_plan_gap(a: &Genes, b: &Genes) -> f32 {
 
 /// `mating::fertility_gap` from [`Genes`]: [`body_plan_gap`] with each
 /// body-plan difference weighted (`mating::plan_weights`).
-fn fertility_gap(a: &Genes, b: &Genes, w: &[f32; PLAN]) -> f32 {
-    let morph = crate::morph::morph_terms(morph_key(a), morph_key(b)).1;
+fn fertility_gap(a: &Genes, b: &Genes, w: &[f32; PLAN], eye_weight: f32) -> f32 {
+    let morph = crate::morph::morph_fertility_gap(morph_key(a), morph_key(b), eye_weight);
     a[..PLAN].iter().zip(&b[..PLAN]).zip(w).map(|((x, y), w)| (x - y).abs() * w).fold(0.0, f32::max).max(morph)
 }
 
@@ -346,6 +346,19 @@ pub(crate) fn max_prey_mass(hunter: &Organism, coop: f32) -> f32 {
 pub(crate) const POSSESS_DRINK: f32 = 60.0;
 /// Tiles within which water counts as near for [`POSSESS_DRINK`].
 pub(crate) const POSSESS_WATER_NEAR: i32 = 8;
+
+/// Thirst (0–1) past which an animal with water near drinks before it eats
+/// (`Balance::drink_priority`).
+pub(crate) const PARCHED: f32 = 0.85;
+/// Tiles within which water counts as near for [`PARCHED`].
+pub(crate) const PARCHED_WATER_NEAR: i32 = 6;
+/// What drinking gains at full parchedness (thirst 0.95 and above) with
+/// water near: more than hunger, fattening and courting can give together.
+pub(crate) const PARCHED_BONUS: f32 = 1.5;
+
+/// Swimming at which a hunter chases prey into water deeper than it can
+/// wade (`Balance::dry_sites`).
+pub(crate) const WADE_SWIM: f32 = 0.5;
 
 /// Most pack-mates a pack hunt counts (`pack_scale`, `World::pack_allies`).
 pub(crate) const PACK_MAX: u16 = 4;
@@ -859,18 +872,25 @@ impl World {
             x * x * (3.0 - 2.0 * x)
         };
         let hide = if can_dig { 1.0 - cfg.balance.desperate_risk * desperate } else { 1.0 };
-        // Drinking first when parched (`Balance::drink_priority`): the
-        // parched drink with a threat in sight, fattening gives way, and
-        // drinking gains on everything else.
-        let thirsty = cfg.balance.drink_priority.clamp(0.0, 1.0) * desperate;
-        let calm_water = calm + (1.0 - calm) * thirsty;
-        let drink_bonus = 0.6 * cfg.balance.drink_priority.max(0.0) * desperate;
-        let fatten = fatten * (1.0 - thirsty);
-
+        // Drinking first when parched beside water (`Balance::drink_priority`):
+        // past thirst 0.85 with water within a few tiles, thirst outranks
+        // hunger (playtest 3: starving herbivores died of thirst grazing
+        // next to a lake).
+        let drink_bonus = if cfg.balance.drink_priority > 0.0 && thirst > PARCHED {
+            let x = ((thirst - PARCHED) / 0.1).clamp(0.0, 1.0);
+            let near = self.map.can_drink_at(o.pos) || self.map.find_water(o.pos, PARCHED_WATER_NEAR).is_some();
+            if near {
+                PARCHED_BONUS * cfg.balance.drink_priority * x
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
         let mut options: [(Action, f32); 17] = [
             (Action::Flee, threat * (1.3 - boldness) * flee_weight * (1.0 - reckless) * tame * hide),
             (Action::Graze, hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 } + 0.4 * fatten),
-            (Action::Drink, thirst.powf(1.5) * 1.3 * calm_water + if thirst > 0.8 { 0.5 } else { 0.0 } + drink_bonus),
+            (Action::Drink, thirst.powf(1.5) * 1.3 * calm + if thirst > 0.8 { 0.5 } else { 0.0 } + drink_bonus),
             (Action::Rest, tired * tired * 1.1 * calm),
             (Action::Bask, if o.traits.warm { 0.0 } else { (1.0 - o.activity) * 0.7 }),
             // A threat it has seen puts courting on hold (`courtship_caution`);
@@ -1267,8 +1287,18 @@ impl World {
                         seen.threat_from = j;
                     }
                 }
-                let reachable =
-                    || matches!(self.map.traverse_at(&o.traits.body, q.pos, false), Traverse::Passable { .. });
+                // A weak swimmer doesn't chase prey into water deeper than it
+                // can wade (`Balance::dry_sites`): playtest 3's hunters drowned
+                // in summer chases.
+                let wades = || {
+                    let body = &o.traits.body;
+                    cfg.balance.dry_sites <= 0.0
+                        || body.swim >= WADE_SWIM
+                        || self.map.tile_at(q.pos).water_depth <= 0.8 * body.height.max(0.1)
+                };
+                let reachable = || {
+                    matches!(self.map.traverse_at(&o.traits.body, q.pos, false), Traverse::Passable { .. }) && wades()
+                };
                 if v.hunter && q.mass() < v.prey_cap && !q.sheltered && !self.grace_spares(o, q) && reachable() {
                     // Learned avoidance of bright prey where warning coloration holds.
                     let avoid = if q.pheno[Gene::Coloration] > 0.6 {
@@ -1337,10 +1367,13 @@ impl World {
             && q.can_breed(self.tick)
             && gd(&|gd| gd < cfg.mate_distance)
             && q.needs.breeding > 20.0
-            && mating::fertility_from_gap(if cfg.balance.egg_hybrid > 0.0 {
-                fertility_gap(&v.genes, genes, &mating::plan_weights(cfg.balance.egg_hybrid))
-            } else {
-                gap
+            && mating::fertility_from_gap({
+                let relief = mating::Relief::of(&cfg.balance);
+                if relief.is_none() {
+                    gap
+                } else {
+                    fertility_gap(&v.genes, genes, &mating::plan_weights(relief.egg), relief.eye_weight())
+                }
             }) > 0.0
             // A female in a taken breeding territory isn't courted either
             // (`Balance::breeding_territory`): she can't be bred there.

@@ -189,11 +189,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   zoomInBtn.addEventListener('click', () => view.zoomBy(1.4));
   zoomOutBtn.addEventListener('click', () => view.zoomBy(1 / 1.4));
   const migrateBtn = tool('migrate', 'migrate', 'Migrate…', 'Click the map to send your adults there (the group picked in the group menu, or all)');
-  const clearMigBtn = tool('clear-migration', 'clear', 'Clear', 'Cancel the migration (the group picked in the group menu, or all)');
+  const clearMigBtn = tool('clear-migration', 'clear', 'Clear', 'Cancel the orders: migration, territory and rally (the group picked in the group menu, or all)');
   // Group commands: pick a group, claim ground for it, split it.
   const groupSelect = h('select', { class: 'tool group-select', id: 'group-select', title: 'Which of your groups the group commands act on', 'aria-label': 'Group' });
   const territoryBtn = tool('territory', 'territory', 'Territory…', 'Claim a territory for the group: tap its center, then its edge');
-  const rallyBtn = tool('rally', 'rally', 'Rally…', 'Gather the group at a point: tap where; it holds there for a few days');
+  const rallyBtn = tool('rally', 'rally', 'Rally…', 'Gather the group at a point: tap where; it holds there until the rally lapses (at least 5 minutes; the group card shows when)');
   const splitBtn = tool('split-group', 'split', 'Split', 'Split the group in two (the far half across its widest spread)');
   const pinBtn = tool('pin-view', 'pin', 'Pin view', 'Pin the server view window (what you can see of others) to the camera center');
   const pinLabel = pinBtn.querySelector('.tool-label')!;
@@ -628,7 +628,19 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   followBtn.classList.add('active');
   followBtn.addEventListener('click', () => view.setFollow(!view.follow));
   migrateBtn.addEventListener('click', () => setMode(mode === 'migrate' ? 'select' : 'migrate'));
-  clearMigBtn.addEventListener('click', () => void send(clearMigrationMsg(groupChoice)));
+  clearMigBtn.addEventListener('click', async () => {
+    // Every standing order of the picked group (or all): the migration,
+    // a territory and a rally.
+    const groups = groupsOf(model.state).filter((g) => groupChoice === 'all' || g.id === groupChoice);
+    const done: string[] = [];
+    if (groups.some((g) => g.migration)) done.push('migration');
+    await send(clearMigrationMsg(groupChoice));
+    for (const g of groups) {
+      if (g.territory && (await send({ type: 'abandon_territory', group: g.id })).ok) done.push(`${groupName(g.id)}'s territory`);
+      if (g.rally && (await send({ type: 'cancel_rally', group: g.id })).ok) done.push(`${groupName(g.id)}'s rally`);
+    }
+    model.toast('info', done.length > 0 ? `Cleared: ${done.join(', ')}` : 'No orders to clear');
+  });
   let pinned = false;
   pinBtn.addEventListener('click', async () => {
     const r = pinned ? await send({ type: 'clear_view' }) : await send({ type: 'set_view', x: view.cam.x, y: view.cam.y, radius: 24 });
@@ -651,10 +663,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const rs = await Promise.all(msgs.map((m) => send(m)));
       // The server echoes the target it used: on land, possibly moved off water.
       const r = rs.find((x) => x.ok) ?? rs[0];
-      const t: { x: number; y: number; note?: string } = (r?.data as { x: number; y: number; note?: string } | undefined) ?? c;
+      const t: { x: number; y: number; note?: string; warning?: string } = (r?.data as { x: number; y: number; note?: string; warning?: string } | undefined) ?? c;
       const who = groupChoice === 'all' ? 'Adults' : `${groupName(groupChoice)} adults`;
       if (r?.ok) {
         model.toast('info', `${who} migrating toward (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? `: ${t.note}` : ''}`);
+        if (t.warning) model.toast('error', `Migrate: ${t.warning}`);
       } else if (r?.error) {
         model.toast('error', `Migrate: ${r.error.message}`);
       }
@@ -683,8 +696,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       setMode('select');
       const r = await send(step.claim);
       if (r.ok) {
-        const t = r.data as { x: number; y: number; radius: number; warning?: string };
-        model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})`);
+        const t = r.data as { x: number; y: number; radius: number; warning?: string; note?: string };
+        model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? ` (${t.note})` : ''}`);
         if (t.warning) model.toast('error', `Territory: ${t.warning}`);
       }
       return;
@@ -1226,10 +1239,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const graceDays = wild ? undefined : protectedPlayers.get(o.owner) ?? (flagged ? 0 : undefined);
     inspDetails.replaceChildren(
       h('h3', {}, h('span', { class: 'swatch', style: `background:${cssColor(ownerColor(o.owner))}` }), `#${o.id} · ${ownerName}`, wild ? null : plateBadge(o.owner),
-        graceDays !== undefined ? h('span', { class: 'pill protected-pill', id: 'insp-protected', title: 'A newcomer\'s lineage: players can\'t order attacks on it yet' }, 'protected newcomer') : null),
+        graceDays !== undefined ? h('span', { class: 'pill protected-pill', id: 'insp-protected', title: 'A newcomer\'s lineage: other players\' animals can\'t attack it yet, nor it theirs' }, 'protected newcomer') : null),
       dl([['Action', actionText(o.action)], ['Sex', o.sex], ['Stage', o.matured ? 'adult' : 'juvenile'], ['Lineage', String(o.lineage)],
         ['Position', `${o.x.toFixed(1)}, ${o.y.toFixed(1)}`], ['Body plan', o.look ? describeLook(o.look) : '—'],
-        ...(graceDays !== undefined ? [['Protected', graceDays > 0 ? `newcomer grace, ${span(graceDays * ticksPerDay)} left: no attack orders on it` : 'newcomer grace: no attack orders on it'] as [string, string]] : [])]),
+        ...(graceDays !== undefined ? [['Protected', graceDays > 0 ? `newcomer grace, ${span(graceDays * ticksPerDay)} left: other players' animals can't attack it, nor it theirs` : 'newcomer grace: other players\' animals can\'t attack it, nor it theirs'] as [string, string]] : [])]),
       h('p', { class: 'muted small' }, 'Only what can be seen: needs and health of other players\' organisms are hidden.'),
     );
     const poisonous = (model.state?.poisonous ?? []).includes(o.lineage);
@@ -1237,16 +1250,19 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     // Orders reach 8 tiles (the server's `target_out_of_sight` beyond that).
     const reach = hunter ? Math.hypot(hunter.x - o.x, hunter.y - o.y) <= ATTACK_RANGE : false;
     const guarded = graceDays !== undefined;
-    keyed(inspActions, `other:${o.id}:${wild}:${hunter?.id ?? ''}:${reach}:${poisonous}:${guarded}`, () => [
+    const burrowed = o.burrowed === true;
+    keyed(inspActions, `other:${o.id}:${wild}:${hunter?.id ?? ''}:${reach}:${poisonous}:${guarded}:${burrowed}`, () => [
+      burrowed && h('p', { class: 'muted small', id: 'insp-burrowed' }, 'Down in its burrow: it can\'t be attacked on orders until it comes out, and hunters mostly can\'t reach it.'),
       poisonous && h('p', { class: 'notice bad small', id: 'insp-poisonous' }, hunter
         ? 'This animal looks poisonous to you: your kind has been poisoned eating its kind.'
         : 'This animal looks poisonous: your kind has been poisoned eating its kind.'),
       !!hunter && h('button', {
-        id: 'btn-attack', class: 'danger', disabled: guarded || !reach,
+        id: 'btn-attack', class: 'danger', disabled: guarded || burrowed || !reach,
         title: guarded ? 'A protected newcomer: it can\'t be attacked on orders until its grace ends'
+          : burrowed ? 'In its burrow: wait for it to come out'
           : reach ? '' : `#${hunter.id} is too far away: get within ${ATTACK_RANGE} tiles`,
         onclick: () => void attackWith(hunter, o.id),
-      }, guarded || reach ? `Attack with #${hunter.id}` : `Attack with #${hunter.id} (too far)`),
+      }, burrowed ? `Attack with #${hunter.id} (in its burrow)` : guarded || reach ? `Attack with #${hunter.id}` : `Attack with #${hunter.id} (too far)`),
       wild ? h('p', { class: 'muted small' }, 'Wild organisms have no owner to consent to a mating.')
         : h('button', { id: 'btn-ask-mating', onclick: () => { matingForm.setPartner(o.id); showTab('matings'); } }, 'Request mating…'),
       h('button', { class: 'secondary', onclick: () => { view.setFollow(false); view.centerOn(o.x, o.y); } }, 'Center'),
@@ -1749,7 +1765,24 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       retireEl.open = false;
     }
   });
-  append(tabs.lineage, [lineageExtinct, retireEl, statsEl,
+  // End the newcomer grace early (playtest 3: predators never got to hunt). One element, shown while graced.
+  const endGraceBtn = h('button', { type: 'button', id: 'end-grace', class: 'danger' }, 'End my grace now');
+  const endGraceEl = h('details', { id: 'lineage-end-grace', class: 'retire' },
+    h('summary', {}, 'End the newcomer grace'),
+    h('p', { class: 'muted small' },
+      'While the grace lasts, other players\' animals can\'t attack yours, and yours can\'t attack theirs, by order or on instinct. ',
+      'A hunter needs prey: end it to hunt other players\' animals now. They can hunt yours from then on, and founding again soon after won\'t bring it back.'),
+    endGraceBtn);
+  endGraceEl.hidden = true;
+  endGraceBtn.addEventListener('click', async () => {
+    if (!window.confirm('End your newcomer grace? Other players\' animals can attack yours from now on. This can\'t be undone.')) return;
+    const r = await send({ type: 'end_grace' });
+    if (r.ok) {
+      model.toast('info', 'Your newcomer grace has ended: your animals may hunt other players\' now, and be hunted.');
+      endGraceEl.open = false;
+    }
+  });
+  append(tabs.lineage, [lineageExtinct, retireEl, endGraceEl, statsEl,
     h('h3', { title: 'Split a herd or pack into groups with their own orders: migrate one, have another hold a territory' }, 'Groups'), groupsEl,
     h('h3', {}, 'Legacy leaderboard'), h('p', { class: 'muted small', id: 'legacy-explain' }, LEGACY_EXPLAIN), boardEl, h('h3', { title: 'Legacy standings per spring, summer, autumn and winter of the world\'s year (the Ranks tab has the ranked seasons, a competition of several weeks)' }, 'By time of year'), seasonsEl,
     h('h3', {}, 'My organisms'), listEl, listMore]);
@@ -1817,6 +1850,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       ...(ramp ? [['Season weight', h('span', { id: 'ramp-weight' }, ramp)] as [string, string | Node]] : []),
     ]));
     if (cap.explain) statsEl.append(h('p', { class: `cap-note small${cap.level === 'ok' ? ' muted' : ''}`, id: 'cap-note' }, cap.explain));
+    // Lineage-wide warnings (hunger crash, near the hard cap, starving territories), as the alerts say them.
+    const warnings = mine?.warnings ?? [];
+    if (warnings.length) {
+      statsEl.append(h('ul', { class: 'lineage-warnings', id: 'lineage-warnings', role: 'status' },
+        ...warnings.map((w) => h('li', { class: `lineage-warning warn-${w.kind}`, 'data-kind': w.kind }, '⚠ ', w.text))));
+    }
     // A founded lineage with nobody left: say so plainly, and where to see why.
     // One element, shown or hidden (rebuilding it each state would eat clicks on its button).
     lineageExtinct.hidden = !(s.lineage !== null && s.population === 0);
@@ -1826,6 +1865,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       lineageExtinct.querySelector('.extinct-text')?.replaceChildren(h('strong', {}, `You retired lineage #${s.lineage}.`), ' Its animals have left the world.');
     }
     retireEl.hidden = !(s.lineage !== null && s.population > 0);
+    endGraceEl.hidden = !s.grace;
     renderGroups(s);
     const lb = s.leaderboard;
     keyed(boardEl, JSON.stringify(lb) + nameplatesKey(), () => lb.rows.length === 0
@@ -1893,10 +1933,14 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         home && h('p', { class: 'muted small home-range' }, home),
         h('div', { class: 'row wrap group-actions' },
           h('button', { class: 'secondary small', 'data-action': 'pick', onclick: () => setGroupChoice(g.id) }, groupChoice === g.id ? 'Picked' : 'Pick'),
-          h('button', { class: 'secondary small', 'data-action': 'territory', title: wait > 0 ? 'Claimed recently: wait a little' : `Radius up to ${g.max_radius.toFixed(1)} tiles`,
+          h('button', { class: 'secondary small', 'data-action': 'territory', title: wait > 0 ? `Claimed recently: it can claim again in ${span(wait)}` : `Radius up to ${g.max_radius.toFixed(1)} tiles`,
             disabled: wait > 0 || g.members === 0, onclick: () => { setGroupChoice(g.id); setMode('territory'); if (narrow()) setSheet(false); } }, 'Claim territory…'),
-          g.territory && h('button', { class: 'secondary small', 'data-action': 'abandon', onclick: () => void send({ type: 'abandon_territory', group: g.id }) }, 'Abandon territory'),
-          h('button', { class: 'secondary small', 'data-action': 'rally', title: 'Gather the group at a point you tap; it holds there for a few days',
+          g.territory && h('button', { class: 'secondary small', 'data-action': 'abandon', onclick: async () => {
+            const r = await send({ type: 'abandon_territory', group: g.id });
+            if (r.ok) model.toast('info', `${groupName(g.id)} gave up its territory (it can claim again once the claim wait is over)`);
+            else if (r.error) model.toast('error', `Abandon: ${r.error.message}`);
+          } }, 'Abandon territory'),
+          h('button', { class: 'secondary small', 'data-action': 'rally', title: 'Gather the group at a point you tap; it holds there until the rally lapses (at least 5 minutes; the group card shows when)',
             disabled: g.members === 0, onclick: () => { setGroupChoice(g.id); setMode('rally'); if (narrow()) setSheet(false); } }, 'Rally…'),
           g.rally && h('button', { class: 'secondary small', 'data-action': 'cancel-rally', title: `Lapses on its own in ${span(rallyLeft(g, tick))}`,
             onclick: () => void send({ type: 'cancel_rally', group: g.id }) }, 'Cancel rally'),

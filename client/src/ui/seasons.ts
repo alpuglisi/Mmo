@@ -57,7 +57,9 @@ export function ordinal(n: number): string {
 
 /** "2nd of 5 · 12.3%". */
 export function placementText(p: PlayerPlacement): string {
-  return `${ordinal(p.rank)} of ${p.of} · ${formatValue(p.category, p.value)}`;
+  // First in a tie the rules award nobody: no title, and it says so.
+  const untitled = p.rank === 1 && p.title === false ? ' (tied, no title)' : p.title ? ' ♛' : '';
+  return `${ordinal(p.rank)} of ${p.of}${untitled} · ${formatValue(p.category, p.value)}`;
 }
 
 /** "Season 3 · days 121–180 · 12 days left" (days 1-based, as everywhere in the client). */
@@ -124,7 +126,9 @@ export function myRecord(history: PlayerSeason[]): MyRecord {
   // History is newest first: walk oldest first so a tie keeps the earliest.
   for (const s of [...history].reverse()) {
     for (const p of s.placements) {
-      if (p.rank === 1) {
+      // Titles are the season's winners (the server's `title`), as the hall of fame counts them:
+      // a first place in a tie the rules award nobody is not one. Older servers: rank 1.
+      if (p.title ?? p.rank === 1) {
         titles += 1;
         if (p.category === 'legacy') crowns += 1;
       }

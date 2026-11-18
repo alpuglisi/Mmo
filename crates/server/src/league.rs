@@ -192,6 +192,7 @@ impl SeasonRecord {
                     rank: r.rank,
                     value: r.value,
                     of: s.rows.len(),
+                    title: self.head.winners.iter().any(|w| w.category == s.category && w.player == player),
                 })
             })
             .collect();
@@ -213,6 +214,12 @@ pub struct PlayerPlacement {
     pub value: f64,
     /// Players ranked in the category.
     pub of: usize,
+    /// Whether this place won the category's title: one of the season's
+    /// `winners` (a rank-1 tie the rules award nobody, as in survival, is
+    /// first without a title). Record, hall of fame and seasons all count
+    /// titles from the winners.
+    #[serde(default)]
+    pub title: bool,
 }
 
 /// One season of a player's history.
@@ -840,6 +847,11 @@ mod tests {
         let r = t.clone().finish("w", 1, 1, name);
         assert!(r.head.winners.iter().all(|w| w.category != Category::Survival));
         assert_eq!(r.standings[4].rows.len(), 2, "still ranked");
+        // First, but no title: the player's record says so (one source: the winners).
+        let mine = r.player_season(1).unwrap();
+        let surv = mine.placements.iter().find(|p| p.category == Category::Survival).unwrap();
+        assert_eq!((surv.rank, surv.title), (1, false));
+        assert!(mine.placements.iter().any(|p| p.category == Category::Legacy && p.title));
         t.add_survival(1);
         let r = t.finish("w", 1, 1, name);
         let s: Vec<PlayerId> =

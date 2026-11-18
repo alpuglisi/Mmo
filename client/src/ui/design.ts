@@ -17,12 +17,13 @@ import { defaultMorphology, sameMorphology, type Morphology } from '../morpholog
 import type { BirthSpec, FoundResponse, GeneCatalog, GeneInfo, PlayerId, SpeciesList, ThermoSpec, WorldSummary } from '../protocol';
 import { hybridAdvice } from '../hybrid';
 import { foundingHint } from '../foodHint';
+import { adultMass, flight, geneValue } from '../bodyMath';
 import { avatarView } from './avatarView';
 import { createBodyBuilder, type BodyBuilder, type BuilderChange } from './builder/builder';
 import type { BuilderPreset } from './builder/presets';
 import { h } from './dom';
 import { readMode, writeMode, type EditorMode } from './editorMode';
-import { caption, TRAIT_TEXT, type Level } from './traitText';
+import { caption, kg, TRAIT_TEXT, type Level } from './traitText';
 import { traitEnds, traitName } from './traitNames';
 import { visionReadoutView } from './visionReadout';
 
@@ -332,6 +333,14 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       h('p', { class: 'small muted hybrid-confidence', id: 'design-hybrid-confidence' }, a.confidence));
   }
 
+  /** The body's points in words: cold blood and body size (smaller than the default or past the free size). */
+  function bodyParts(body: number): string[] {
+    if (!(body > 0)) return [];
+    const cold = spec.thermo === 'cold' ? cat.cost_cold_blooded ?? 0 : 0;
+    const size = body - cold;
+    return [cold > 0 ? `cold blood ${cold.toFixed(1)}` : '', size > 0.05 ? `body size ${size.toFixed(1)}` : ''].filter(Boolean);
+  }
+
   /** Redraw from the design; `full` (default) also recomputes costs, captions and validation. */
   function update(full = true): void {
     avatar.update(spec, spec.morphology);
@@ -347,7 +356,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     bar.classList.toggle('over', frac > 1 + 1e-5);
     const extras = [
       c.morph > 0 ? `body plan ${c.morph.toFixed(1)}` : '',
-      c.body > 0 ? `cold blood / small body ${c.body.toFixed(1)}` : '',
+      ...bodyParts(c.body),
     ].filter(Boolean);
     breakdown.textContent = [`traits ${c.traits.toFixed(1)}`, `offspring ${c.litter.toFixed(1)}`, `extra founders ${c.founders.toFixed(1)}`, ...extras].join(' · ');
     // Most of the budget unspent (the starting design): say so before the player founds a bare-minimum animal.
@@ -355,6 +364,13 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     unspent.textContent = left > cat.budget / 2
       ? `${left.toFixed(1)} points still unspent. The starting design is a sturdy herbivore ready for its first winter: raise the traits that suit the world, or try a preset in Builder mode.`
       : left > 0.05 ? `${left.toFixed(1)} points left to spend.` : left >= -1e-3 ? 'Every point spent.' : '';
+    // Wings a heavy body can't use cost points and do nothing: say so.
+    const wings = geneValue(spec, 'wings');
+    if (wings > 0.25 && !flight(spec).glide) {
+      unspent.textContent += ` Wings do nothing on a ${kg(adultMass(spec))} body: too heavy to fly or glide, so their points are wasted.`;
+    } else if (wings > 0.5 && !flight(spec).fly) {
+      unspent.textContent += ` At ${kg(adultMass(spec))} the body is too heavy to fly: its wings only glide.`;
+    }
     renderHybrid();
     const food = foundingHint(payload(), world);
     foodBox.textContent = food.text;

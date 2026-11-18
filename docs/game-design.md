@@ -182,7 +182,7 @@ Birth mode is part of the body plan, but counts for less than the other body-pla
 
 **Body size** is free only in a middle band (from the default up to 3.6 kg). Smaller bodies cost points (more breeders on the same food), and so do bigger ones: a big body outgrows most predators, which its food need alone did not offset (playtest 2: player herbivores of 29–54 kg that no predator could take).
 
-**Eyes and the body plan.** Each step in eye count adds 0.1 to the body-plan gap used for fertility, so a design far from the usual two eyes is sterile with most animals. **Changing:** in playtest 3, five eyes bought full reproductive isolation (and 360° vision) for 3 points.
+**Eyes and the body plan.** Each step in eye count adds 0.1 to the body-plan gap for kinship but only 0.04 for fertility (playtest 3: five eyes had bought full reproductive isolation, and 360° vision, for 3 points; an extra eye now costs 3 points).
 
 **Interbreeding check.** The builder asks the server which living lineages a design's founders could breed with: founders sampled with their individual variation against sampled adults of each lineage, giving a fertility range (not the best pair), the share of fertile pairs and a drift risk (how close a sterile pairing is to becoming fertile as lineages drift). Player lineages are never labelled wild.
 
@@ -222,12 +222,12 @@ The map has distinct biomes, changing weather and seasons, so each organism pick
 
 | Strategy | How it works | Benefit | Cost or risk |
 | --- | --- | --- | --- |
-| Hibernation | Dormant through winter on stored fat | Almost no winter food needed; safe from weather | Must fatten in fall; den can be found; no winter breeding; a dormancy toll (a warm sleeper dies with an 8% chance over a whole winter, twice that in its first year, up to twice again as its fat runs out; playtest 3 measured ~25–30% a winter); 6 days after waking before it can breed; dearer to design (12 points per unit) |
+| Hibernation | Dormant through winter on stored fat | Almost no winter food needed; safe from weather | Must fatten in fall; den can be found; no winter breeding; about 1 in 10 sleepers die in the den over a winter (more of the young and the lean; brumators too; founders sleep their first winter free); after waking, days of recovery before breeding; wakers spread over the first days of spring; dearer to design |
 | Migration | Travels between seasonal ranges | Always in good conditions | Dangerous journeys; needs navigation and stamina |
 | Year-round active | No seasonal change | Breeds and forages all year; holds territory | Faces winter head-on; needs cold traits or a mild biome |
 | Estivation | Dormant through summer heat or drought | Survives deserts and dry seasons | Loses the summer |
 
-**Brumation** (the cold-blooded counterpart of hibernation) has the 6-day waking lag but not the toll, and costs half as much. **Changing:** playtest 3's winner was a cold-blooded, brumating, toxic flier that stayed flat through winters.
+**Brumation** (the cold-blooded counterpart of hibernation) has the 6-day waking lag and, since playtest 3, the same winter toll (about 1 in 10 a winter), and costs 10 points a unit against hibernation's 12 (it was 6). Playtest 3's winner was a cold-blooded, brumating, toxic flier that stayed flat through winters; in the scripted replay it is weaker under the new rules but still the strongest design (README, *Playtest 3: balance*).
 
 **Optional add-ons:** food caching (raidable), seasonal coat (energy cost per molt), fat storage (slower), timed breeding (spring births, narrow window), short-term torpor (cheaper, weaker than hibernation).
 

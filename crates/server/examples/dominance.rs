@@ -1,12 +1,13 @@
-//! Playtest 2's runaway, replayed: does the dominant design (egg-laying,
-//! toxic but drab, hibernating burrowing herbivore founded late in winter
-//! with reinforcements) still take a third of the map under the new rules,
-//! and is it still viable?
+//! The playtests' dominant designs, replayed: do playtest 2's egg-laying,
+//! toxic-but-drab hibernating burrower (founded late in winter with
+//! reinforcements) and playtest 3's cold-blooded, brumating, toxic flier
+//! still run away under the new rules, and are they still viable?
 //!
 //! `cargo run --release -p evo-server --example dominance -- [--seeds N]
-//!  [--first-seed N] [--days D] [--size N] [--late-year Y]`
+//!  [--first-seed N] [--days D] [--size N] [--late-year Y] [--flier-day D]
+//!  [--baseline playtest2]`
 //!
-//! Four players through the server's own rules (`Game`: founding with the
+//! Five players through the server's own rules (`Game`: founding with the
 //! winter provision, the renown shop, seasons) on the standard world with
 //! its wild species:
 //!
@@ -19,12 +20,15 @@
 //! - **Eggs** founds LateComer's design on the first day of winter of year
 //!   `--late-year` (default 1, the second year), and buys reinforcements
 //!   whenever the shop sells them, as LateComer did.
+//! - **Flier** founds PocketNomad3's design (playtest 3's winner) on
+//!   `--flier-day` (default 150).
 //!
-//! Two arms on the same seeds. **Old rules**: the playtest 2 rules
-//! (`egg_hybrid`, `age_spread`, `dormancy_toll`, `emergence_lag` off; soft
-//! cap steepness 4, ceiling 2×, crowding hunger 0.3) and the old design
-//! prices (founded at any price). **New rules**: today's defaults, each
-//! design fitted to today's prices by dropping founders.
+//! Two arms on the same seeds. **Round 3 rules**: playtest 3's rules
+//! (`eye_hybrid`, `winter_toll`, `wake_spread` off, `dormancy_toll` 0.08),
+//! or with `--baseline playtest2` playtest 2's (the version 43 rules off
+//! too, the old soft cap), each founded at any price. **New rules**:
+//! today's defaults, each design fitted to today's prices by dropping
+//! founders.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -40,7 +44,8 @@ const STEADY: PlayerId = 1;
 const BIG: PlayerId = 2;
 const BROKER: PlayerId = 3;
 const EGGS: PlayerId = 4;
-const NAMES: [&str; 4] = ["Steady", "Big", "Broker", "Eggs"];
+const FLIER: PlayerId = 5;
+const NAMES: [&str; 5] = ["Steady", "Big", "Broker", "Eggs", "Flier"];
 const SEASON: u64 = 60;
 
 struct Args {
@@ -49,10 +54,13 @@ struct Args {
     days: u64,
     size: usize,
     late_year: u64,
+    flier_day: u64,
+    playtest2_baseline: bool,
 }
 
 fn args() -> Args {
-    let mut a = Args { seeds: 4, first_seed: 1, days: 840, size: 128, late_year: 1 };
+    let mut a =
+        Args { seeds: 4, first_seed: 1, days: 840, size: 128, late_year: 1, flier_day: 150, playtest2_baseline: false };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         let mut v = || it.next().unwrap_or_else(|| panic!("{k} needs a value"));
@@ -62,6 +70,8 @@ fn args() -> Args {
             "--days" => a.days = v().parse().expect("--days"),
             "--size" => a.size = v().parse().expect("--size"),
             "--late-year" => a.late_year = v().parse().expect("--late-year"),
+            "--flier-day" => a.flier_day = v().parse().expect("--flier-day"),
+            "--baseline" => a.playtest2_baseline = v() == "playtest2",
             _ => panic!("unknown argument {k}"),
         }
     }
@@ -151,6 +161,23 @@ fn broker() -> FounderDesign {
         .founders(40)
 }
 
+/// PocketNomad3's winner (`docs/playtest-3-logs/PocketNomad3.md`): a
+/// cold-blooded, brumating, toxic, honestly coloured 4 kg flier with four
+/// eyes.
+fn flier() -> FounderDesign {
+    use evo_sim::design::{HornForm, MorphDesign};
+    use Gene::*;
+    FounderDesign::new("Flier", Thermo::Cold, BirthType::IncubatedEggs, 3)
+        .with(BodySize, 0.5)
+        .with(Wings, 0.8)
+        .with(Swimming, 0.5)
+        .with(Toxins, 0.6)
+        .with(Coloration, 0.6)
+        .with(Brumation, 0.7)
+        .with_morph(MorphDesign { eye_count: 4, horn_size: 0.4, horn_form: HornForm::Curved, ..MorphDesign::default() })
+        .founders(20)
+}
+
 /// `d` with as many of its founders as fit today's prices.
 fn fitted(mut d: FounderDesign) -> FounderDesign {
     while d.point_cost() > DESIGN_BUDGET + 1e-3 && d.founders > 2 {
@@ -189,9 +216,16 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
     let world = build_world(&WorldSettings { seed, width: a.size, height: a.size, ..Default::default() });
     let mut g = Game::new(world, GameConfig::default());
     if !new_rules {
+        // `--arms 2` (default): round 3's rules, before playtest 3's
+        // (version 43: toll per season for warm hibernators only, eyes
+        // counted fully, everyone waking on the first spring day).
         let b = &mut g.world.config.balance;
-        (b.egg_hybrid, b.age_spread, b.dormancy_toll, b.emergence_lag) = (0.0, 0.0, 0.0, 0.0);
-        (b.lineage_crowding, b.crowding_ceiling, b.crowding_hunger) = (4.0, 2.0, 0.3);
+        (b.eye_hybrid, b.winter_toll, b.wake_spread, b.dormancy_toll) = (0.0, 0.0, 0.0, 0.08);
+        if a.playtest2_baseline {
+            // `--baseline playtest2`: the rules of playtest 2.
+            (b.egg_hybrid, b.age_spread, b.dormancy_toll, b.emergence_lag) = (0.0, 0.0, 0.0, 0.0);
+            (b.lineage_crowding, b.crowding_ceiling, b.crowding_hunger) = (4.0, 2.0, 0.3);
+        }
     }
     for (k, n) in NAMES.iter().enumerate() {
         g.set_name(k as PlayerId + 1, n);
@@ -215,6 +249,9 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
     let mut records = Vec::new();
     let mut adults_by_day: Vec<usize> = Vec::new();
     for day in 0..a.days {
+        if day == a.flier_day {
+            found(&mut g, FLIER, flier(), &mut o);
+        }
         if founded.is_none() && day >= a.late_year * year && g.world.season() == Season::Winter {
             found(&mut g, EGGS, eggrunner(), &mut o);
             founded = Some(day);
@@ -239,7 +276,7 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
                 records.push(r);
             }
         }
-        for p in 1..=4 {
+        for p in 1..=5 {
             let alive = g.world.owner_count(p);
             let peak = o.peak_alive.entry(p).or_default();
             *peak = (*peak).max(alive);
@@ -295,7 +332,7 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
 
 fn main() {
     let a = args();
-    for d in [steady(), big(), broker(), eggrunner()] {
+    for d in [steady(), big(), broker(), eggrunner(), flier()] {
         let f = fitted(d.clone());
         println!(
             "{}: {:.1} points at today's prices, {} of {} founders fit",
@@ -331,7 +368,8 @@ fn main() {
         }
     });
     let results = results.into_inner().unwrap();
-    for (new, title) in [(false, "Old rules"), (true, "New rules")] {
+    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Round 3 rules (playtest 3)" };
+    for (new, title) in [(false, old_title), (true, "New rules")] {
         let os: Vec<&Outcome> = results.iter().filter(|r| r.1 == new).map(|r| &r.2).collect();
         let n = os.len().max(1) as f64;
         let seasons: u32 = os.iter().map(|o| o.seasons).sum();
@@ -344,7 +382,7 @@ fn main() {
         println!(
             "  player   founders  final share  peak share  mean share*  peak alive  final alive  extinct  titles*"
         );
-        for p in 1..=4u32 {
+        for p in 1..=5u32 {
             let avg = |f: &dyn Fn(&Outcome) -> f64| os.iter().map(|o| f(o)).sum::<f64>() / n;
             println!(
                 "  {:<8} {:>8.0}  {:>10.1}%  {:>9.1}%  {:>10.1}%  {:>10.0}  {:>11.0}  {:>7}  {}/{}",

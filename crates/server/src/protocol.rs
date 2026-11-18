@@ -160,6 +160,10 @@ pub enum ClientMsg {
     /// once. Renown, ledger, records and the old lineage's history stay.
     /// Data: `{removed}`.
     RetireLineage { lineage: u32 },
+    /// End your lineage's newcomer grace now (`World::end_grace`): your
+    /// animals may attack other players' and be attacked. `no_grace` when
+    /// there is none.
+    EndGrace,
     /// Group command: every member of group `from` joins group `into`
     /// (default 0); `from`'s orders end. Data: `{moved}`.
     MergeGroups {
@@ -221,6 +225,10 @@ pub enum ClientMsg {
         unblock: Option<PlayerId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         auto_decline: Option<bool>,
+        /// The whole block list at once (replacing it), applied before
+        /// `block` and `unblock`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocked: Option<Vec<PlayerId>>,
     },
     /// Your balance and recent ledger entries (newest first, at most `limit`,
     /// default 50). Data: [`LedgerView`].
@@ -313,6 +321,7 @@ impl ClientMsg {
             ClientMsg::SetNameplate { .. } => "set_nameplate",
             ClientMsg::NameSpecies { .. } => "name_species",
             ClientMsg::Nameplates => "nameplates",
+            ClientMsg::EndGrace => "end_grace",
             ClientMsg::Resync => "resync",
             ClientMsg::WatchSeason { .. } => "watch_season",
         }
@@ -356,14 +365,10 @@ pub const COMMAND_NAMES: &[&str] = &[
     "resync",
     "watch_season",
     "offer_to_lineage",
-    "retire_lineage",
-    "renown_shop",
-    "buy_mating_slot",
-    "reinforce",
-    "compatibility",
     "set_nameplate",
     "name_species",
     "nameplates",
+    "end_grace",
 ];
 
 /// The known command named `t`, as a static name (for replies to messages
@@ -837,6 +842,7 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             Sheltered(_) => "sheltered",
             NewcomerGrace { .. } => "newcomer_grace",
             OwnGrace { .. } => "own_grace",
+            NoGrace => "no_grace",
         };
         let info = ErrorInfo::new(code, e.to_string());
         match e {
@@ -1165,9 +1171,9 @@ pub struct GroupView {
     /// target by then (absent: no migration).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration_deadline_tick: Option<u64>,
-    /// Where the group settles after arriving from a migration: members
-    /// outside the circle drift back into it until `expires_tick` (absent:
-    /// not settling). Not a confinement.
+    /// The home the group keeps where its last migration arrived: members
+    /// outside the circle drift back into it until the group's next order
+    /// (`expires_tick` is then `u64::MAX`; absent: none). Not a confinement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settle: Option<RallyView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1239,6 +1245,11 @@ pub struct NearbyOrganism {
     /// player's animal may attack it, nor it theirs); absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protected: Option<bool>,
+    /// `Some(true)` while it is down in its burrow, where attack orders are
+    /// refused (`sheltered`) and hunters mostly can't reach it; absent
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burrowed: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1547,6 +1558,10 @@ pub struct LineageStats {
     /// bearers): what "pregnant" means for them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eggs: Option<EggsView>,
+    /// Lineage-wide warnings now (hunger or thirst crash, near the hard
+    /// cap, starving inside territories), most urgent first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<LineageWarning>,
     /// Legacy share per recorded day, oldest first.
     pub legacy: Vec<LegacyPoint>,
     /// Recent alerts, newest last.
@@ -1563,6 +1578,15 @@ pub struct RampView {
     pub weight: f64,
     /// Days from founding to counting in full.
     pub days: u64,
+}
+
+/// A lineage-wide warning (`lineage_stats.warnings`); the same goes out as
+/// an alert when it starts.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LineageWarning {
+    /// `starving`, `near_cap` or `territory_starving`.
+    pub kind: String,
+    pub text: String,
 }
 
 /// A player lineage in its newcomer grace (`WorldSummary::protected`).
@@ -2034,6 +2058,7 @@ pub fn death_name(c: evo_sim::organism::DeathCause) -> &'static str {
         Recessive => "recessive",
         Disease => "disease",
         Journey => "journey",
+        WinterSleep => "winter_sleep",
     }
 }
 
@@ -2088,6 +2113,7 @@ impl NearbyOrganism {
             matured: o.matured,
             look: Appearance::of(o),
             protected: None,
+            burrowed: o.sheltered.then_some(true),
         }
     }
 }
@@ -2105,6 +2131,7 @@ mod tests {
         // "`possess`, `order_move`, … `watch_season` at line 1 column 25"
         let names: std::collections::BTreeSet<&str> = list.split('`').skip(1).step_by(2).collect();
         let known: std::collections::BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
+        assert_eq!(known.len(), COMMAND_NAMES.len(), "a name listed twice");
         assert_eq!(names, known, "{err}");
         // And the web client has a label for each (`client/src/errors.ts`).
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../client/src/errors.ts");

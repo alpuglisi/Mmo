@@ -76,7 +76,7 @@ const withPlan = (part: Parameters<typeof bodyPlan>[1]) => (d: CaptionDesign, _l
   return note ? `${base} · ${note}` : base;
 };
 
-function kg(m: number): string {
+export function kg(m: number): string {
   return m < 10 ? `${m.toFixed(1)} kg` : `${Math.round(m)} kg`;
 }
 
@@ -438,8 +438,8 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
   hibernation: strategy(
     'Sleeps through winter on stored fat.',
     'off: stays active all winter',
-    'hibernates: sleeps winter on autumn fat; some die asleep',
-    'deep hibernator: cheap sleep, some die in it; breeds ~6 days after waking',
+    'hibernates: sleeps winter on fat; ~1 in 10 die asleep; breeds 6 days after waking',
+    'deep hibernator: cheap winter, but ~1 in 10 die asleep (young, lean more); late spring breeding',
     (d, level, base) => {
       if (level === 'low') return base;
       if (cold(d)) {
@@ -453,8 +453,8 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
   brumation: strategy(
     'Winter dormancy that wakes with the weather.',
     'off: stays active all winter',
-    'brumates: dormant while cold, wakes on warm days',
-    'deep brumation: cheap dormancy; breeds ~6 days after waking',
+    'brumates: dormant while cold; ~1 in 10 die asleep; breeds 6 days after waking',
+    'deep brumation: cheap dormancy, but ~1 in 10 die asleep; no winter breeding',
     (d, level, base) => {
       if (level === 'low' || cold(d)) return base;
       return on(d, 'hibernation') ? 'unused: a warm-blooded body hibernates instead' : 'mismatch: a warm-blooded body burns fat while dormant';

@@ -336,8 +336,19 @@ impl ApiError {
         Self { status, code: code.into(), message: message.into(), detail: None }
     }
 
+    /// A request without a known session token. Sessions end on logout,
+    /// when idle or too old, and when the server restarts without a clean
+    /// stop (it saves them only then): the message says to log in again,
+    /// for API clients that don't know (the web client already does).
     fn unauthorized() -> Self {
-        Self::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or unknown session token")
+        let mut e = Self::new(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "missing or unknown session token: please log in again (POST /api/login). Sessions end on logout, \
+             after being idle, and when the server restarts.",
+        );
+        e.detail = Some(serde_json::json!({ "relogin": true }));
+        e
     }
 
     fn busy() -> Self {
@@ -639,7 +650,9 @@ async fn leaderboard_history(
     let query = crate::history::DailyQuery {
         from_day: q.from,
         to_day: q.to,
-        limit: q.limit.unwrap_or(30).clamp(1, crate::history::MAX_LIMIT),
+        // Logged out: at most `PUBLIC_HISTORY_LIMIT` days (a whole history
+        // per anonymous request was an easy bandwidth amplifier).
+        limit: history_limit(q.limit, player != evo_sim::WILD),
         genes,
     };
     let mut records = w.store.daily_range(&query).await.map_err(ApiError::internal)?;
@@ -649,6 +662,17 @@ async fn leaderboard_history(
         }
     }
     Ok(Json(records))
+}
+
+/// Most days `/api/leaderboard/history` gives without a login.
+const PUBLIC_HISTORY_LIMIT: usize = 60;
+
+/// The days `/api/leaderboard/history` returns for `?limit=`: 30 by
+/// default, at most [`PUBLIC_HISTORY_LIMIT`] logged out and
+/// `history::MAX_LIMIT` logged in.
+fn history_limit(asked: Option<usize>, logged_in: bool) -> usize {
+    let most = if logged_in { crate::history::MAX_LIMIT } else { PUBLIC_HISTORY_LIMIT };
+    asked.unwrap_or(30).clamp(1, most)
 }
 
 /// Genes anyone can judge by looking at the animals, the only ones
@@ -1485,7 +1509,15 @@ async fn season_player(
 
 #[cfg(test)]
 mod tests {
-    use super::{malformed_id, public_genes};
+    use super::{history_limit, malformed_id, public_genes};
+
+    #[test]
+    fn the_history_limit_is_capped_tighter_without_a_login() {
+        assert_eq!(history_limit(None, false), 30);
+        assert_eq!(history_limit(Some(999_999_999), false), 60);
+        assert_eq!(history_limit(Some(999_999_999), true), crate::history::MAX_LIMIT);
+        assert_eq!(history_limit(Some(0), true), 1);
+    }
 
     #[test]
     fn rivals_gene_means_are_coarse_looks_only() {

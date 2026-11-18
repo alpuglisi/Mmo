@@ -103,7 +103,8 @@ export function designPayload(d: EditorDesign, cat: GeneCatalog): DesignSpec {
  * The starting design's departures from the gene defaults: a sturdy, social,
  * cautious herbivore ready for its first winter. A bigger body, a close herd
  * and less boldness are free; fur, fat stores and hibernation cost 9 points,
- * which leaves 91 of the 100 for the player (body size up to 0.5 is free). Measured with the server's
+ * a third egg 2.5 more, which leaves 86 of the 100 for the player (body size
+ * up to 0.5 is free). Measured with the server's
  * founding path (`cargo run --release -p evo-server --example
  * starter_survival`): docs/starter-design.md.
  */
@@ -122,8 +123,12 @@ export function newEditorDesign(cat: GeneCatalog): EditorDesign {
   return {
     name: '',
     thermo: 'warm',
-    birth: 'live',
-    litter_size: 2,
+    // Incubated eggs, so the starter is its own species: as a live bearer
+    // of 3.6 kg it was 100% fertile with the wild Steppe antelope and was
+    // absorbed into it (playtest 3). Three to a clutch keeps its growth
+    // close to the live bearer's (`examples/starter_survival`).
+    birth: 'incubated_eggs',
+    litter_size: 3,
     traits,
     founders: cat.base_founders,
     morphology: morphologyFromTraits(traits),
