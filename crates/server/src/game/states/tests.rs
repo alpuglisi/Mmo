@@ -167,6 +167,7 @@ mod old {
             balance: g.balance(player),
             escrow,
             grace: g.grace_view(player),
+            poisonous: Vec::new(),
         })
     }
 

@@ -1351,7 +1351,11 @@ impl Game {
                 if !repeat {
                     self.alert_attacked(player, organism, target, out);
                 }
-                Ok(Some(serde_json::json!({ "organism": organism, "target": target })))
+                let mut data = serde_json::json!({ "organism": organism, "target": target });
+                if let Some(w) = self.world.attack_warning(organism, target) {
+                    data["warning"] = w.into();
+                }
+                Ok(Some(data))
             }
             ClientMsg::Release { organism } => self.world.release(player, organism).map(|_| None).map_err(e),
             ClientMsg::Migrate { x, y, group } => {
@@ -3134,7 +3138,7 @@ impl Game {
         if t.owner == WILD || t.owner == player {
             return;
         }
-        let kind = |l: u32| w.lineages.get(l as usize).map_or("an animal", |x| x.name.as_str()).to_string();
+        let kind = |l: u32| w.lineages.get(l as usize).map_or("animals", |x| x.name.as_str()).to_string();
         let (owner, theirs, mine) = (t.owner, kind(t.lineage), kind(a.lineage));
         // One alert per attacker lineage and victim in a while.
         let window = (self.cfg.attack_alert_minutes * 60_000.0 / self.cfg.tick_ms.max(1.0)).round() as u64;
@@ -3201,17 +3205,20 @@ impl Game {
             if need < NEED_ALERT - NEED_EASED {
                 self.need_alerted.remove(&o.id);
             } else if need >= NEED_ALERT && !self.need_alerted.contains_key(&o.id) {
-                needy.push((p, o.id, o.needs.thirst, o.needs.hunger, o.order.is_some()));
+                // Already broken off to drink or eat (the sim's own rule:
+                // urgency, or water near with `Balance::drink_priority`).
+                let tending = matches!(o.action, evo_sim::organism::Action::Drink | evo_sim::organism::Action::Graze);
+                needy.push((p, o.id, o.needs.thirst, o.needs.hunger, o.order.is_some(), tending));
             }
         }
-        for (p, id, thirst, hunger, walking) in needy {
+        for (p, id, thirst, hunger, walking, tending) in needy {
             self.need_alerted.insert(id, day);
             let (what, act) = if thirst >= hunger {
                 (format!("parched (thirst {thirst:.0})"), "drink")
             } else {
                 (format!("starving (hunger {hunger:.0})"), "eat")
             };
-            let tail = if walking && thirst.max(hunger) >= urgency {
+            let tail = if walking && (tending || thirst.max(hunger) >= urgency) {
                 format!("it has broken off your order to {act} and goes back to it afterwards")
             } else if walking {
                 format!("it keeps to your order until the need reaches {urgency:.0}, then stops to {act}; walk it to water or food, or release it")
@@ -5060,6 +5067,9 @@ mod tests {
     #[test]
     fn possessed_needs_raise_an_alert_and_the_sim_lets_severe_ones_win() {
         let (mut g, a, _) = game();
+        // The urgency rule alone: with `drink_priority` a possessed animal
+        // this near water breaks off already at thirst 60.
+        g.world.config.balance.possess_drink = 0.0;
         let id = a[0];
         // Start it a few tiles from water, on open ground: too far to drink
         // on its first steps, near enough to reach water within the day.
@@ -7404,6 +7414,7 @@ mod tests {
             balance: g.balance(player),
             escrow: g.escrow(player),
             grace: g.grace_view(player),
+            poisonous: (0..g.world.lineages.len() as u32).filter(|&l| g.world.looks_poisonous_to(player, l)).collect(),
         }
     }
 
@@ -7411,7 +7422,10 @@ mod tests {
     /// connection, some views pinned (one at the map's edge, one off it),
     /// one possessed organism and an offer.
     fn crowded(cfg: GameConfig) -> Game {
-        let world = build_world(&WorldSettings { seed: 3, width: 96, height: 96, wild: true, ..Default::default() });
+        // Seed 4: one where player 6's view in the middle of the map holds
+        // foreign organisms (seed 3 lost them with dry founding sites,
+        // version 44).
+        let world = build_world(&WorldSettings { seed: 4, width: 96, height: 96, wild: true, ..Default::default() });
         let mut g = Game::new(world, cfg);
         for p in 1..=12u32 {
             g.set_name(p, &format!("p{p}"));

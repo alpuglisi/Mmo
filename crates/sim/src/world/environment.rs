@@ -151,6 +151,7 @@ impl World {
             self.slots_used.clear();
             self.bonus_slots.clear();
         }
+        self.fade_toxic_lessons();
         self.chronicle_daily();
     }
 
