@@ -62,12 +62,21 @@ Biome *colours* blend across tile edges; biome *textures* switch at the
 `terrainArt.ts` paints (pure, unit-tested); `terrainLayer.ts` shows: a base
 texture of the whole map at ≤ 4 texels per tile, and 16×16-tile chunks at 8
 or 16 texels per tile over the screen, painted a few rows per frame within
-`TERRAIN_BUDGET_MS` (3 ms), centre first, in a 24 MB LRU cache. A texel is
-a function of world position only, so chunks never seam. A new map shows
-a one-texel-per-tile painting at once and refines a slice per frame;
-repainted chunks are revealed together (no patchwork of old and new), and
-change detection is quantized so slow grazing drift does not repaint
-everything at every 4 s terrain refresh.
+`paintBudget` (a fifth of the frame time, 3–32 ms), in a 24 MB LRU cache. A
+texel is a function of world position only, and every chunk is painted with
+a one-tile apron, so chunks painted from the same terrain never seam. A new
+map shows a one-texel-per-tile painting at once and refines a slice per
+frame; repainted chunks are revealed together (no patchwork of old and new).
+
+Each chunk keeps a copy of the fields it was painted from; how far the
+terrain has moved from it (`regionDelta`: 1 = bare ground to full snow, or
+a colour shift of 64) decides the repaints (`workOrder`): chunks never
+painted first, then those far from the terrain (≥ `URGENT` 0.12: snow
+coming or going, floods), then any past `STALE` (0.03), oldest painting
+first. Slow grazing drift therefore does not repaint everything at every 4 s
+terrain refresh, a slow melt still adds up, and on a slow machine with a fast
+clock no chunk keeps last season's snow while the ones round the centre are
+repainted again and again (playtests 1 and 2, #15; `e2e/terrain.mjs`).
 
 ## Marks at the feet (creatures)
 
