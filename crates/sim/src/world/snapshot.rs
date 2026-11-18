@@ -163,6 +163,9 @@
 //! versions 10 to 41 read the settings as 0 (the old tracker: a split
 //! counts at once, merges at once, no identity re-used) and no candidates
 //! (`serde_util::before_v42`).
+//! Version 43 adds the playtest 2 competitive balance tunables
+//! (`Balance::egg_hybrid`, `age_spread`, `dormancy_toll`, `emergence_lag`);
+//! versions 10 to 42 read them as 0 (off, `serde_util::before_v43`).
 //! Version 44 (43 is the balance session's) adds the playtest 2 fixes
 //! (learned avoidance of toxic prey, carnivore energetics, player-led
 //! packs, dry dormancy and founding sites, drinking first:
@@ -266,6 +269,11 @@ const SPECIES_HYSTERESIS_VERSION: u32 = 42;
 /// (`World::group_plans`, `serde_util::before_v41`). Versions 37 to 40 are
 /// other changes'; renumber at merge if needed.
 const GROUP_PLANS_VERSION: u32 = 41;
+/// The first version with the playtest 2 competitive balance tunables
+/// (`Balance::egg_hybrid`, `age_spread`, `dormancy_toll`, `emergence_lag`,
+/// `serde_util::before_v43`). Gated at 38 on its branch; renumbered at
+/// merge after 41 and 42.
+const COMPETITIVE_BALANCE_VERSION: u32 = 43;
 /// The first version with the playtest 2 fixes (`Balance::toxic_learning`
 /// and the rest, `World::toxic_lessons`, `serde_util::before_v44`). Version
 /// 43 is another change's (the balance session's); renumber at merge if
@@ -671,6 +679,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let raw = payload_options().serialize(self).expect("world serializes");
@@ -704,6 +713,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         // The header's layout is unchanged since version 6: only the version
@@ -740,6 +750,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -772,6 +783,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -803,6 +815,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -833,6 +846,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -862,6 +876,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -891,6 +906,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -919,6 +935,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -945,6 +962,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -971,6 +989,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -995,6 +1014,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1018,6 +1038,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1040,6 +1061,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1061,6 +1083,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1081,6 +1104,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1101,6 +1125,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1119,6 +1144,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1136,6 +1162,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1153,6 +1180,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1168,6 +1196,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1183,6 +1212,7 @@ impl World {
         let _old35 = crate::serde_util::before_v35::Guard::new();
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1196,6 +1226,7 @@ impl World {
     fn snapshot_v35(&self) -> Vec<u8> {
         let _old36 = crate::serde_util::before_v36::Guard::new();
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1209,6 +1240,7 @@ impl World {
     #[cfg(test)]
     fn snapshot_v36(&self) -> Vec<u8> {
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1221,23 +1253,35 @@ impl World {
     #[cfg(test)]
     fn snapshot_v41(&self) -> Vec<u8> {
         let _old42 = crate::serde_util::before_v42::Guard::new();
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&GROUP_PLANS_VERSION.to_le_bytes());
         out
     }
 
-    /// A version 42 snapshot (no playtest 2 fixes, no toxic lessons), as the
-    /// builds before version 44 wrote, to test that they still restore.
+    /// A version 42 snapshot (no playtest 2 balance tunables), as the
+    /// builds before version 43 wrote, to test that they still restore.
     #[cfg(test)]
     fn snapshot_v42(&self) -> Vec<u8> {
+        let _old43 = crate::serde_util::before_v43::Guard::new();
         let _old44 = crate::serde_util::before_v44::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&SPECIES_HYSTERESIS_VERSION.to_le_bytes());
         out
     }
 
-    /// A world from [`World::snapshot`] bytes (or a version 10 to 41 snapshot's)
+    /// A version 43 snapshot (no playtest 2 fixes, no toxic lessons), as the
+    /// builds before version 44 wrote, to test that they still restore.
+    #[cfg(test)]
+    fn snapshot_v43(&self) -> Vec<u8> {
+        let _old44 = crate::serde_util::before_v44::Guard::new();
+        let mut out = self.snapshot();
+        out[8..12].copy_from_slice(&COMPETITIVE_BALANCE_VERSION.to_le_bytes());
+        out
+    }
+
+    /// A world from [`World::snapshot`] bytes (or a version 10 to 43 snapshot's)
     /// and the terrain it names (`SnapshotHeader::terrain`), with its
     /// derived lookups rebuilt. Fails on another format version, a corrupt
     /// payload, or a missing or wrong terrain.
@@ -1272,6 +1316,7 @@ impl World {
         let _old35 = (h.version < CROWDING_VERSION).then(crate::serde_util::before_v35::Guard::new);
         let _old36 = (h.version < PREDATOR_PLAY_VERSION).then(crate::serde_util::before_v36::Guard::new);
         let _old42 = (h.version < SPECIES_HYSTERESIS_VERSION).then(crate::serde_util::before_v42::Guard::new);
+        let _old43 = (h.version < COMPETITIVE_BALANCE_VERSION).then(crate::serde_util::before_v43::Guard::new);
         let _old44 = (h.version < PLAYTEST2_VERSION).then(crate::serde_util::before_v44::Guard::new);
         let _old41 = (h.version < GROUP_PLANS_VERSION).then(crate::serde_util::before_v41::Guard::new);
         let body = &bytes[h.len()..];

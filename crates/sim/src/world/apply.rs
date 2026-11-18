@@ -953,7 +953,7 @@ impl World {
         if !accept_f || mm > 1.5 {
             return;
         }
-        let fert = mating::fertility(&female.genome, &male.genome)
+        let fert = mating::fertility_with(&female.genome, &male.genome, self.config.balance.egg_hybrid)
             * self.disease_fertility(f, m)
             * self.conception_boost(female);
         self.mating_contact(f, m);
@@ -1289,12 +1289,14 @@ impl World {
     }
 
     fn old_age_death(&self, o: &Organism, rng: &mut SimRng) -> bool {
-        let frac = o.age_days(self.config.ticks_per_day) / o.traits.lifespan_days;
-        if frac < 0.8 {
-            return false;
+        let lifespan = o.traits.lifespan_days;
+        let frac = o.age_days(self.config.ticks_per_day) / lifespan;
+        // Nobody passes 130% of its lifespan.
+        if frac > 1.3 {
+            return true;
         }
-        // Hazard rises from 0 at 80% of lifespan; nobody passes 130%.
-        frac > 1.3 || rng.gen::<f32>() < self.config.dt_days() * 4.0 * (frac - 0.8)
+        let hazard = old_age_hazard(frac, lifespan, self.config.balance.age_spread);
+        hazard > 0.0 && rng.gen::<f32>() < self.config.dt_days() * hazard
     }
 
     /// Young left to fend for themselves (abandoned eggs) compete with their
@@ -1558,6 +1560,28 @@ pub(super) fn ice_trap(body: &crate::stats::Body, t: &crate::terrain::Tile) -> b
         && body.swim < 0.25 + 0.5 * t.current
 }
 
+/// Daily old-age death hazard at `frac` of a `lifespan_days` lifespan (up
+/// to 130%, past which every animal dies). With `spread` 0, the old rule:
+/// `4 (frac − 0.8)` from 80%, so a cohort dies within days of 84%. With a
+/// spread (`Balance::age_spread`, the standard deviation of the age at
+/// death over the lifespan), a hazard rising linearly from an earlier onset
+/// at a rate set by the lifespan: ages at death then follow a Rayleigh
+/// curve with mean 85% of the lifespan and that standard deviation, so a
+/// boom cohort dies over months.
+pub(crate) fn old_age_hazard(frac: f32, lifespan_days: f32, spread: f32) -> f32 {
+    if spread <= 0.0 {
+        return if frac > 0.8 { 4.0 * (frac - 0.8) } else { 0.0 };
+    }
+    // Rayleigh: sd = 0.655 σ, mean = onset + 1.2533 σ.
+    let sigma = spread / 0.655;
+    let onset = 0.85 - 1.2533 * sigma;
+    if frac <= onset {
+        0.0
+    } else {
+        (frac - onset) / (sigma * sigma * lifespan_days.max(1.0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1738,6 +1762,33 @@ mod tests {
         assert_eq!(w.cap_usage(1), (5 + born, 10));
     }
 
+    /// Old age with a spread (`Balance::age_spread`): ages at death average
+    /// about 85% of the lifespan with that standard deviation; without it,
+    /// the old rule packs them within days of 84%.
+    #[test]
+    fn old_age_deaths_spread_with_age_spread() {
+        let stats = |spread: f32| {
+            let (lifespan, dt) = (240.0f32, 0.05f32);
+            // Survival over time, deaths by day: mean and sd of the age at death.
+            let (mut alive, mut m1, mut m2, mut t) = (1.0f64, 0.0f64, 0.0f64, 0.0f32);
+            while t < 1.3 * lifespan && alive > 1e-9 {
+                let h = old_age_hazard(t / lifespan, lifespan, spread) as f64 * dt as f64;
+                let d = alive * h.min(1.0);
+                alive -= d;
+                m1 += d * (t / lifespan) as f64;
+                m2 += d * ((t / lifespan) as f64).powi(2);
+                t += dt;
+            }
+            m1 += alive * 1.3;
+            m2 += alive * 1.69;
+            (m1, (m2 - m1 * m1).max(0.0).sqrt())
+        };
+        let (mean0, sd0) = stats(0.0);
+        assert!((mean0 - 0.84).abs() < 0.02 && sd0 < 0.04, "{mean0} {sd0}");
+        let (mean, sd) = stats(0.12);
+        assert!((mean - 0.85).abs() < 0.02 && (sd - 0.12).abs() < 0.02, "{mean} {sd}");
+    }
+
     /// The soft lineage cap (`Balance::lineage_crowding`): a player lineage
     /// at its soft cap still breeds, at half pace; its hunger rises past it;
     /// juveniles count at `crowding_juveniles`; the hard ceiling is
@@ -1751,16 +1802,18 @@ mod tests {
         let n = w.organisms.iter().filter(|o| o.alive && o.owner == owner).count();
         assert!(w.organisms.iter().filter(|o| o.owner == owner).all(|o| o.matured));
         w.config.lineage_cap = n;
-        assert_eq!(w.player_ceiling(), 2 * n);
-        assert_eq!(w.cap_usage(herd), (n, 2 * n));
+        let ceiling = (n as f32 * w.config.balance.crowding_ceiling).round() as usize;
+        assert_eq!(w.player_ceiling(), ceiling);
+        assert_eq!(w.cap_usage(herd), (n, ceiling));
         w.refresh_crowding();
         let [litter, hunger] = w.lineage_crowding(herd);
         assert!((litter - 0.5).abs() < 1e-4 && (hunger - 1.0).abs() < 1e-6, "{litter} {hunger}");
         let wild = w.lineages.iter().position(|l| l.owner == crate::WILD).unwrap() as u32;
         assert_eq!(w.lineage_crowding(wild), [1.0, 1.0]);
         // Past the soft cap: fewer young, hungrier.
-        let [l2, h2] = w.crowding_effect(1.5 * n as f32);
-        assert!(l2 < 0.2 && (h2 - 1.15).abs() < 1e-4, "{l2} {h2}");
+        let [l2, h2] = w.crowding_effect(1.3 * n as f32);
+        let want = 1.0 + 0.3 * w.config.balance.crowding_hunger;
+        assert!(l2 < 0.2 && (h2 - want).abs() < 1e-4, "{l2} {h2}");
         // Juveniles count a quarter.
         let i = w.organisms.iter().position(|o| o.owner == owner).unwrap();
         w.organisms[i].matured = false;

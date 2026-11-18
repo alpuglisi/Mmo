@@ -50,8 +50,8 @@ describe('feature detection', () => {
     const s = newEditorDesign(real);
     s.name = 'Starter';
     const c = designCost(designPayload(s, real), real);
-    expect(c.traits).toBeCloseTo(7, 5);
-    expect(c.total).toBeLessThan(real.budget * 0.1);
+    expect(c.traits).toBeCloseTo(9, 5);
+    expect(c.total).toBeLessThan(real.budget * 0.12);
   });
 
   it('an old server never gets morph, whatever the body plan', () => {

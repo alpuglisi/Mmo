@@ -53,6 +53,15 @@ pub const COST_PER_EXTRA_OFFSPRING: f32 = 2.5;
 /// Points per unit of body size below its default: small bodies fit more
 /// breeders on the same food, which the legacy score rewards.
 pub const COST_PER_SMALLER_BODY: f32 = 40.0;
+/// Body size up to which a bigger body is free (3.6 kg; the default is
+/// 0.3, 1.1 kg). Body size between the default and this costs nothing.
+pub const FREE_BODY_SIZE: f32 = 0.5;
+/// Points per unit of body size above [`FREE_BODY_SIZE`]. A big body is
+/// out of reach of most predators (playtest 2: player herbivores of 29–54 kg,
+/// body size 0.87–0.95, outgrew every predator that survived), which its
+/// food need alone did not offset: 0.75 (15 kg) costs 10 points, 0.95
+/// (45 kg) 18.
+pub const COST_PER_LARGER_BODY: f32 = 40.0;
 /// Points for cold-blooded thermoregulation: a third of the warm-blooded food
 /// need is worth more than its cold-weather sluggishness.
 pub const COST_COLD_BLOODED: f32 = 20.0;
@@ -77,6 +86,14 @@ pub fn morph_cost(m: &MorphDesign) -> f32 {
         + extra(m.leg_count, d.leg_count) / 2.0 * COST_PER_EXTRA_LEG_PAIR
         + extra(m.ear_count, d.ear_count) / 2.0 * COST_PER_EXTRA_EAR_PAIR
         + (m.horn_size - d.horn_size).max(0.0) * COST_PER_HORN_SIZE
+}
+
+/// Points a body size costs: [`COST_PER_SMALLER_BODY`] per unit below the
+/// default, [`COST_PER_LARGER_BODY`] per unit above [`FREE_BODY_SIZE`],
+/// nothing in between.
+pub fn body_size_cost(size: f32) -> f32 {
+    (default_value(Gene::BodySize) - size).max(0.0) * COST_PER_SMALLER_BODY
+        + (size - FREE_BODY_SIZE).max(0.0) * COST_PER_LARGER_BODY
 }
 
 /// Standard deviation of founder alleles around the design value.
@@ -171,8 +188,9 @@ pub fn default_value(g: Gene) -> f32 {
 pub fn trait_cost(g: Gene) -> f32 {
     use Gene::*;
     match g {
-        // Bigger bodies already mean fewer, hungrier breeders (less legacy);
-        // smallness is what's charged (`COST_PER_SMALLER_BODY`).
+        // Priced apart: smallness below the default
+        // (`COST_PER_SMALLER_BODY`) and size above `FREE_BODY_SIZE`
+        // (`COST_PER_LARGER_BODY`).
         BodySize => 0.0,
         Muscle => 7.0,
         FatStores => 2.0,
@@ -184,7 +202,8 @@ pub fn trait_cost(g: Gene) -> f32 {
         Swimming => 6.0,
         Wings => 24.0,
         Climbing => 5.0,
-        Burrowing => 6.0,
+        // 6 before playtest 2: a cheap free escape (`burrow_shelter`).
+        Burrowing => 8.0,
         Fur => 3.0,
         Scales => 4.0,
         Armor => 2.0,
@@ -197,7 +216,8 @@ pub fn trait_cost(g: Gene) -> f32 {
         Coloration => 5.0,
         Vocal => 5.0,
         // Seasonal strategies.
-        Hibernation => 8.0,
+        // 8 before playtest 2, where winter sleep decided the board.
+        Hibernation => 12.0,
         Brumation => 6.0,
         Migration => 8.0,
         Estivation => 6.0,
@@ -325,9 +345,8 @@ impl FounderDesign {
         let traits: f32 = Gene::ALL.iter().map(|&g| (v[g.index()] - default_value(g)).max(0.0) * trait_cost(g)).sum();
         let litter = self.litter_size.saturating_sub(1) as f32 * COST_PER_EXTRA_OFFSPRING;
         let founders = founder_cost(self.founders);
-        let small = (default_value(Gene::BodySize) - v[Gene::BodySize.index()]).max(0.0) * COST_PER_SMALLER_BODY;
         let thermo = if self.thermo == Thermo::Cold { COST_COLD_BLOODED } else { 0.0 };
-        traits + litter + founders + small + thermo + morph_cost(&self.morph)
+        traits + litter + founders + body_size_cost(v[Gene::BodySize.index()]) + thermo + morph_cost(&self.morph)
     }
 
     pub fn validate(&self) -> Result<(), DesignError> {
@@ -409,13 +428,16 @@ mod tests {
     }
 
     #[test]
-    fn cold_blood_and_small_bodies_cost_points_but_size_up_is_free() {
+    fn cold_blood_and_small_and_big_bodies_cost_points() {
         let base = FounderDesign::new("b", Thermo::Warm, BirthType::Live, 1);
         let cold = FounderDesign { thermo: Thermo::Cold, ..base.clone() };
         assert_eq!(cold.point_cost(), COST_COLD_BLOODED);
         let small = base.clone().with(Gene::BodySize, 0.1);
         assert!((small.point_cost() - 0.2 * COST_PER_SMALLER_BODY).abs() < 1e-4);
-        assert_eq!(base.with(Gene::BodySize, 0.9).point_cost(), 0.0);
+        // Free between the default and `FREE_BODY_SIZE`, then priced.
+        assert_eq!(base.clone().with(Gene::BodySize, FREE_BODY_SIZE).point_cost(), 0.0);
+        let big = base.with(Gene::BodySize, 0.9).point_cost();
+        assert!((big - 0.4 * COST_PER_LARGER_BODY).abs() < 1e-4, "{big}");
     }
 
     #[test]

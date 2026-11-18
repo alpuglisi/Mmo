@@ -17,6 +17,9 @@ import { geneValue } from './bodyMath';
 export const GAP_FULL = 0.12;
 /** Gaps from this are sterile (sim `BODY_PLAN_STERILE`). */
 export const GAP_STERILE = 0.3;
+/** Weight of birth mode in the gap for fertility (sim `1 − Balance::egg_hybrid`, 0.2 by default):
+ * adjacent birth modes, 0.35 apart, count 0.28, so an egg layer is a little fertile with close live bearers. */
+export const BIRTH_WEIGHT = 0.8;
 /** Body-plan gap per step of leg pairs or eyes (sim `BODY_PLAN_STEP`). */
 export const GAP_PER_STEP = 0.1;
 
@@ -57,7 +60,7 @@ export type GapPart = 'thermoregulation' | 'birth' | 'body size' | 'diet' | 'leg
 export function gapBetween(a: BodyPlan, b: BodyPlan): { gap: number; by: GapPart } {
   const parts: [GapPart, number][] = [
     ['thermoregulation', Math.abs(a.endothermy - b.endothermy)],
-    ['birth', Math.abs(a.birth_mode - b.birth_mode)],
+    ['birth', BIRTH_WEIGHT * Math.abs(a.birth_mode - b.birth_mode)],
     ['body size', Math.abs(a.body_size - b.body_size)],
     ['diet', Math.abs(a.carnivory - b.carnivory)],
     ['legs', (GAP_PER_STEP * Math.abs(a.leg_count - b.leg_count)) / 2],

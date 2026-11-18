@@ -251,9 +251,10 @@ pub enum ClientMsg {
     NameSpecies { species: u32, name: String },
     /// Every player's nameplate. Data: `{nameplates: {player: {color, title}}}`.
     Nameplates,
-    /// Which lineages yours can breed with: the best body-plan fertility
-    /// between a sample of your adults and each other lineage's, and the
-    /// body-plan gene that keeps you apart. Data: [`CompatibilityView`].
+    /// Which lineages yours can breed with: the fertility over every pair
+    /// of a sample of your adults and each other lineage's (mean, range,
+    /// share fertile), the drift risk, and the body-plan gene that keeps
+    /// you apart. Data: [`CompatibilityView`].
     Compatibility,
     /// Protocol 2 only: the client lost track of the delta states; the
     /// connection's next state is a keyframe. Handled by the connection (no
@@ -1701,16 +1702,55 @@ pub struct CompatibilityRow {
     /// 0: the wild ecosystem.
     pub owner: PlayerId,
     pub owner_name: String,
-    /// Best body-plan fertility between a sample of your adults and theirs,
-    /// 0 (sterile) to 1. A mating's fertility is also limited by the
-    /// whole-genome distance (`preview_mating`).
+    /// Whether the lineage is the wild ecosystem's (owner 0). A player's
+    /// lineage is never wild, whatever species it has joined.
+    #[serde(default)]
+    pub wild: bool,
+    /// Mean fertility over every pair of a sample of your adults (or a
+    /// design's founders) and theirs, 0 (sterile) to 1: body plan
+    /// (`Balance::egg_hybrid` included) and whole-genome distance. Before
+    /// playtest 2 this was the best pair's body-plan fertility.
     pub fertility: f32,
+    /// The 10th and 90th percentile pair: what to expect from a random
+    /// mating.
+    #[serde(default)]
+    pub fertility_low: f32,
+    #[serde(default)]
+    pub fertility_high: f32,
+    /// The best pair.
+    #[serde(default)]
+    pub best_fertility: f32,
+    /// Share of the pairs with any fertility.
+    #[serde(default)]
+    pub fertile_share: f32,
+    /// At least half the pairs fertile.
     pub compatible: bool,
-    /// The body-plan gene with the widest gap in the best pair (`carnivory`,
-    /// `endothermy`, `birth_mode`, `body_size`, or `morphology` for eye or
-    /// leg counts), and the gap; sterile at 0.30.
+    /// `none`, `low` or `high`: how likely drift is to make the two (more)
+    /// fertile: `high` when any pair is fertile or the closest pair is
+    /// within 0.05 of the sterile gap, `low` within 0.12.
+    #[serde(default)]
+    pub drift_risk: String,
+    /// The body-plan gene with the widest gap in the closest pair
+    /// (`carnivory`, `endothermy`, `birth_mode`, `body_size`, or
+    /// `morphology` for eye or leg counts), and the gap; sterile at 0.30.
     pub limiting: String,
     pub gap: f32,
+}
+
+/// `POST /api/design/compatibility`: a design's founders (as founding would
+/// make them, founder variation included) against each living lineage.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DesignCompatView {
+    /// The world day the check ran on (species move: check again later).
+    pub day: u64,
+    /// Individuals sampled on each side.
+    pub sample: usize,
+    /// Lineages with any fertile pair.
+    pub fertile_with: usize,
+    /// Lineages sterile now but at drift risk (`low` or `high`).
+    pub at_risk: usize,
+    /// Every lineage with living adults, most fertile first.
+    pub rows: Vec<CompatibilityRow>,
 }
 
 /// One player's standing over a season of the history.

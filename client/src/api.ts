@@ -7,6 +7,7 @@
 // none chosen they go to the server's default world.
 
 import type {
+  DesignCompatView,
   FamilyTree,
   Spectate,
   AchievementList, AlertPrefs, ApiErrorBody, AuthResponse, CatastropheList, CurrentSeason, DesignSpec, EraList, FoundResponse, GeneCatalog, Leaderboard,
@@ -100,6 +101,9 @@ export const api = {
   logout: (token: string) => request<null>('POST', '/api/logout', undefined, token),
   worlds: () => request<WorldList>('GET', '/api/worlds'),
   found: (token: string, design: DesignSpec) => request<FoundResponse>('POST', withWorld('/api/lineage'), design, token),
+  /** Who a design's founders could breed with now: sampled individuals, fertility range, drift risk. */
+  designCompatibility: (token: string, design: DesignSpec) =>
+    request<DesignCompatView>('POST', withWorld('/api/design/compatibility'), design, token),
   genes: () => request<GeneCatalog>('GET', '/api/genes'),
   world: () => request<WorldSummary>('GET', withWorld('/api/world')),
   leaderboard: () => request<Leaderboard>('GET', withWorld('/api/leaderboard')),

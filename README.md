@@ -927,6 +927,7 @@ square MP4s and GIFs, with a manifest of titles, captions and hashtags. See
 | `POST /api/login` `{name, password}` | | `{token, player, name}`; `401 bad_credentials` |
 | `POST /api/logout` | Bearer | End the session |
 | `GET /api/worlds` | | The hosted worlds, the default first: `{default, worlds: [{id, name, width, height, day, year, season, population, lineages, players_online}]}` |
+| `POST /api/design/compatibility` (design) | Bearer | The builder's interbreeding check, nothing founded: 16 founders as the design would make them (founder variation included) against 16 adults of each living lineage (yours too). `200 {day, sample, fertile_with, at_risk, rows}`, rows as `compatibility`'s; `400` for a design that doesn't validate |
 | `POST /api/lineage` (design) | Bearer | Found your lineage (one per player per world). `201 {lineage, founders: [ids], cost}`; `400` with `over_budget {cost, budget}`, `value_out_of_range {gene}`, `reserved_gene`, `litter_size`, `no_founders`, `unknown_gene`, `bad_name`; `409 already_founded` |
 | `GET /api/genes` | | Settable genes with default and point cost, the budget and founder/offspring prices, and the morphology parameters (`morph`: name, kind, values or range, default, cost) |
 | `GET /api/world` | | Clock, season, weather, map size, organism and lineage counts |
@@ -1069,7 +1070,7 @@ Client → server:
 | `set_nameplate` | `color, title` | A cosmetic nameplate (a palette color, a 1–24 character title) shown with your name: 500 renown, 100 per change (`bad_color`, `bad_title`); `data` = `{nameplate, shop}` |
 | `name_species` | `species, name` | Name a living species your lineage founded (cosmetic, 300 renown; `not_yours`, `species_gone`, `name_taken`, `bad_name`); `data` = `{species, name}` |
 | `nameplates` | | `data` = `{nameplates: {player: {color, title}}}` |
-| `compatibility` | | Which lineages yours can breed with: `data` = `{lineage?, rows: [{lineage, lineage_name, owner, owner_name, fertility, compatible, limiting, gap}]}`, most fertile first; `limiting` is the body-plan gene of the widest gap (`carnivory`, `endothermy`, `birth_mode`, `body_size`, `morphology`), sterile at 0.30 |
+| `compatibility` | | Which lineages yours can breed with: `data` = `{lineage?, rows: [{lineage, lineage_name, owner, owner_name, wild, fertility, fertility_low, fertility_high, best_fertility, fertile_share, compatible, drift_risk, limiting, gap}]}`, most fertile first, from every pair of 16 of your adults and 16 of theirs: `fertility` the mean pair, `fertility_low`/`fertility_high` the 10th/90th percentile, `fertile_share` the share of fertile pairs, `compatible` at least half fertile, `drift_risk` `none`/`low`/`high` (any fertile pair, or the closest pair within 0.05 of the sterile gap: high; within 0.12: low); `wild` only for the wild ecosystem's lineages; `limiting` is the body-plan gene of the closest pair's widest gap (`carnivory`, `endothermy`, `birth_mode`, `body_size`, `morphology`), sterile at 0.30 |
 | `resync` | – | Protocol 2 only: the next state is a keyframe (no `result`; see below) |
 | `watch_season` | `on`, `limit?` | `on: true`: a `season` message at once (after the `result`) and then one whenever the ranked season's standings change, at most one a second (rows `0..limit` per category, default 5, at most 200, plus yours); `on: false` stops them. A new connection starts unwatched. Answered between ticks, never queued behind world changes |
 
@@ -1589,10 +1590,13 @@ earned in play, so each perk is modest and priced to rise):
 - **Who can breed with whom.** A body-plan gap of 0.30 or more in diet,
   warm/cold blood, birth mode or body size (or an eye or leg count step) is
   sterile (`mating::BODY_PLAN_STERILE`), which splits the market by diet.
-  `compatibility` lists every other lineage with living adults, the best
-  body-plan fertility between a sample of 16 of the player's adults and
-  theirs, and the gene that keeps them apart; every `browse_market` listing
-  carries `compatible` and `body_plan_fertility` for the viewer's lineage;
+  `compatibility` lists every other lineage with living adults, the
+  fertility over every pair of a sample of 16 of the player's adults and
+  16 of theirs (mean, 10th–90th percentile range, share of fertile pairs,
+  drift risk; before playtest 2 the best pair, which overstated it), and
+  the gene that keeps them apart; every `browse_market` listing carries
+  `compatible` (at least half of the player's sampled adults fertile with
+  it) and `body_plan_fertility` (their mean) for the viewer's lineage;
   the Market tab shows both ("Who your lineage can breed with", a
   "sterile with your lineage" line on listings, and `buy_listing`'s reason
   in the client).
@@ -7578,13 +7582,104 @@ new rules off, today's code also loses packs on two seeds, so the losses
 come from elsewhere. The pack rule shows in the lowest antelope counts:
 a pack now takes larger prey.
 
+### Playtest 2: competitive balance
+
+Playtest 2 (`docs/playtest-2.md`) found one strategy dominating: LateComer's
+egg-laying, toxic-but-drab, hibernating burrowing herbivore, founded in
+winter with cheap reinforcements, reached 2,990 animals (the 2× soft-cap
+ceiling) and ~40% share from a late start. Winter decided the board, a boom
+cohort then died of old age together, player herbivores of 29–54 kg
+outgrew every predator, and the builder's interbreeding card ("no one")
+and the "compatible" badge (13 of 17 real pairs sterile) were both wrong.
+Predator learning about toxic prey and predator energetics are session F's
+(`ccr-38539192-boom`); this section is design costs, ceilings and the
+compatibility estimate.
+
+**Sim rules, on by default from snapshot version 43** (gated at 38 on
+its branch, renumbered at merge after 41 and 42), off at 0 for older saves
+(`serde_util::before_v43`):
+
+| Tunable (default) | Rule |
+| --- | --- |
+| `egg_hybrid` (0.2) | Birth mode counts `1 − egg_hybrid` in the body-plan gap for fertility (`mating::fertility_gap`, `fertility_with`; courting, conception, `preview_mating`, the market): adjacent birth modes (0.35 apart) are 0.28 apart, so an egg layer is ~10% fertile with a close live bearer (and more as founders vary) instead of sterile with all of them. Kinship and species keep the full gap, so species boundaries don't move. |
+| `age_spread` (0.12) | Old age by a hazard rising linearly from an earlier onset at a rate set by the lifespan (`apply::old_age_hazard`, agents and LOD cohorts): ages at death average 85% of the lifespan with a standard deviation of 12% (the old rule: 84%, within a few days). |
+| `dormancy_toll` (0.08) | A warm hibernator asleep in winter dies (exposure) with this chance over a whole season of sleep, twice that in its first year and up to twice again as its fat runs out (`seasonal::dormancy_toll_rate`; LOD cohorts too). |
+| `emergence_lag` (6 days) | A hibernator or brumator waking from winter sleep can't breed for this long. |
+
+**Defaults changed** (stored in snapshots, so running worlds keep theirs):
+the soft cap is steeper and lower, `lineage_crowding` 4 → 6,
+`crowding_ceiling` 2 → 1.4 (the hard ceiling at 1.4× the cap: 2,100 on the
+reference map), `crowding_hunger` 0.3 → 0.6. Litters run at 0.5 of
+normal at the cap, 0.17 at 1.3×, 0.12 at 1.4×.
+
+**Design prices** (`design.rs`, mirrored by the client's `cost.ts` through
+`/api/genes`' new `free_body_size` and `cost_per_larger_body`; fixture
+regenerated): body size is free only from the default (0.3, 1.1 kg) to 0.5
+(3.6 kg), then 40 points per unit (`design::body_size_cost`: 0.75 costs 10,
+0.9 costs 16, 0.95 costs 18); hibernation 8 → 12 and burrowing 6 → 8 per
+unit. The client's starter costs 11.5 points (9.5 before). Every sample
+design still fits (herd grazers 60.0, caribou 63.7, omnivores 39.0);
+LateComer's design costs 99.9 and still fits.
+
+**Compatibility, from individuals.** `compatibility` (and each market
+listing's `compatible`) now compares every pair of 16 of the player's adults
+and 16 of each lineage's (fertility with distance and `egg_hybrid`), and
+reports the mean, the 10th–90th percentile range, the share of fertile pairs,
+the best pair, and a drift risk (`high` once any pair is fertile or the
+closest pair is within 0.05 of the sterile gap, `low` within 0.12; founders
+vary by 0.05 per expressed gene and lineages drift by as much).
+`compatible` means at least half the pairs are fertile, not the best one.
+`POST /api/design/compatibility` runs the same check at design time with 16
+founders as the design would make them, against the current lineages, so
+the builder no longer compares species means. Rows carry `wild` only for
+the wild ecosystem's lineages, and the client's interbreeding card no longer
+calls a species with a player's lineage in it wild (it also weights birth
+mode like the sim). Showing the server's range and drift risk in the builder
+is session D's.
+
+**Scripted replay** (`cargo run --release -p evo-server --example dominance
+-- --seeds 4 --days 840`, `crates/server/examples/dominance.rs`): four
+players through `Game` on the 128² world with its wild species. Steady (the
+starter with senses and legs, 40 founders), Big (a 0.75 hibernating grazer,
+playtest 2's Herdmaster) and Broker (a 0.66 live-bearing grazer, the early
+leader) found on day 0; Eggs founds LateComer's exact design (55 founders)
+on the first day of the second winter (day 210, with the winter provision)
+and buys reinforcements whenever the shop sells them. Old rules: the four
+tunables off, the old soft cap, founded at any price. Seeds 1–4:
+
+| Arm | Eggs final / peak share | Eggs mean share from its founding | Eggs peak alive | Eggs titles | Others' final share (Steady, Big, Broker) | Eggs' worst 60-day fall of adults | Wild alleles in Eggs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Old rules | 23.9% / 29.2% | 13.2% | 2,549 | 17 of 40 | 8.1%, 16.6%, 7.3% | 52% | 0.9% |
+| New rules | 21.4% / 26.5% | 10.7% | 1,927 | 16 of 40 | 5.9%, 10.5%, 8.0% | 37% | 3.4% |
+
+The late design stays viable (alive on every seed, still the largest at the
+end) but no longer runs to the ceiling: its peak is a quarter lower, its
+mean share over its life is level with Broker's (10.7% both), Broker now
+wins 12 of the 40 seasons (none before), and its boom cohort ages out over
+months (the worst fall of its adults 37% instead of 52%). It still takes
+the most titles: what remains is the winter provision and reinforcements
+(5.8 a world; their price resets each season) and toxins, which belong to
+the economy and to session F.
+
+**Checks** (the "before" arm is this code with the four new tunables at 0;
+the soft-cap defaults don't reach the balance tools' lineages):
+
+| Check | Before | After |
+| --- | --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.76 (± 0.26) on main | 11.65 (± 0.31); every lineage 12 of 12 but pack hunters 11; burrowing omnivores (hibernators) 93 against 141, the toll and lag's cost |
+| `compare --seed 101 --adaptive` (tunables off vs defaults) | | off 11.67, on 11.72: off − on −0.05 (sequential 95% CI −0.18 … +0.08 after 12 seeds: no difference that matters); with the rules on, burrowing omnivores 55 ± 13 fewer and red foxes 25 ± 18 fewer |
+| `predlong 6` on seeds 31–38 and 41–48: fox, pack (viable); prey lost | 13/16 (12), 15/16 (15); omnivores on 48 | 15/16 (15), 15/16 (14); omnivores on 48 |
+| `predlong`: lowest prey | antelope 15–39, voles 35–88 | antelope 6 (seed 31), else 23–39; voles 17 (seed 41), else 36–88 |
+| `calibrate tournament --worlds 96 --days 90 --seed0 70001`: top thermoregulation × birth class win share (mean share) | 26.0% (warm live birth) | 27.1% (warm incubated eggs; warm live birth 26.0%, cold abandoned eggs 15.6%); by final share warm incubated 26.0% |
+| `evo-sim genetics` | | 134 checks: 107 strict passed, 0 failed |
 ### Playtest 2: predators, toxins and drowning
 
 Remediation round 3 for `docs/playtest-2.md`'s predator, toxin and
-drowning findings (snapshot version 42; every rule below is off at 0, what
-snapshots of version 41 and before read, `serde_util::before_v42`).
-Session A's version 41 is main's migration work; this round's gate went on
-the next free version when main was merged.
+drowning findings (snapshot version 44; every rule below is off at 0, what
+snapshots of version 43 and before read, `serde_util::before_v44`).
+Versions 41 to 43 are main's (migrations, species hysteresis, competitive
+balance); this round's gate went on the next free version when main was
+merged.
 
 **Toxic prey can be learned** (`Balance::toxic_learning` 1,
 `world::toxic`). In playtest 2, a drab, toxic, burrowing egg swarm won
@@ -7613,25 +7708,20 @@ better than before. Once the pack learned, it left the drab toxic swarm
 alone and ate the other players' herbivores instead: Toxic grew from 916
 to 1,192 animals and took 46% of the six players' animals, against 39%.
 
-**Attack orders say how they end** (`World::take_attack_events`). An
-order that ends on its own alerts its owner (an `attack` alert):
-- the target was caught (by the attacker or its pack);
-- the target died of something else;
-- the target went to ground in its burrow;
-- the target got away (more than 12 tiles off);
-- the attacker died.
-
-A release, another possession or a move order ends an order silently,
-since the player did that. Victims get at most one alert a day per
-attacking player, worded "Ann is hunting your animals: …" (it used to
-read "A Egg Herd of yours…"). A refusal is toasted once, by the client's
-command handling; it used to be toasted twice. The inspector's
-"Attack with #id" is disabled and says "(too far)" beyond 8 tiles.
-Playtest 2's "territory patrol overrides an attack order" was such an
-order ending silently: the target, a burrower, went to ground and the
-order was dropped. A test (`an_attack_order_outside_the_territory_is_followed`)
-shows a territory member outside its territory follows an order to the
-end.
+**Attack orders end with a reason.** Round 3 D's server alerts tell the
+attacker how an order ended (`Game::announce_attack_results`) and limit
+the victim's alerts. The sim now also records the end itself
+(`World::take_attack_events`: caught by the attacker or its pack, dead of
+something else, gone to ground, more than 12 tiles off, attacker dead; a
+release, another possession or a move order end silently), for hosts that
+want it. A refusal is toasted once, by the client's command handling; it
+used to be toasted twice. The inspector's "Attack with #id" is disabled
+and says "(too far)" beyond 8 tiles, as it already was for a protected
+newcomer. Playtest 2's "territory patrol overrides an attack order" was
+such an order ending silently: the target, a burrower, went to ground and
+the order was dropped. A test
+(`an_attack_order_outside_the_territory_is_followed`) shows a territory
+member outside its territory follows an order to the end.
 
 **Drinking first** (`Balance::drink_priority` 1):
 - **Parched animals drink.** Past thirst 0.7, drinking gains up to +0.6
@@ -7781,11 +7871,12 @@ The costs in `design.rs` are calibrated with `examples/calibrate.rs`
 | Points per unit above default | |
 | --- | --- |
 | Leg length 25, wings 24, toxins 18, hooves 16 | Valuable in every design, or a threshold ability (flight, warning coloration) |
-| Muscle 7, fangs 7, claws 6, foot width 6, swimming 6, burrowing 6 | Valuable in one niche |
+| Muscle 7, fangs 7, claws 6, foot width 6, swimming 6, burrowing 8 | Valuable in one niche (burrowing 6 before playtest 2) |
 | Camouflage 5, climbing 5, coloration 5, vocal 5, tail 4, scales 4, nose 4, eyes 4, ears 4, fur 3 | Small or mixed effects |
-| Armor 2, fat stores 2, body size 0 | Cost more fitness than they bring; bigger bodies already mean fewer breeders |
+| Armor 2, fat stores 2 | Cost more fitness than they bring |
 | 0.7 per founder above 20 up to 50, then each 0.07 dearer than the last; 2.5 per extra offspring | Founders were the best buy at 0.4; litter slightly underpriced at 1.5. The rising price past 50 (`design::founder_cost`) is from playtest 1, not the calibration: see *Founders, the soft cap and the market* |
 | 40 per unit of body size below 0.3, 20 for cold-blooded | Free choices that won out of proportion (below) |
+| 40 per unit of body size above 0.5 (free from 0.3 to 0.5); hibernation 12 | Playtest 2, not the calibration: big bodies outgrew every predator, winter sleep decided the board (hibernation was 8). See *Playtest 2: competitive balance* |
 
 Under the new costs the clearest mispricings in the old table are mostly gone
 (per-point coefficients: founders +0.055 → +0.031, leg length +0.049 →

@@ -399,7 +399,39 @@ fn predators_off(b: &mut crate::Balance) {
     b.pack_hunt = old;
     b.territory_harass = old;
     b.attack_grace = old;
+    balance43_off(b);
+}
+
+/// The playtest 2 balance tunables as snapshots before version 43 read them.
+fn balance43_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v43::OLD_VALUE;
+    b.egg_hybrid = old;
+    b.age_spread = old;
+    b.dormancy_toll = old;
+    b.emergence_lag = old;
     playtest2_off(b);
+}
+
+/// Version 42 snapshots (before the playtest 2 balance rules) restore with
+/// those tunables off, and are otherwise the same world.
+#[test]
+fn version_42_snapshots_restore_without_playtest2_balance() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v42();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 42);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.age_spread, crate::serde_util::before_v43::OLD_VALUE);
+    balance43_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v42() == old);
+    // This version keeps them.
+    let mut w = fixture_world();
+    w.config.balance.dormancy_toll = 0.3;
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.dormancy_toll, 0.3);
 }
 
 /// The playtest 2 tunables as snapshots before version 44 read them.
@@ -1410,15 +1442,15 @@ fn version_41_snapshots_restore_with_the_old_species_tracker() {
     assert!(r.snapshot() == w.snapshot());
 }
 
-/// Version 42 snapshots (before the playtest 2 fixes) restore with their
+/// Version 43 snapshots (before the playtest 2 fixes) restore with their
 /// tunables off and no toxic lessons, and are otherwise the same world.
 #[test]
-fn version_42_snapshots_restore_without_playtest2_fixes() {
+fn version_43_snapshots_restore_without_playtest2_fixes() {
     let mut w = fixture_world();
     w.toxic_lessons.insert((1, 0), 0.5);
-    let old = w.snapshot_v42();
+    let old = w.snapshot_v43();
     let h = SnapshotHeader::read(&old).unwrap();
-    assert_eq!(h.version, 42);
+    assert_eq!(h.version, 43);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.toxic_learning, crate::serde_util::before_v44::OLD_VALUE);
@@ -1427,7 +1459,7 @@ fn version_42_snapshots_restore_without_playtest2_fixes() {
     w.toxic_lessons.clear();
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
-    assert!(r.snapshot_v42() == old);
+    assert!(r.snapshot_v43() == old);
     // This version keeps them.
     let mut w = fixture_world();
     w.config.balance.toxic_learning = 0.5;

@@ -87,6 +87,34 @@ pub fn body_plan_gap(a: &Genome, b: &Genome) -> f32 {
     BODY_PLAN_GENES.iter().map(|&g| (a.expr(g) - b.expr(g)).abs()).fold(0.0, f32::max).max(morph)
 }
 
+/// Position of birth mode in [`BODY_PLAN_GENES`].
+pub const BIRTH_SLOT: usize = 1;
+
+/// The weight of each [`BODY_PLAN_GENES`] difference in the fertility gap:
+/// 1, birth mode `1 − egg_hybrid` (`Balance::egg_hybrid`).
+pub fn plan_weights(egg_hybrid: f32) -> [f32; 4] {
+    let mut w = [1.0; 4];
+    w[BIRTH_SLOT] = 1.0 - egg_hybrid.clamp(0.0, 1.0);
+    w
+}
+
+/// [`body_plan_gap`] for fertility, birth mode weighted by `1 − egg_hybrid`
+/// (`Balance::egg_hybrid`): adjacent birth modes, 0.35 apart, count 0.28
+/// apart at 0.2, so an egg layer is a little fertile with a close live
+/// bearer. The same as [`body_plan_gap`] at 0. Kinship and species keep the
+/// unweighted gap.
+pub fn fertility_gap(a: &Genome, b: &Genome, egg_hybrid: f32) -> f32 {
+    let w = plan_weights(egg_hybrid);
+    let morph = crate::morph::morph_terms(&a.morph().key(), &b.morph().key()).1;
+    BODY_PLAN_GENES.iter().zip(w).map(|(&g, w)| (a.expr(g) - b.expr(g)).abs() * w).fold(0.0, f32::max).max(morph)
+}
+
+/// [`fertility`] with birth mode weighted by `1 − egg_hybrid` in the
+/// body-plan term ([`fertility_gap`]); the same as [`fertility`] at 0.
+pub fn fertility_with(a: &Genome, b: &Genome, egg_hybrid: f32) -> f32 {
+    distance_fertility(a.distance(b)).min(fertility_from_gap(fertility_gap(a, b, egg_hybrid)))
+}
+
 /// Whether two organisms recognize each other as their own kind: never hunted
 /// or fled from, and counted for grouping, herd defense, crowding and larval
 /// competition. `distance` is `a.distance(b)`, passed in because the caller
@@ -123,6 +151,26 @@ fn ramp(x: f32, full: f32, sterile: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::design::{BirthType, FounderDesign, Thermo};
+
+    /// `Balance::egg_hybrid` weights birth mode in the fertility gap only:
+    /// an egg layer next to a live bearer of the same plan is a little
+    /// fertile at 0.2, sterile at 0; a thermoregulation gap stays sterile.
+    #[test]
+    fn egg_hybrid_softens_only_the_birth_gap() {
+        let g = |birth: BirthType, thermo: Thermo| {
+            let d = FounderDesign::new("x", thermo, birth, 2);
+            Genome::uniform(&d.values(), 1)
+        };
+        let (live, eggs) = (g(BirthType::Live, Thermo::Warm), g(BirthType::IncubatedEggs, Thermo::Warm));
+        assert_eq!(fertility_with(&live, &eggs, 0.0), 0.0);
+        assert_eq!(fertility_with(&live, &eggs, 0.0), fertility(&live, &eggs));
+        let f = fertility_with(&live, &eggs, 0.2);
+        assert!(f > 0.05 && f < 0.2, "{f}");
+        assert!((fertility_gap(&live, &eggs, 0.2) - 0.28).abs() < 1e-4);
+        assert_eq!(body_plan_gap(&live, &eggs), fertility_gap(&live, &eggs, 0.0));
+        let cold = g(BirthType::Live, Thermo::Cold);
+        assert_eq!(fertility_with(&live, &cold, 0.2), 0.0);
+    }
 
     fn chooser(pickiness: f32) -> Phenotype {
         let d = FounderDesign::new("c", Thermo::Warm, BirthType::Live, 2)

@@ -17,15 +17,15 @@
 use std::collections::BTreeMap;
 
 use evo_sim::genome::Genome;
-use evo_sim::mating::{body_plan_gap, fertility_from_gap, BODY_PLAN_GENES};
+use evo_sim::mating::{fertility_gap, fertility_with, plan_weights, BODY_PLAN_GENES, BODY_PLAN_STERILE};
 use evo_sim::{PlayerId, WILD};
 
 use super::Game;
 use crate::design::gene_key;
 use crate::economy;
 use crate::protocol::{
-    CompatibilityRow, CompatibilityView, CrowdingView, ErrorInfo, GeneHost, GeneSource, LedgerKind, ListingView,
-    ScoreBreakdown, ShopView,
+    CompatibilityRow, CompatibilityView, CrowdingView, DesignCompatView, ErrorInfo, GeneHost, GeneSource, LedgerKind,
+    ListingView, ScoreBreakdown, ShopView,
 };
 
 /// `text` trimmed, if it has 1 to `max` characters and no control
@@ -51,25 +51,88 @@ fn sample_of(g: &Game, lineage: u32) -> Vec<&Genome> {
     (0..SAMPLE).map(|k| all[(k as f64 * step) as usize]).collect()
 }
 
-/// Best body-plan fertility over the pairs of `a` × `b`, and that pair's
-/// widest body-plan gene and gap.
-fn best_pair(a: &[&Genome], b: &[&Genome]) -> Option<(f32, String, f32)> {
-    let mut best: Option<(f32, &Genome, &Genome, f32)> = None;
+/// Margin (in body-plan gap) above the sterile line under which drift can
+/// make a sterile pairing fertile within a few generations: founders vary
+/// by about 0.05 in each expressed gene (`design::FOUNDER_VARIATION`) and
+/// selection moves lineages' means by as much (playtest 2: a "safe" lineage
+/// ended 52% wild).
+pub const DRIFT_HIGH: f32 = 0.05;
+/// Margin under which the drift risk is low rather than none.
+pub const DRIFT_LOW: f32 = 0.12;
+
+/// Fertility over every pair of two samples of individuals: what a real
+/// mating between a random member of each is likely to give, not the best
+/// pair (playtest 2: a "compatible" badge from the best pair, 13 of 17 real
+/// pairs sterile).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Spread {
+    /// Mean fertility over the pairs (body plan with `Balance::egg_hybrid`,
+    /// and whole-genome distance: `mating::fertility_with`).
+    pub mean: f32,
+    /// The 10th and 90th percentile pair.
+    pub low: f32,
+    pub high: f32,
+    /// The best pair.
+    pub best: f32,
+    /// Share of pairs with any fertility.
+    pub fertile_share: f32,
+    /// The closest pair's body-plan gap (for fertility) and its widest gene.
+    pub gap: f32,
+    pub limiting: String,
+    /// `none`, `low` or `high`: how likely drift is to make the two
+    /// (more) fertile ([`DRIFT_HIGH`], [`DRIFT_LOW`]); `high` once any pair
+    /// is fertile, since genes then flow.
+    pub drift_risk: &'static str,
+}
+
+/// [`Spread`] over the pairs of `a` × `b` (None when either is empty).
+pub fn spread(a: &[&Genome], b: &[&Genome], egg_hybrid: f32) -> Option<Spread> {
+    let mut fert: Vec<f32> = Vec::with_capacity(a.len() * b.len());
+    let mut closest: Option<(f32, &Genome, &Genome)> = None;
     for &x in a {
         for &y in b {
-            let gap = body_plan_gap(x, y);
-            if best.is_none_or(|(_, _, _, g)| gap < g) {
-                best = Some((fertility_from_gap(gap), x, y, gap));
+            let gap = fertility_gap(x, y, egg_hybrid);
+            fert.push(fertility_with(x, y, egg_hybrid));
+            if closest.is_none_or(|(g, _, _)| gap < g) {
+                closest = Some((gap, x, y));
             }
         }
     }
-    let (fertility, x, y, gap) = best?;
+    let (gap, x, y) = closest?;
+    fert.sort_by(f32::total_cmp);
+    let n = fert.len();
+    let at = |q: f64| fert[((q * (n - 1) as f64).round() as usize).min(n - 1)];
+    let fertile = fert.iter().filter(|&&f| f > 0.0).count();
+    let weights = plan_weights(egg_hybrid);
     let (gene, gene_gap) = BODY_PLAN_GENES
         .iter()
-        .map(|&g| (g, (x.expr(g) - y.expr(g)).abs()))
+        .zip(weights)
+        .map(|(&g, w)| (g, (x.expr(g) - y.expr(g)).abs() * w))
         .fold((BODY_PLAN_GENES[0], -1.0f32), |m, v| if v.1 > m.1 { v } else { m });
     let limiting = if gap > gene_gap + 1e-6 { "morphology".to_string() } else { gene_key(gene) };
-    Some((fertility, limiting, gap))
+    let margin = gap - BODY_PLAN_STERILE;
+    let drift_risk = if fertile > 0 || margin < DRIFT_HIGH {
+        "high"
+    } else if margin < DRIFT_LOW {
+        "low"
+    } else {
+        "none"
+    };
+    Some(Spread {
+        mean: fert.iter().sum::<f32>() / n as f32,
+        low: at(0.1),
+        high: at(0.9),
+        best: fert[n - 1],
+        fertile_share: fertile as f32 / n as f32,
+        gap,
+        limiting,
+        drift_risk,
+    })
+}
+
+/// Whether a spread counts as compatible: at least half the pairs fertile.
+pub fn compatible(s: &Spread) -> bool {
+    s.fertile_share >= 0.5
 }
 
 impl Game {
@@ -251,8 +314,40 @@ impl Game {
         Ok((ids, self.shop_view(player)))
     }
 
+    /// One row per other lineage with living adults: `own` against a
+    /// sample of its adults, most fertile first.
+    fn compat_rows(&self, own: &[&Genome], skip: Option<u32>) -> Vec<CompatibilityRow> {
+        let egg_hybrid = self.world.config.balance.egg_hybrid;
+        let mut rows: Vec<CompatibilityRow> = (0..self.world.lineages.len() as u32)
+            .filter(|&l| Some(l) != skip)
+            .filter_map(|l| {
+                let theirs = sample_of(self, l);
+                let s = spread(own, &theirs, egg_hybrid)?;
+                let lin = &self.world.lineages[l as usize];
+                Some(CompatibilityRow {
+                    lineage: l,
+                    lineage_name: lin.name.clone(),
+                    owner: lin.owner,
+                    owner_name: if lin.owner == WILD { "wild".into() } else { self.name(lin.owner) },
+                    wild: lin.owner == WILD,
+                    compatible: compatible(&s),
+                    fertility: s.mean,
+                    fertility_low: s.low,
+                    fertility_high: s.high,
+                    best_fertility: s.best,
+                    fertile_share: s.fertile_share,
+                    drift_risk: s.drift_risk.to_string(),
+                    limiting: s.limiting,
+                    gap: s.gap,
+                })
+            })
+            .collect();
+        rows.sort_by(|a, b| b.fertility.total_cmp(&a.fertility).then(a.gap.total_cmp(&b.gap)));
+        rows
+    }
+
     /// `compatibility`: every other lineage with living adults, most
-    /// fertile first.
+    /// fertile first, from samples of individuals on both sides.
     pub(super) fn compatibility(&self, player: PlayerId) -> CompatibilityView {
         let Some(mine) = self.lineage_of(player).filter(|_| !self.is_extinct(player)) else {
             return CompatibilityView { lineage: None, rows: Vec::new() };
@@ -261,41 +356,38 @@ impl Game {
         if own.is_empty() {
             return CompatibilityView { lineage: None, rows: Vec::new() };
         }
-        let mut rows: Vec<CompatibilityRow> = (0..self.world.lineages.len() as u32)
-            .filter(|&l| l != mine)
-            .filter_map(|l| {
-                let theirs = sample_of(self, l);
-                let (fertility, limiting, gap) = best_pair(&own, &theirs)?;
-                let lin = &self.world.lineages[l as usize];
-                Some(CompatibilityRow {
-                    lineage: l,
-                    lineage_name: lin.name.clone(),
-                    owner: lin.owner,
-                    owner_name: self.name(lin.owner),
-                    fertility,
-                    compatible: fertility > 0.0,
-                    limiting,
-                    gap,
-                })
-            })
-            .collect();
-        rows.sort_by(|a, b| b.fertility.total_cmp(&a.fertility).then(a.gap.total_cmp(&b.gap)));
-        CompatibilityView { lineage: Some(mine), rows }
+        CompatibilityView { lineage: Some(mine), rows: self.compat_rows(&own, Some(mine)) }
+    }
+
+    /// The design-time check (`POST /api/design/compatibility`): founders
+    /// as `design` would make them (founder variation included) against
+    /// each living lineage's adults, with the drift risk. The player's own
+    /// lineage is compared too (a re-founding meets it) and marked by owner.
+    pub fn design_compatibility(&self, player: PlayerId, design: &evo_sim::design::FounderDesign) -> DesignCompatView {
+        let mut rng = evo_sim::rng::rng_for(self.world.config.seed, 0x00de_5167, player as u64, self.world.tick());
+        let founders: Vec<Genome> = (0..SAMPLE).map(|_| design.founder_genome(player, &mut rng)).collect();
+        let own: Vec<&Genome> = founders.iter().collect();
+        let rows = self.compat_rows(&own, None);
+        let fertile_with = rows.iter().filter(|r| r.fertile_share > 0.0).count();
+        let at_risk = rows.iter().filter(|r| r.fertile_share <= 0.0 && r.drift_risk != "none").count();
+        DesignCompatView { day: self.world.day(), sample: SAMPLE, fertile_with, at_risk, rows }
     }
 
     /// Fill each listing's `compatible` and `body_plan_fertility` for
-    /// `player` (nothing when they have no living adult).
+    /// `player` (nothing when they have no living adult): a sample of
+    /// their adults against the listed animal.
     pub(super) fn annotate_compatibility(&self, player: PlayerId, views: &mut [ListingView]) {
         let Some(mine) = self.lineage_of(player) else { return };
         let own = sample_of(self, mine);
         if own.is_empty() {
             return;
         }
+        let egg_hybrid = self.world.config.balance.egg_hybrid;
         for v in views {
             let Some(o) = self.world.organism(v.organism) else { continue };
-            if let Some((fertility, _, _)) = best_pair(&own, &[&*o.genome]) {
-                v.compatible = Some(fertility > 0.0);
-                v.body_plan_fertility = Some(fertility);
+            if let Some(s) = spread(&own, &[&*o.genome], egg_hybrid) {
+                v.compatible = Some(compatible(&s));
+                v.body_plan_fertility = Some(s.mean);
             }
         }
     }
