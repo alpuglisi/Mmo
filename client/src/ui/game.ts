@@ -95,7 +95,7 @@ const RANKED_REFRESH_MS = 30000;
 /** Least time between two fetches of the finished seasons after rollovers. */
 const RANKED_ROLLOVER_MS = 5000;
 /** Rows per category of the season under way. */
-const RANKED_ROWS = 5;
+const RANKED_ROWS = 8;
 /** Finished seasons listed at first; "Older seasons" adds as many again. */
 const RANKED_PAGE = 10;
 const MARKET_REFRESH_MS = 5000;
@@ -317,11 +317,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     genetics: h('div', { class: 'panel', id: 'panel-genetics' }),
     family: h('div', { class: 'panel', id: 'panel-family' }),
     lineage: h('div', { class: 'panel', id: 'panel-lineage' }),
-    seasons: h('div', { class: 'panel', id: 'panel-seasons' }),
+    // (Shown as "Ranks": its ids say so too, `tab-ranks` / `panel-ranks`.)
+    seasons: h('div', { class: 'panel', id: 'panel-ranks' }),
     world: h('div', { class: 'panel', id: 'panel-world' }),
   };
   const tabBtns = (Object.keys(tabs) as Tab[]).map((t) =>
-    h('button', { class: 'tab', 'data-tab': t, id: `tab-${t}`, title: TAB_TITLES[t], onclick: () => tabClicked(t) }, TAB_LABELS[t]));
+    h('button', { class: 'tab', 'data-tab': t, id: `tab-${t === 'seasons' ? 'ranks' : t}`, title: TAB_TITLES[t], onclick: () => tabClicked(t) }, TAB_LABELS[t]));
   const alertBadge = h('span', { class: 'badge', id: 'alert-badge', hidden: true });
   tabBtns.find((b) => b.dataset.tab === 'genetics')!.append(alertBadge);
   let seenFeed = 0;
@@ -512,6 +513,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       }
     }
     if (p) {
+      // Possessing from the chooser's pick: the chooser goes (it lay over the bar's buttons, playtest 5).
+      if (lastPossessed !== p.id && !chooser.hidden) hideChooser();
       lastPossessed = p.id;
       clearTimeout(endedTimer);
       possessBar.classList.remove('ended');
@@ -519,6 +522,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (!possessBar.classList.contains('ended')) possessBar.hidden = !p;
     // Hint cards move clear of the bar (onboarding.css).
     stageWrap.classList.toggle('possessing', !!p);
+    if (p && possessBar.offsetHeight > 0) stageWrap.style.setProperty('--possess-h', `${possessBar.offsetHeight}px`);
     if (!p) {
       // Possession over: so is attack mode.
       if (mode === 'attack') {
@@ -618,6 +622,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   /** The floating Possess / Release button for the selected own organism. */
   function renderFab(): void {
     const own = model.selected !== null ? model.state?.organisms.find((o) => o.id === model.selected) : undefined;
+    if (fab.hidden === !!own) queueMicrotask(updateEdgePad); // shown or hidden: the room at the bottom edge changes
     fab.hidden = !own;
     if (!own) return;
     const text = own.possessed ? `Release #${own.id}` : `Possess #${own.id}`;
@@ -1570,7 +1575,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     model.select(mine);
     view.setFollow(true);
     const p = s.nearby.find((o) => o.id === partner) ?? s.organisms.find((o) => o.id === partner);
-    if (!p) return model.toast('info', `Possessing #${mine}. The partner #${partner} is out of sight: click the map to walk.`);
+    if (!p) return model.toast('info', `Possessing #${mine}. The partner #${partner} is out of sight: ${touchInput() ? 'tap' : 'click'} the map to walk.`);
     view.setMoveTarget({ x: p.x, y: p.y });
     const r = await send({ type: 'order_move', organism: mine, x: p.x, y: p.y });
     if (!r.ok) view.rejectMove();
@@ -1944,13 +1949,18 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
 
   /** The lineage lays eggs (its stats count clutches): a carrying female is "gravid", not "pregnant" (playtest 3). */
   function laysEggs(): boolean {
-    return !!(stats && stats.lineage === model.state?.lineage && stats.eggs);
+    if (!stats || stats.lineage !== model.state?.lineage) return false;
+    // By the lineage's birth mode (the mean of its members, as the family
+    // tree reads it: live birth from 2/3), not by whether any egg was laid:
+    // one hybrid clutch made a live-bearing lineage "gravid" (playtest 5).
+    const mode = stats.genes.find((g) => g.gene === 'birth_mode')?.mean;
+    return mode !== undefined ? mode < 2 / 3 : !!stats.eggs;
   }
 
   /** "Pregnant N" for live bearers; clutches and brooding for egg layers (a gravid female is about to lay). */
   function eggStatus(orgs: StateView['organisms']): [string, string | Node] {
     const pregnant = orgs.filter((o) => o.pregnant).length;
-    const e = stats && stats.lineage === model.state?.lineage ? stats.eggs : undefined;
+    const e = laysEggs() ? stats?.eggs : undefined;
     if (!e) return ['Pregnant', String(pregnant)];
     const brooding = orgs.filter((o) => o.action === 'guard').length;
     const parts = [

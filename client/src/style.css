@@ -410,6 +410,8 @@ button.danger { background: #b62324; color: #fff; }
   .pick-chooser .chip.close { position: sticky; right: 0; background: var(--panel-2); box-shadow: -6px 0 8px rgba(13, 17, 23, 0.92); }
   /* A tip card makes way for it (it is short-lived and asked for). */
   .choosing .hint-card { top: 52px; bottom: auto; }
+  /* While possessing (a long press can still open it), above the possession bar, not over its buttons. */
+  .possessing .pick-chooser { bottom: calc(100px + var(--possess-h, 78px) + 6px); }
   .pick-chooser .chip { min-height: 34px; padding: 0.2em 0.6em; font-size: 13px; }
   .fab[hidden] { display: none; }
   .legends { width: auto; left: 8px; right: 8px; top: 56px; bottom: auto; }

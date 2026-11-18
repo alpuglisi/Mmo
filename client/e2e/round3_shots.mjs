@@ -130,15 +130,15 @@ try {
 
   // Ranks: how the legacy crown is scored.
   await page.evaluate(() => { document.scrollingElement.scrollTop = 0; for (const el of document.querySelectorAll('.game-body, .stage-wrap')) el.scrollTop = 0; });
-  await page.click('#tab-seasons');
+  await page.click('#tab-ranks');
   await page.waitForSelector('#season-legacy-explain summary', { state: 'visible', timeout: 30000 }).catch(async (e) => {
-    console.log('DEBUG', await page.evaluate(() => { const p = document.querySelector('#panel-seasons'); const r = p.getBoundingClientRect(); return { hidden: p.hidden, r: [r.x, r.y, r.width, r.height], tab: document.querySelector('.tab.active')?.id }; }));
+    console.log('DEBUG', await page.evaluate(() => { const p = document.querySelector('#panel-ranks'); const r = p.getBoundingClientRect(); return { hidden: p.hidden, r: [r.x, r.y, r.width, r.height], tab: document.querySelector('.tab.active')?.id }; }));
     throw e;
   });
   await page.click('#season-legacy-explain summary');
   await page.waitForTimeout(1500); // a standings push redraws the part: it must stay open
   if (!(await page.$eval('#season-legacy-explain', (d) => d.open))) throw new Error('the legacy explanation folded on a redraw');
-  await clip(page, '#panel-seasons', 'ranks-legacy-explain.png');
+  await clip(page, '#panel-ranks', 'ranks-legacy-explain.png');
   say('ranks: legacy scoring explained');
 
   // Help: how the world works.

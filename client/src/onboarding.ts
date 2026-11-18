@@ -14,6 +14,8 @@ import type { FeedEntry, OfferEntry } from './model';
 
 export type TourStatus = 'new' | 'active' | 'completed' | 'skipped';
 export type HintId = 'pregnancy' | 'death' | 'species' | 'offer';
+/** Days after the game opens on a lineage before its deaths bring up the death tip. */
+export const DEATH_HINT_AFTER_DAYS = 10;
 export const HINT_IDS: readonly HintId[] = ['pregnancy', 'death', 'species', 'offer'];
 
 /**
@@ -171,7 +173,7 @@ export function tourSteps({ touch, name }: TourContext): TourStep[] {
       id: 'seasons',
       title: 'Ranks',
       body: 'Ranked seasons (competitions of a few in-game weeks, not the spring-to-winter time of year) are on the Ranks tab: the one under way, your places and the hall of fame.',
-      targets: ['#tab-seasons'],
+      targets: ['#tab-ranks'],
       tab: 'seasons',
     },
     {
@@ -264,6 +266,12 @@ export interface HintInput {
   organisms: readonly { pregnant: boolean }[];
   feed: readonly FeedEntry[];
   offers: Iterable<OfferEntry>;
+  /**
+   * Deaths count for the death tip from this day on (none before it): not
+   * the leftovers of a retired lineage in the feed, nor a fresh founding's
+   * first losses (playtest 5: the tip came up right after founding).
+   */
+  deathsFrom?: number;
 }
 
 const SPECIES_TEXT = /^species founded/i;
@@ -273,7 +281,7 @@ export function dueHints(input: HintInput, seen: readonly HintId[]): HintId[] {
   const due = new Set<HintId>();
   if (input.organisms.some((o) => o.pregnant)) due.add('pregnancy');
   for (const e of input.feed) {
-    if (e.kind === 'death') due.add('death');
+    if (e.kind === 'death' && (input.deathsFrom === undefined || (e.day ?? -1) >= input.deathsFrom)) due.add('death');
     if (e.kind === 'achievement' && SPECIES_TEXT.test(e.text)) due.add('species');
   }
   for (const o of input.offers) {
