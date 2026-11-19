@@ -477,14 +477,20 @@ impl World {
         })
     }
 
-    /// Refill the plants on every dry tile within `radius` of `center` to
-    /// what the tile holds at most (`Tile::veg_max`); the food added. The
+    /// Regrow the plants on every dry tile within `radius` of `center` to
+    /// what the season lets the tile hold now: its most (`Tile::veg_max`)
+    /// times this season's warmth, snow cover and dryness (the terrain's
+    /// own growth terms), so nothing in midwinter and less in a drought
+    /// (playtest 9: it set the tile maximum regardless). The food added;
+    /// with `apply` false only how much it would be (a preview). The
     /// server's pasture restoration, a renown sink (`Game::restore_pasture`).
-    pub fn restore_pasture(&mut self, center: crate::math::Vec2, radius: f32) -> f32 {
+    pub fn restore_pasture(&mut self, center: crate::math::Vec2, radius: f32, apply: bool) -> f32 {
         let r = radius.max(0.0);
         let (w, h) = (self.map.width as i64, self.map.height as i64);
         let (cx, cy) = (center.x.floor() as i64, center.y.floor() as i64);
         let ri = r.ceil() as i64;
+        let bal = &self.config.balance;
+        let (rain, offset) = (bal.rain_growth, self.season_offset);
         let mut added = 0.0;
         for y in (cy - ri).max(0)..=(cy + ri).min(h - 1) {
             for x in (cx - ri).max(0)..=(cx + ri).min(w - 1) {
@@ -492,11 +498,21 @@ impl World {
                 if p.dist(center) > r {
                     continue;
                 }
-                let max = self.map.ground_at(p).veg_max;
+                let g = self.map.ground_at(p);
+                let (max, temp) = (g.veg_max, g.base_temp);
                 let t = self.map.tile_at_mut(p);
-                if t.water_depth <= 0.0 && t.veg < max {
-                    added += max - t.veg;
-                    t.veg = max;
+                if t.water_depth > 0.0 {
+                    continue;
+                }
+                let warmth = crate::terrain::growth_warmth(temp + offset);
+                let cover = (1.0 - t.snow * 3.0).clamp(0.0, 1.0);
+                let wet = (1.0 - rain + rain * (t.wetness / 0.5).clamp(0.0, 1.4)).min(1.0);
+                let cap = max * (warmth * cover * wet).clamp(0.0, 1.0);
+                if t.veg < cap {
+                    added += cap - t.veg;
+                    if apply {
+                        t.veg = cap;
+                    }
                 }
             }
         }
@@ -816,7 +832,9 @@ impl World {
     pub(crate) fn grace_spares(&self, a: &crate::organism::Organism, b: &crate::organism::Organism) -> bool {
         a.owner != crate::WILD
             && a.owner != b.owner
-            && (self.attack_grace_left(b).is_some() || (b.owner != crate::WILD && self.attack_grace_left(a).is_some()))
+            && (self.attack_grace_left(b).is_some()
+                || (b.owner != crate::WILD && self.attack_grace_left(a).is_some())
+                || self.market_shield.contains(&b.id))
     }
 
     /// The target of a possessed organism's attack order, if it has one.

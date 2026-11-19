@@ -744,6 +744,13 @@ pub struct World {
     /// "stud raid"). Not saved, like rendezvous.
     #[cfg_attr(feature = "serde", serde(skip))]
     cross_mate_bar: BTreeMap<OrgId, u64>,
+    /// Animals in open market offers and agreements
+    /// (`World::set_market_shield`): other players' animals don't hunt or
+    /// attack them, so a trade isn't lost to a rival's pack before the pair
+    /// meets (playtest 9: 8 of 12 offers failed to predation). Set by the
+    /// server every tick; not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    market_shield: std::collections::BTreeSet<OrgId>,
     /// Attack orders of possessed organisms, attacker → target
     /// (`World::possess_attack`; version 36).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36::list"))]
@@ -887,6 +894,7 @@ impl World {
             attack_orders: BTreeMap::new(),
             rendezvous: BTreeMap::new(),
             cross_mate_bar: BTreeMap::new(),
+            market_shield: Default::default(),
             lineage_founded: Vec::new(),
             lineage_homes: Vec::new(),
             group_plans: groups::GroupPlans::default(),

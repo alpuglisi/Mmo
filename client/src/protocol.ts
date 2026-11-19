@@ -80,7 +80,7 @@ export type ClientMsg =
   | { type: 'provision' }
   /** Restore the pasture around your main group (every dry tile within 12 tiles regrows in full). Renown: 1 per living
    * member (at least 200), doubled for each restoration within a ranked season's length. Data: `{restored, price, shop}`. */
-  | { type: 'restore_pasture' }
+  | { type: 'restore_pasture'; group?: number; preview?: boolean }
   | { type: 'survey' }
   | { type: 'name_animal'; organism: OrgId; name: string }
   | { type: 'animal_names' }
@@ -733,6 +733,8 @@ export interface ListingView {
   animal_name?: string;
   /** Past 90% of its lifespan: it may die of old age before a buyer meets it. */
   aging?: boolean;
+  /** Asleep (hibernating, brumating, estivating): it walks to no meeting until it wakes. */
+  dormant?: boolean;
   lineage: number;
   lineage_name: string;
   generation: number;
@@ -1140,6 +1142,10 @@ export interface ShopView {
   survey_price?: number;
   /** The price of naming one of your animals (cosmetic). */
   animal_name_price?: number;
+  /** Renown owed, taken from what comes in next. */
+  owed?: number;
+  /** What re-founding after a retirement would cost now. */
+  next_refound_fee?: number;
   provisions_bought?: number;
   provisions_max?: number;
   provision_blocked?: string;
