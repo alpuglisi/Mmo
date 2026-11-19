@@ -102,6 +102,8 @@ async function main() {
   const base = `http://127.0.0.1:${port}`;
   const server = spawn(bin, ['--fast', '--memory', '--size', '64', '--seed', '3', '--no-wild', '--bind', `127.0.0.1:${port}`, '--static', dist], {
     stdio: ['ignore', 'pipe', 'pipe'],
+    // The catastrophe hook: a notice up, to check it leaves the tools clear.
+    env: { ...process.env, EVO_E2E_HOOKS: '1' },
   });
   let log = '';
   server.stdout.on('data', (d) => (log += d));
@@ -249,6 +251,25 @@ async function main() {
     check(/^\d+$/.test(await page.evaluate(() => document.querySelector('#market-list-organism').value)), 'an adult picked to list');
     step(`Market: Reinforcements, Buy slot and the pickers stay attached over 7 s of refreshes; the list picker offers ${listRows} adults`);
 
+    // A catastrophe notice up: the toolbar's second row (View group, Pin view, Food) stays clickable
+    // (playtest 10: the drought/catastrophe notice lay over it at 1280×900 while saying to use the Food layer).
+    {
+      const r = await fetch(`${base}/api/e2e/catastrophe`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'flood_year', days: 3 }) });
+      check(r.ok, 'the test hook started a catastrophe', await r.text());
+      await page.waitForSelector('#catastrophe-alert:not([hidden])', { timeout: UI_MS });
+      await page.evaluate(() => { const a = document.querySelector('#catastrophe-alert'); if (a.classList.contains('folded')) a.querySelector('.cat-fold').click(); });
+      await page.waitForTimeout(300);
+      const tools = await page.evaluate(() => ['#view-group', '#pin-view', '#food-toggle'].map((q) => {
+        const el = document.querySelector(q);
+        const b = el.getBoundingClientRect();
+        if (b.height === 0) return { q, hit: true, hidden: true };
+        const at = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+        return { q, hit: !!at && (at === el || el.contains(at)), at: at ? `${at.tagName}.${at.className}` : null };
+      }));
+      for (const t of tools) check(t.hit, `${t.q} should not be under the notice`, t);
+      step(`with a catastrophe notice up, ${tools.map((t) => t.q).join(', ')} stay clickable (the notice sits below the toolbar)`);
+    }
+
     // Possession: the bar with Release; a click on another animal walks there instead of selecting it.
     // Possession ends on its own when the possessed animal dies (the bar then
     // says so and hides Release): that is the world, not the interface, and
@@ -270,6 +291,17 @@ async function main() {
       await page.waitForSelector('#possess-bar:not([hidden]):not(.ended)', { timeout: UI_MS });
       const barText = await page.textContent('#possess-bar');
       check(barText.includes(`#${pair.a}`) && barText.includes('Release'), 'possession bar', barText);
+      // A stack of toasts leaves Release clickable (playtest 10: covered at 1280×800).
+      await page.evaluate(() => { for (let i = 0; i < 4; i++) window.evo.model.toast('warn', `A long warning toast number ${i} that wraps over more than one line of the toast stack, as the server's warnings do.`); });
+      await page.waitForTimeout(300);
+      const releaseHit = await page.evaluate(() => {
+        const b = document.querySelector('#possess-release');
+        const r = b.getBoundingClientRect();
+        const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return { hit: !!at && (at === b || b.contains(at)), at: at ? `${at.tagName}.${at.className}` : null };
+      });
+      check(releaseHit.hit, 'Release should be on top of the toast stack', releaseHit);
+      step('with a stack of toasts up, the possession bar\'s Release is still on top');
       await page.evaluate(() => window.evo.screen().view.setFollow(false));
       // The other animal (another of ours if that one has gone meanwhile: it only has to be on the map).
       const target = await waitFor('another animal on screen', () => page.evaluate(({ a, b }) => {

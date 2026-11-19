@@ -87,7 +87,8 @@ function softCapInfo(population: number, c: CrowdingView): CapInfo {
           ? `Now: litters are ${times(c.litter)} their size.`
           : 'Now: litters are full size.');
   return {
-    count: `${grouped(c.count)} / ${grouped(c.soft_cap)}`,
+    // The limit that binds: the share of the world when it is lower (playtest 10: "653 / 1,500" while 764 bound).
+    count: worldCap !== null ? `${grouped(c.count)} / ${grouped(worldCap)} (world share)` : `${grouped(c.count)} / ${grouped(c.soft_cap)}`,
     status,
     level: full ? 'full' : nearHard || past || slowed ? 'near' : 'ok',
     explain,

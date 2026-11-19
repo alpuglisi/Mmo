@@ -9,6 +9,7 @@
 
 import { reconcile, setText } from './reconcile';
 import { createPicker, type PickItem } from './picker';
+import { groupName } from '../groups';
 import type { GameModel } from '../model';
 import type { ClientMsg, CompatibilityView, LedgerView, ListingView, MarketSort, MarketView, OrgId, ResultMsg, ShopView, SurveyView } from '../protocol';
 import { parseCompatibilityView, parseLedgerView, parseMarketView, parseShopView } from '../protocol';
@@ -312,9 +313,11 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     if (auctionLine) setText(auctionLine, auctionText(l, model.player, tick, TICKS_PER_DAY, ms));
     setText(card.querySelector('.traits-line')!, traitSummary(l.traits));
     const parents = l.mother !== undefined || l.father !== undefined ? `of #${l.mother ?? '?'} × #${l.father ?? '?'}` : 'a founder';
-    setText(card.querySelector('.info-line')!, `gen ${l.generation}, ${parents} · ${l.age_days.toFixed(0)} days · health ${l.health.toFixed(0)} · raised ${l.offspring_raised}`
-      // To the nearest 8 tiles, as the server's listing grid (playtest 9: the exact spot of a rival's herd).
-      + ` · near ${Math.round(l.x / 8) * 8}, ${Math.round(l.y / 8) * 8}${l.sales ? ` · ${l.sales} sold` : ''}${l.busy ? ' · promised' : ''}${l.pregnant ? ' · pregnant' : ''}`);
+    // Age against its lifespan (playtest 10: an age with nothing to read it against).
+    const age = l.lifespan_days ? `${l.age_days.toFixed(0)} of about ${l.lifespan_days.toFixed(0)} days` : `${l.age_days.toFixed(0)} days`;
+    setText(card.querySelector('.info-line')!, `gen ${l.generation}, ${parents} · ${age} · health ${l.health.toFixed(0)} · raised ${l.offspring_raised}`
+      // The server gives a region, not a spot (playtest 10: "near 16, 80" read as exact).
+      + ` · somewhere around ${Math.round(l.x)}, ${Math.round(l.y)}${l.sales ? ` · ${l.sales} sold` : ''}${l.busy ? ' · promised' : ''}${l.pregnant ? ' · pregnant' : ''}`);
     const expires = card.querySelector('.expires-line');
     if (expires) setText(expires, expiryText(l, tick, TICKS_PER_DAY, ms) ?? '');
     const bars = card.querySelector<HTMLElement>('.trait-bars')!;
@@ -452,7 +455,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     const v = p.data as { restored: number; unit: string; price: number; feeds_others?: boolean; hint?: string };
     if (v.restored < 1) return model.toast('error', 'Nothing would regrow there now (midwinter, a drought, or already grown).');
     const body = [
-      `About ${Math.round(v.restored)} ${v.unit} of plants regrow within ${RESTORE_RADIUS} tiles of group ${group}, as high as the season allows.`,
+      `About ${Math.round(v.restored)} ${v.unit} of plants regrow within ${RESTORE_RADIUS} tiles of ${groupName(group)}, as high as the season allows.`,
       v.feeds_others ? 'Other players\' animals graze there too and eat from it (they count toward the price).' : '',
       v.hint ? `${v.hint.charAt(0).toUpperCase()}${v.hint.slice(1)}.` : '',
       'This price holds for about 30 seconds.',
@@ -463,7 +466,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       const d = r.data as { restored?: number; unit?: string; price?: number; shop?: unknown } | undefined;
       shop = parseShopView(d?.shop) ?? shop;
       const next = shop?.restore_price;
-      model.toast('info', `Pasture restored around group ${group}${d?.restored !== undefined ? ` (about ${Math.round(d.restored)} ${d.unit ?? 'food'} regrown)` : ''} for ${d?.price ?? '?'} renown.${next ? ` The next costs ${next}.` : ''}`);
+      model.toast('info', `Pasture restored around ${groupName(group)}${d?.restored !== undefined ? ` (about ${Math.round(d.restored)} ${d.unit ?? 'food'} regrown)` : ''} for ${d?.price ?? '?'} renown.${next ? ` The next costs ${next}.` : ''}`);
       render();
     }
   });
@@ -603,7 +606,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     if (restoreGroup.dataset.key !== gkey && document.activeElement !== restoreGroup) {
       const keep = restoreGroup.value;
       restoreGroup.dataset.key = gkey;
-      restoreGroup.replaceChildren(...(groups.length ? groups : [0]).map((id) => h('option', { value: id }, id === 0 ? 'main group' : `group ${String.fromCharCode(65 + id)}`)));
+      restoreGroup.replaceChildren(...(groups.length ? groups : [0]).map((id) => h('option', { value: id }, groupName(id))));
       if ([...restoreGroup.options].some((o) => o.value === keep)) restoreGroup.value = keep;
     }
     if (rt) {

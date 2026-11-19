@@ -486,6 +486,23 @@ async function main() {
     await page.tap('#possess-release');
     await page.waitForSelector('#possess-bar', { state: 'hidden', timeout: UI_MS });
     step(`possessing #${own}: the bar says so, no toast repeats it; the chooser sits above the bar and goes when a possession starts`);
+    // Possess from the Animal tab in the sheet: the sheet closes, so the bar's Release is on top
+    // (playtest 10: "Release is on the bar", hidden under the half-open sheet).
+    await page.evaluate((own) => window.evo.model.select(own), own);
+    await page.tap('#tab-organism');
+    await page.waitForSelector('#btn-possess', { state: 'visible', timeout: UI_MS });
+    await page.tap('#btn-possess');
+    await page.waitForSelector('#possess-bar:not([hidden])', { timeout: UI_MS });
+    const release = await waitFor('Release on top', () => page.evaluate(() => {
+      const b = document.querySelector('#possess-release');
+      const r = b.getBoundingClientRect();
+      if (r.height === 0) return null;
+      const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return at && (at === b || b.contains(at)) ? { top: Math.round(r.top) } : null;
+    }));
+    await page.tap('#possess-release');
+    await page.waitForSelector('#possess-bar', { state: 'hidden', timeout: UI_MS });
+    step(`possessed from the Animal tab: the sheet closed and the bar's Release is on top (y ${release.top})`);
 
     // 7. Split, up to the limit of four groups.
     const send = (m) => page.evaluate((m) => window.evo.socket.send(m), m);

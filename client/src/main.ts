@@ -113,7 +113,12 @@ async function showDesign(r: Running, refound = false): Promise<void> {
   const el = await designScreen({
     token: r.session.token,
     player: r.session.player,
-    onFounded: () => void showGame(r),
+    onFounded: (res) => {
+      void showGame(r);
+      // Where the founders landed, said in the game itself, not only in the feed behind the tour (playtest 10).
+      const said = [res?.landing, res?.watered].filter((t): t is string => !!t);
+      if (said.length) setTimeout(() => { if (running === r) r.model.toast('info', said.join(' ')); }, 1500);
+    },
     onUnauthorized: sessionExpired,
     onLogout: logout,
     refound,
