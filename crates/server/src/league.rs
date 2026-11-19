@@ -334,6 +334,9 @@ pub struct PlayerHistory {
 /// Survival is ranked only for players with living animals on at least
 /// this share of the season's recorded days.
 pub const SURVIVAL_ALIVE_SHARE: f64 = 0.8;
+/// The legacy title's mean share is taken over the days a player had living
+/// animals, but over at least this share of the season's recorded days.
+pub const LEGACY_MIN_PLAYED: f64 = 0.5;
 
 /// The standings of the season under way (saved with the game).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -503,10 +506,19 @@ impl SeasonTracker {
             .into_iter()
             .map(|category| {
                 let values: Vec<(PlayerId, f64, f64)> = match category {
+                    // The mean over the days the player had living animals,
+                    // over at least `LEGACY_MIN_PLAYED` of the season so far
+                    // (playtest 9: season 1's crown went to the first to
+                    // found, as days before a founding counted as 0; a short
+                    // late run stays diluted).
                     Category::Legacy => self
                         .legacy_sum
                         .iter()
-                        .map(|(&p, &s)| (p, s / days, self.final_share.get(&p).copied().unwrap_or(0.0)))
+                        .map(|(&p, &s)| {
+                            let played = self.alive_days.get(&p).copied().unwrap_or(0) as f64;
+                            let over = played.max(LEGACY_MIN_PLAYED * days).clamp(1.0, days);
+                            (p, s / over, self.final_share.get(&p).copied().unwrap_or(0.0))
+                        })
                         .collect(),
                     Category::Lineage => count(&self.peak_alive),
                     Category::Species => count(&self.species),
@@ -822,7 +834,7 @@ mod tests {
         let mut t = SeasonTracker::new(1, 0, 3);
         t.record_day(&day(0, &[(WILD, 0.5), (1, 0.25), (2, 0.25)], &[(WILD, 500), (1, 40), (2, 30)]));
         t.record_day(&day(1, &[(WILD, 0.375), (1, 0.5), (2, 0.125)], &[(1, 50), (2, 60)]));
-        // Player 3 appears on the last day only: a missing day counts 0.
+        // Player 3 appears on the last day only.
         t.record_day(&day(2, &[(1, 0.125), (2, 0.25), (3, 0.625)], &[(1, 45), (2, 10), (3, 5)]));
         t.add_species(2);
         t.add_species(WILD);
@@ -843,9 +855,11 @@ mod tests {
         assert_eq!((r.head.first_day, r.head.last_day, r.head.length), (0, 2, 3));
         let legacy = &r.standings[0];
         assert_eq!(legacy.category, Category::Legacy);
-        // 1: 0.875/3, 2: 0.625/3, 3: 0.625/3 (tie on the mean; 3 has the higher final share).
-        assert_eq!(legacy.rows.iter().map(|r| (r.player, r.rank)).collect::<Vec<_>>(), vec![(1, 1), (3, 2), (2, 3)]);
-        assert!((legacy.rows[0].value - 0.875 / 3.0).abs() < 1e-12);
+        // The mean over the days alive, over at least half the season
+        // (`LEGACY_MIN_PLAYED`): 3: 0.625/1.5, 1: 0.875/3, 2: 0.625/3.
+        assert_eq!(legacy.rows.iter().map(|r| (r.player, r.rank)).collect::<Vec<_>>(), vec![(3, 1), (1, 2), (2, 3)]);
+        assert!((legacy.rows[0].value - 0.625 / 1.5).abs() < 1e-12);
+        assert!((legacy.rows[1].value - 0.875 / 3.0).abs() < 1e-12);
         let lineage = &r.standings[1];
         assert_eq!(
             lineage.rows.iter().map(|r| (r.player, r.value)).collect::<Vec<_>>(),
@@ -860,7 +874,7 @@ mod tests {
         assert_eq!(
             winners,
             vec![
-                (Category::Legacy, 1),
+                (Category::Legacy, 3),
                 (Category::Lineage, 2),
                 (Category::Market, 1),
                 (Category::Market, 2),
@@ -868,13 +882,13 @@ mod tests {
             ]
         );
         assert_eq!(r.head.players, 3);
-        assert!(r.head.summary.starts_with("Season 1 (days 1–3): p1 won the legacy crown with 29.2% mean share."));
+        assert!(r.head.summary.starts_with("Season 1 (days 1–3): p3 won the legacy crown with 41.7% mean share."));
         assert!(r.head.summary.contains("Stud market: p1 and p2 (30 renown)."), "{}", r.head.summary);
         // The player view.
         let mine = r.player_season(3).unwrap();
         assert_eq!(
             mine.placements.iter().map(|p| (p.category, p.rank, p.of)).collect::<Vec<_>>(),
-            vec![(Category::Legacy, 2, 3), (Category::Lineage, 3, 3)]
+            vec![(Category::Legacy, 1, 3), (Category::Lineage, 3, 3)]
         );
         let survival = &r.standings[4];
         assert_eq!(survival.rows.iter().map(|r| (r.player, r.value)).collect::<Vec<_>>(), vec![(1, 1.0)]);

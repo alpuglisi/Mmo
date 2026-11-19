@@ -997,9 +997,13 @@ pub struct MatingRecord {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct MatingOutcome {
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub mismatch: f32,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub cost: f32,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub failure_chance: f32,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub fertility: f32,
     pub conceived: bool,
 }
@@ -1024,6 +1028,7 @@ pub struct BodyPlanGap {
     pub gene: String,
     /// Difference in expressed value (fertility falls to 0 at
     /// `evo_sim::mating::BODY_PLAN_STERILE`).
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub gap: f32,
 }
 
@@ -1036,19 +1041,27 @@ pub struct MatingPreviewView {
     pub compatible: bool,
     /// Fertility the mating would run with: the lower of the two below,
     /// times the mates' infections.
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub fertility: f32,
     /// 0 for different body plans (thermoregulation, birth mode, body size,
     /// diet).
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub body_plan_fertility: f32,
     /// Outbreeding depression over the whole genome.
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub distance_fertility: f32,
     pub body_plan_gaps: Vec<BodyPlanGap>,
     /// Larger of the two preference mismatches (≤ 1: both would choose it).
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub mismatch: f32,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub cost: f32,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub failure_chance: f32,
     /// Tiles apart (they must meet, within `meeting_distance`).
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub distance: f32,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub meeting_distance: f32,
     /// Why a request for this pair would be refused for incompatibility
     /// (`incompatible_body_plans` or `genetically_incompatible`).
@@ -1997,18 +2010,23 @@ pub struct CompatibilityRow {
     /// design's founders) and theirs, 0 (sterile) to 1: body plan
     /// (`Balance::egg_hybrid` included) and whole-genome distance. Before
     /// playtest 2 this was the best pair's body-plan fertility.
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub fertility: f32,
     /// The 10th and 90th percentile pair: what to expect from a random
     /// mating.
     #[serde(default)]
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub fertility_low: f32,
     #[serde(default)]
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub fertility_high: f32,
     /// The best pair.
     #[serde(default)]
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub best_fertility: f32,
     /// Share of the pairs with any fertility.
     #[serde(default)]
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub fertile_share: f32,
     /// At least half the pairs fertile.
     pub compatible: bool,
@@ -2021,6 +2039,7 @@ pub struct CompatibilityRow {
     /// (`carnivory`, `endothermy`, `birth_mode`, `body_size`, or
     /// `morphology` for eye or leg counts), and the gap; sterile at 0.30.
     pub limiting: String,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub gap: f32,
 }
 
@@ -2342,6 +2361,7 @@ pub struct ListingView {
     pub compatible: Option<bool>,
     /// That best body-plan fertility, 0..1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "crate::protocol::round::opt2")]
     pub body_plan_fertility: Option<f32>,
     /// `fixed` or `auction` (listings from before auctions read as fixed).
     #[serde(default = "fixed_kind")]
@@ -3005,6 +3025,8 @@ pub struct EraBoard {
     pub species_alive: usize,
     pub catastrophes: Vec<u32>,
     pub rows: Vec<EraRow>,
+    /// The niche prizes won (a leading player with at least
+    /// `chronicle::NICHE_MIN_SHARE` of the niche's alleles over the era).
     pub niches: Vec<NicheView>,
 }
 
@@ -3057,4 +3079,31 @@ pub struct ChronicleView {
     pub eras: EraList,
     pub catastrophes: CatastropheList,
     pub achievements: AchievementList,
+}
+
+/// Serializers that round to hundredths (playtest 9: f32 noise such as
+/// 0.30000001192092896 in mating previews, listings and compatibility).
+pub mod round {
+    use serde::Serializer;
+
+    /// `v` rounded to hundredths, as f64 (so 0.3 is written 0.3).
+    pub fn hundredths(v: f32) -> f64 {
+        (v as f64 * 100.0).round() / 100.0
+    }
+
+    /// `v` rounded to tenths, as f64.
+    pub fn tenths(v: f32) -> f64 {
+        (v as f64 * 10.0).round() / 10.0
+    }
+
+    pub fn f2<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_f64(hundredths(*v))
+    }
+
+    pub fn opt2<S: Serializer>(v: &Option<f32>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(x) => s.serialize_some(&hundredths(*x)),
+            None => s.serialize_none(),
+        }
+    }
 }
