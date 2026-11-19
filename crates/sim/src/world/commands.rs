@@ -743,29 +743,43 @@ impl World {
     /// run of foundings each within twice the grace of the next.
     pub(crate) fn grace_start(&self, l: u32) -> Option<u64> {
         let owner = self.lineages.get(l as usize)?.owner;
-        let cooldown = self.grace_cooldown();
-        let mut start = *self.lineage_founded.get(l as usize)?;
-        while let Some(t) = (0..self.lineages.len())
-            .filter(|&k| self.lineages[k].owner == owner)
-            .filter_map(|k| self.lineage_founded.get(k).copied())
-            .filter(|&t| t < start && start - t <= cooldown)
-            .min()
-        {
-            start = t;
-        }
-        Some(start)
+        Some(self.grace_chain(owner, *self.lineage_founded.get(l as usize)?))
     }
 
     /// The grace start a founding by `owner` at tick `at` would get: `at`,
     /// or an earlier founding's whose grace it would continue
     /// ([`World::grace_start`]).
     pub fn grace_start_for(&self, owner: PlayerId, at: u64) -> u64 {
+        self.grace_chain(owner, at)
+    }
+
+    /// Walk back from a founding at `at`: while an earlier lineage of
+    /// `owner` ended within [`World::grace_cooldown`] before it, the
+    /// founding continues that lineage's grace (from its founding). Measured
+    /// from the earlier lineage's END, as the server's re-founding window is
+    /// (playtest 9: a lineage older than the window retired and re-founded
+    /// under re-found terms with a brand-new grace). A lineage with no
+    /// recorded end yet counts as ending now if it has no living members
+    /// (it ended today), at its founding while it lives.
+    fn grace_chain(&self, owner: PlayerId, at: u64) -> u64 {
         let cooldown = self.grace_cooldown();
+        let tpd = self.config.ticks_per_day.max(1) as u64;
         let mut start = at;
         while let Some(t) = (0..self.lineages.len())
             .filter(|&k| self.lineages[k].owner == owner)
-            .filter_map(|k| self.lineage_founded.get(k).copied())
-            .filter(|&t| t < start && start - t <= cooldown)
+            .filter_map(|k| {
+                let founded = *self.lineage_founded.get(k)?;
+                // Its end: recorded; or, with none recorded, its founding while
+                // it still lives (several of one owner's lineages at once: a
+                // host's test worlds), else now (it ended today).
+                let alive = self.lineage_alive.get(k).copied().unwrap_or(0) + self.lod.lineage_count(k as u32).alive;
+                let ended = match self.chronicle.lineages.get(k).and_then(|x| x.extinct_day) {
+                    Some(d) => d * tpd,
+                    None if alive > 0 => founded,
+                    None => start,
+                };
+                (founded < start && start.saturating_sub(ended) <= cooldown).then_some(founded)
+            })
             .min()
         {
             start = t;
@@ -773,7 +787,7 @@ impl World {
         start
     }
 
-    /// How soon after one founding the owner's next still continues its
+    /// How soon after a lineage ends the owner's next founding still continues its
     /// grace: twice the grace's whole length (its real-time minimum
     /// included), so a re-founding never starts afresh a grace that would
     /// still be running; the time left carries over.

@@ -5020,7 +5020,15 @@ impl Game {
     fn ramped(&self, record: &DailyRecord) -> DailyRecord {
         let mut r = record.clone();
         for e in &mut r.legacy {
-            let f = founding_ramp(self.founded_day.get(&e.player).copied(), record.day);
+            // A player with no living animals ranks nothing for the day: genes
+            // left in rivals' herds by a retired or extinct lineage used to
+            // keep scoring (playtest 9: ranked 4th with none alive).
+            let alive: usize = record.lineages.iter().filter(|l| l.owner == e.player).map(|l| l.alive).sum();
+            let f = if e.player != WILD && alive == 0 {
+                0.0
+            } else {
+                founding_ramp(self.founded_day.get(&e.player).copied(), record.day)
+            };
             e.share *= f;
             e.weighted_share *= f;
         }
@@ -6002,14 +6010,14 @@ impl Game {
         } else if left > 0 {
             format!(
                 "Newcomer grace: {:.1} days left ({}). It continues the grace of your earlier lineage (from day {from_day}): \
-                 founding again within {soon:.0} days of your last founding carries a grace on instead of starting a new one.",
+                 founding again within {soon:.0} days of your last lineage's end carries its grace on instead of starting a new one.",
                 days(left),
                 real(left),
             )
         } else {
             format!(
                 "No newcomer grace: it continues the grace of your earlier lineage (from day {from_day}), which has run out. \
-                 Founding again within {soon:.0} days of your last founding carries a grace on rather than starting \
+                 Founding again within {soon:.0} days of your last lineage's end carries its grace on rather than starting \
                  a fresh one; other players' animals can attack yours then."
             )
         };
@@ -7488,7 +7496,10 @@ impl Game {
                 alive: self.owner_population(p),
             })
             .collect();
-        rows.sort_by(|a, b| b.share.total_cmp(&a.share).then(a.player.cmp(&b.player)));
+        // Players with animals first: one with none left (genes only in
+        // rivals' herds) no longer outranks the living (playtest 9).
+        let living = |r: &LeaderRow| r.player == WILD || r.alive > 0;
+        rows.sort_by(|a, b| living(b).cmp(&living(a)).then(b.share.total_cmp(&a.share)).then(a.player.cmp(&b.player)));
         Leaderboard { day: snap.map(|s| s.day), breeding_adults: snap.map_or(0, |s| s.breeding_adults), rows }
     }
 
