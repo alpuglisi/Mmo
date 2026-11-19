@@ -10,7 +10,7 @@
 // returns the caption. They only describe: any combination is allowed.
 
 import {
-  adultMass, buoyancy, foodCostOf, GENE_DEFAULTS, DEGREES_PER_INSULATION, FANG_THRESHOLD, fangPlantLoss, flight, geneValue, iceSlip, scaleWarmthLoss,
+  adultMass, sizeWord, buoyancy, foodCostOf, GENE_DEFAULTS, DEGREES_PER_INSULATION, FANG_THRESHOLD, fangPlantLoss, flight, geneValue, iceSlip, scaleWarmthLoss,
 } from '../bodyMath';
 import type { Morphology } from '../morphology';
 import type { DesignSpec } from '../protocol';
@@ -97,7 +97,8 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     low: 'small: quick, stealthy, matures fast; weak and short-lived',
     mid: 'medium: middling strength, defense, speed and lifespan',
     high: 'large: strong, tough, long-lived; slow, hungry, easy to spot',
-    context: (d, _l, base) => `${base} (adult ≈ ${kg(adultMass(d))})${foodNote(foodCostOf(d, 'body_size', GENE_DEFAULTS.body_size), 'vs. the default size')}`,
+    // The leading word is the weight class (`sizeWord`), as the inspector names the animal.
+    context: (d, _l, base) => `${base.replace(/^\w+/, sizeWord(adultMass(d)))} (adult ≈ ${kg(adultMass(d))})${foodNote(foodCostOf(d, 'body_size', GENE_DEFAULTS.body_size), 'vs. the default size')}`,
   },
   muscle: {
     what: 'Strength and speed, paid for in food.',
