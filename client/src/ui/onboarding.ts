@@ -53,6 +53,9 @@ export interface Onboarding {
   destroy: () => void;
 }
 
+/** The tour was skipped or finished in this page (by any game screen). */
+let tourEndedThisPage = false;
+
 export function createOnboarding(deps: OnboardingDeps): Onboarding {
   const { model } = deps;
   const key = progressKey(model.player, model.name);
@@ -87,7 +90,10 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
     progress = tourReduce(progress, e, steps.length);
     save();
     if (progress.tour === 'active') showStep();
-    else closeTour();
+    else {
+      tourEndedThisPage = true;
+      closeTour();
+    }
   }
 
   function startTour(): void {
@@ -401,7 +407,11 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
 
   deps.helpBtn.addEventListener('click', openHelp);
 
-  if (!deps.disabled && autoStarts(progress)) startTour();
+  // Once per page: a game screen rebuilt (a reconnect, a re-founding) doesn't
+  // start the tour again after it was skipped or finished, nor a second one
+  // over another still open (playtest 8: "Skip tour" needed twice, the tour back
+  // on top of the Market).
+  if (!deps.disabled && autoStarts(progress) && !tourEndedThisPage && !document.getElementById('tour')) startTour();
 
   return {
     startTour,

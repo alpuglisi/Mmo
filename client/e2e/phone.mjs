@@ -493,9 +493,18 @@ async function main() {
       groups.push(res.data.group);
     }
     await waitFor('four groups listed', () => page.evaluate(() => (window.evo.model.state.groups ?? []).filter((g) => g.members > 0).length === 4));
-    await waitFor('Split disabled', () => page.evaluate(() => document.querySelector('#split-group').disabled));
+    await waitFor('Split unavailable', () => page.evaluate(() => document.querySelector('#split-group').getAttribute('aria-disabled') === 'true'));
     const title = await page.getAttribute('#split-group', 'title');
-    step(`Split is disabled at four groups ("${title}")`);
+    // A tap says why (phones show no tooltips), and splits nothing.
+    await page.tap('#tools-more').catch(() => {});
+    if (await page.isVisible('#split-group')) {
+      // (aria-disabled: Playwright waits for "enabled" unless forced; a finger doesn't.)
+      await page.tap('#split-group', { force: true });
+      await waitFor('the reason as a toast', () => page.evaluate(() => [...document.querySelectorAll('#toasts > *')].some((t) => /4 groups, the most/.test(t.textContent))));
+      await page.tap('#tools-more').catch(() => {});
+    }
+    check(await page.evaluate(() => (window.evo.model.state.groups ?? []).filter((g) => g.members > 0).length) === 4, 'still four groups');
+    step(`Split is unavailable at four groups and a tap says why ("${title}")`);
 
     // 7b. A pinned view says so, and the button knows it after a reload.
     await page.tap('#tools-more');
