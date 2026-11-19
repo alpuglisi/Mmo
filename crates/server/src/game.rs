@@ -64,6 +64,9 @@ const SHARE_MILESTONES: [f64; 5] = [0.01, 0.05, 0.1, 0.25, 0.5];
 /// games still restore).
 pub const SAVED_GAME_VERSION: u32 = 5;
 /// Ledger entries returned by the `ledger` command unless asked otherwise.
+/// Adults of the other sex an offer to a lineage samples for one that
+/// can conceive with the offered animal (`offer_to_lineage`).
+const OFFER_FERTILITY_SAMPLE: usize = 64;
 const LEDGER_DEFAULT: usize = 50;
 /// Genes shown for a listed organism.
 const LISTING_TRAITS: [Gene; 14] = [
@@ -465,6 +468,9 @@ pub const STARVING_FLOOR: u64 = 15;
 pub const STARVING_MIN: u64 = 5;
 /// Drownings in a day that raise the drowning warning.
 pub const DROWNED_MIN: u64 = 3;
+/// Share of a lineage lost over `DECLINE_DAYS` from which the die-off
+/// warning says it is crashing (playtest 9: 45% in 10 days read "slowly").
+const DECLINE_CRASH: f64 = 0.3;
 /// Days over which a slow die-off is summed (`Game::slow_decline`)…
 pub const DECLINE_DAYS: u64 = 10;
 /// …and the share of the lineage (as it was then) lost to hunger, thirst
@@ -838,6 +844,9 @@ pub struct Game {
     /// the alert that held the highest id was dropped from the list
     /// (playtest 8: two alerts with id 174).
     alert_ids: BTreeMap<PlayerId, u64>,
+    /// Head-count prices last shown to each player (`Game::quote_shop`).
+    /// Not saved.
+    shop_quotes: BTreeMap<PlayerId, shop::ShopQuote>,
     /// Each player's recent finished matings, newest first (memory only:
     /// `GET /api/matings/history`).
     mating_log: BTreeMap<PlayerId, VecDeque<MatingRecord>>,
@@ -1245,6 +1254,7 @@ impl Game {
             prev_eggs: BTreeMap::new(),
             alerts: BTreeMap::new(),
             alert_ids: BTreeMap::new(),
+            shop_quotes: BTreeMap::new(),
             mating_log: BTreeMap::new(),
             watched: BTreeMap::new(),
             progress: BTreeMap::new(),
@@ -2258,6 +2268,9 @@ impl Game {
             ClientMsg::OrderMove { organism, x, y } => {
                 finite(&[x, y])?;
                 let to = self.world.order_move(player, organism, Vec2::new(x, y)).map_err(e)?;
+                // An order restarts the need alert's short wait (playtest 9:
+                // "foraging on its own until you give it an order" 5 s after one).
+                self.possessed_seen.insert(organism, self.world.tick());
                 Ok(Some(target_data(Vec2::new(x, y), to, "it can't get there; it goes as near as it can")))
             }
             ClientMsg::PossessAttack { organism, target } => {
@@ -2268,6 +2281,7 @@ impl Game {
                     _ => self.grace_error(&err),
                 })?;
                 self.attack_watch.insert(organism, (player, target));
+                self.possessed_seen.insert(organism, self.world.tick());
                 if !repeat {
                     self.alert_attacked(player, organism, target, out);
                 }
@@ -2319,12 +2333,15 @@ impl Game {
                             c.y
                         )
                     } else {
+                        // With the distance (playtest 9: a territory 27 tiles
+                        // off, no word of how far).
                         format!(
                             "the ground the group forages there reaches into {}'s territory at ({:.0}, {:.0}) \
-                             (radius {r:.0}).",
+                             (radius {r:.0}, centre {:.0} tiles from the destination).",
                             self.name(owner),
                             c.x,
-                            c.y
+                            c.y,
+                            c.dist(to)
                         )
                     });
                 }
@@ -2361,10 +2378,12 @@ impl Game {
                         // the worse of the way and the arrival (playtest 8:
                         // 2.02 promised, a third lost).
                         let food = self.journey_food(player, group, &way, j.days, supports);
-                        let r2 = |x: f32| (x * 100.0).round() / 100.0;
+                        // Rounded as f64 (playtest 9: f32 noise in the reply).
+                        let r2 = crate::protocol::round::hundredths;
+                        let r1 = crate::protocol::round::tenths;
                         data["journey"] = serde_json::json!({
-                            "tiles": (j.tiles * 10.0).round() / 10.0,
-                            "days": (j.days * 10.0).round() / 10.0,
+                            "tiles": r1(j.tiles),
+                            "days": r1(j.days),
                             "food_share": r2(food.map_or(j.food_share, |f| f.share())),
                         });
                         if let Some(f) = food {
@@ -2707,7 +2726,7 @@ impl Game {
                 };
                 Ok(Some(serde_json::to_value(view).unwrap()))
             }
-            ClientMsg::RenownShop => Ok(Some(serde_json::to_value(self.shop_view(player)).unwrap())),
+            ClientMsg::RenownShop => Ok(Some(serde_json::to_value(self.quote_shop(player)).unwrap())),
             ClientMsg::BuyMatingSlot => Ok(Some(serde_json::to_value(self.buy_mating_slot(player)?).unwrap())),
             ClientMsg::Reinforce => {
                 let (ids, shop, site) = self.reinforce(player)?;
@@ -2722,7 +2741,12 @@ impl Game {
             }
             ClientMsg::RestorePasture => {
                 let (restored, price, shop) = self.restore_pasture(player)?;
-                Ok(Some(serde_json::json!({ "restored": restored, "price": price, "shop": shop })))
+                // Plant food restored, to tenths (playtest 9: "5386.2998").
+                Ok(Some(serde_json::json!({
+                    "restored": crate::protocol::round::tenths(restored),
+                    "price": price,
+                    "shop": shop
+                })))
             }
             ClientMsg::SetNameplate { color, title } => {
                 let (plate, shop) = self.set_nameplate(player, &color, &title)?;
@@ -2874,6 +2898,24 @@ impl Game {
             }
         };
         self.check_auction_lock(mine)?;
+        // Some adult of the other sex there must be able to conceive with it
+        // (playtest 9: offers no animal of the lineage could take were
+        // accepted). A sample keeps the check cheap for a big lineage.
+        let sex = a.sex;
+        let fertile = self
+            .world
+            .organisms
+            .iter()
+            .filter(|b| b.alive && b.lineage == lineage && b.matured && b.sex != sex)
+            .take(OFFER_FERTILITY_SAMPLE)
+            .any(|b| self.world.mating_preview(mine, b.id).ok().as_ref().and_then(incompatibility).is_none());
+        if !fertile {
+            return Err(ErrorInfo::new(
+                "incompatible_lineage",
+                "none of that lineage's grown animals of the other sex can conceive with yours (body plans or genomes too \
+                 far apart)",
+            ));
+        }
         if self.world.mating_slots_left(player) == 0 {
             return Err(e(CommandError::NoSlotsLeft));
         }
@@ -5511,7 +5553,8 @@ impl Game {
             }
             if self.hardship_note.remove(&player) {
                 text.push_str(
-                    " Further founders lost to hunger, thirst or the weather are counted in the daily summary.",
+                    " Further founders lost the same way are counted in the daily summary (a hunting warning names \
+                     the hunters).",
                 );
             }
             self.alert(player, AlertKind::Death, text, organism, out);
@@ -5628,6 +5671,11 @@ impl Game {
                     "Their water has run dry or out of reach (a drought shrinks ponds; steep banks keep some from drinking). \
                      Move groups beside lasting water: rivers and big lakes (blue on the map)."
                         .into()
+                } else if self.lineage_hunts(player) {
+                    // Hunters (playtest 9: a pack was sent to the Food layer).
+                    "Their prey has run short: move the pack to where prey is (the herds on the map; a group's orders \
+                     say how much it can take there), split it, or order hunts."
+                        .into()
                 } else {
                     "Move groups to better ground (the Food layer shows it), split big herds, keep them near water."
                         .into()
@@ -5666,7 +5714,29 @@ impl Game {
             self.history.back().and_then(|r| r.lineages.iter().find(|e| e.lineage == lineage).map(|e| (r, e)))
         {
             let lost: u64 = e.eggs_lost.values().sum();
-            if lost >= EGG_WARN_MIN && lost > e.born {
+            // Eggs past what a sitting parent covers chill by design: only
+            // losses beyond that expectation count (playtest 9: a litter-8
+            // herd was told its eggs were failing every few days through a
+            // strong breeding season).
+            let litter = {
+                let (n, sum) = w
+                    .organisms
+                    .iter()
+                    .filter(|o| o.alive && o.lineage == lineage && o.matured)
+                    .fold((0u64, 0u64), |(n, s), o| (n + 1, s + o.traits.litter as u64));
+                if n == 0 {
+                    0.0
+                } else {
+                    sum as f64 / n as f64
+                }
+            };
+            let covered = (evo_sim::world::CLUTCH_COVERED as f64).min(litter.max(1.0));
+            let expected = if w.config.balance.clutch_split > 0.0 && litter > covered {
+                (e.born as f64 * (litter - covered) / covered).round() as u64
+            } else {
+                0
+            };
+            if lost >= EGG_WARN_MIN && lost > e.born + expected {
                 let (cause, n) =
                     e.eggs_lost.iter().max_by_key(|(_, &n)| n).map(|(c, &n)| (c.as_str(), n)).unwrap_or(("", 0));
                 let season = season_of(w, r.day);
@@ -5759,21 +5829,32 @@ impl Game {
                      ground before its next sleep.",
                     100.0 * asleep as f64 / mine as f64
                 )
+            } else if self.lineage_hunts(player) {
+                "Move the pack to where prey is, split it, or fatten it before the cold.".to_string()
             } else {
                 "Find better ground or water, or fatten them before the cold.".to_string()
             };
             // Births can hide the losses (playtest 8: "dying off slowly:
-            // 954 → 1251").
+            // 954 → 1251"); a big drop is a crash, not a slow die-off, and
+            // the share names whose deaths it counts (playtest 9: "dying off
+            // slowly: 261 → 143 ... (34%)").
+            let drop = 100.0 * (then.saturating_sub(now)) as f64 / then.max(1) as f64;
             let text = if now >= then {
                 format!(
                     "Your lineage is losing animals faster than it looks: {lost} died of hunger, thirst or cold over the \
                      last {DECLINE_DAYS} days ({pct:.0}% of the {then} it had), though births kept the count up ({then} → \
                      {now}). {advice}"
                 )
+            } else if drop >= DECLINE_CRASH * 100.0 {
+                format!(
+                    "Your lineage is crashing: {then} → {now} alive over the last {DECLINE_DAYS} days ({drop:.0}% fewer); \
+                     {lost} died of hunger, thirst or cold ({pct:.0}% of the {then}). {advice}"
+                )
             } else {
                 format!(
-                    "Your lineage is dying off slowly: {then} → {now} alive over the last {DECLINE_DAYS} days, {lost} of \
-                     them of hunger, thirst or cold ({pct:.0}% of the lineage). Day by day it looks small. {advice}"
+                    "Your lineage is dying off slowly: {then} → {now} alive over the last {DECLINE_DAYS} days ({drop:.0}% \
+                     fewer); {lost} died of hunger, thirst or cold ({pct:.0}% of the {then}). Day by day it looks small. \
+                     {advice}"
                 )
             };
             out.push(LineageWarning { kind: "decline".into(), text });
@@ -5850,6 +5931,18 @@ impl Game {
     /// Deaths of hunger, thirst and cold over the last [`DECLINE_DAYS`]
     /// recorded days, when they are at least [`DECLINE_SHARE`] of the
     /// lineage as it was then: `(deaths, alive then, alive now)`.
+    /// Whether `player`'s lineage lives mostly on meat (its living members'
+    /// mean carnivory above 0.6): warnings give hunters' advice.
+    fn lineage_hunts(&self, player: PlayerId) -> bool {
+        let (n, c) = self
+            .world
+            .organisms
+            .iter()
+            .filter(|o| o.alive && o.owner == player)
+            .fold((0usize, 0.0f32), |(n, c), o| (n + 1, c + o.traits.carnivory));
+        n > 0 && c / n as f32 > 0.6
+    }
+
     fn slow_decline(&self, lineage: u32) -> Option<(u64, u64, u64)> {
         let n = self.history.len();
         if n < DECLINE_DAYS as usize + 1 {
@@ -6216,14 +6309,14 @@ impl Game {
     ) -> Vec<String> {
         let mut warnings = Vec::new();
         let w = self.world.water_check(player, group, center, radius);
-        data["water_share"] = ((w.water_share * 100.0).round() / 100.0).into();
+        data["water_share"] = crate::protocol::round::hundredths(w.water_share).into();
         data["drinkable_tiles"] = w.drinkable.into();
         // In a drought what water there is dries up: ask for more of it, in
         // proportion to the group (playtest 4: 12 tiles passed in a 0.83
         // drought for hundreds of animals).
         let members = self.world.groups(player).iter().find(|g| g.id == group).map_or(0, |g| g.members);
         let dryness = self.world.map.dryness_at(center);
-        data["dryness"] = ((dryness * 100.0).round() / 100.0).into();
+        data["dryness"] = crate::protocol::round::hundredths(dryness).into();
         let wanted = if dryness > 0.5 { (members / 8).max(LOW_WATER_TILES) } else { LOW_WATER_TILES };
         if w.drinkable < wanted && w.drinkable >= LOW_WATER_TILES {
             warnings.push(format!(
@@ -6233,8 +6326,10 @@ impl Game {
             ));
         } else if w.drinkable < LOW_WATER_TILES {
             warnings.push(
-                "Little or no drinking water in or near this circle: the group will leave it to drink, and may die \
-                 of thirst in a drought."
+                // Which water doesn't count (playtest 9: next to a clicked
+                // lake, "that is water" then "little or no drinking water").
+                "Little or no drinking water in or near this circle (ice, a dried bed, or water the group can't get \
+                 down to doesn't count): the group will leave it to drink, and may die of thirst in a drought."
                     .to_string(),
             );
         } else if w.water_share > 0.25 {
@@ -6245,7 +6340,7 @@ impl Game {
         }
         if let Some(f) = self.world.food_check(player, group, center, radius) {
             data["food_supports"] = f.supports.into();
-            data["standing_days"] = ((f.standing_days * 10.0).round() / 10.0).into();
+            data["standing_days"] = crate::protocol::round::tenths(f.standing_days).into();
             if f.supports < f.members {
                 warnings.push(format!(
                     "At this season's growth the plants here feed about {} of the group's {} animals; expect hunger.",
@@ -6264,8 +6359,8 @@ impl Game {
             data["prey_feeds"] = p.feeds.into();
             if p.feeds < p.members {
                 warnings.push(format!(
-                    "The prey your hunters can take in or near this circle ({} animals: no burrowers or other hunters, \
-                     poisonous kinds only as often as hungry hunters take them) feeds about {} of the group's {} for good; \
+                    "The prey your hunters can take in or near this circle ({} animals: no burrowers, other hunters or \
+                     animals under a newcomer's grace, poisonous kinds only as often as hungry hunters take them) feeds about {} of the group's {} for good; \
                      expect hunger.",
                     p.prey, p.feeds, p.members
                 ));
@@ -6273,7 +6368,7 @@ impl Game {
         }
         if let Some(m) = self.world.group_middle(player, group) {
             let d = m.dist(center);
-            data["distance"] = ((d * 10.0).round() / 10.0).into();
+            data["distance"] = crate::protocol::round::tenths(d).into();
             if far && d > FAR_CIRCLE_TILES {
                 warnings.push(format!("It is {d:.0} tiles from the group, which has to walk there first."));
             }
@@ -6882,6 +6977,7 @@ impl Game {
         let ch = &self.world.chronicle;
         // (Player, alert kind, push kind, text.)
         let mut alerts: Vec<(PlayerId, AlertKind, Option<PushKind>, String)> = Vec::new();
+        let mut dry_after_megadrought = false;
         self.seen_catastrophes.resize(ch.catastrophes.len(), (false, false));
         for (c, seen) in ch.catastrophes.iter().zip(self.seen_catastrophes.iter_mut()) {
             let what = catastrophe_text(c.kind);
@@ -6900,15 +6996,33 @@ impl Game {
             if c.ended && !seen.1 {
                 seen.1 = true;
                 let change = population_change_text(c.population_before, c.population_after.unwrap_or(0));
+                // A megadrought can end with the land still dry (playtest 9:
+                // "The megadrought is over" and "Drought: 96% dry" in one
+                // tick): said in the one alert, and the drought counts as
+                // warned of.
+                let still_dry = c.kind == CatastropheKind::Megadrought && self.world.map.drought >= DROUGHT_WARN;
+                let tail = if still_dry {
+                    dry_after_megadrought = true;
+                    format!(
+                        ", but {:.0}% of the land is still dry: water stays scarce until the rains come back (an alert \
+                         says when the drought eases)",
+                        self.world.map.drought * 100.0
+                    )
+                } else {
+                    String::new()
+                };
                 for &p in &players {
                     alerts.push((
                         p,
                         AlertKind::World,
                         None,
-                        format!("{} is over: {change}.", catastrophe_name(c.kind)),
+                        format!("{} is over: {change}{tail}.", catastrophe_name(c.kind)),
                     ));
                 }
             }
+        }
+        if dry_after_megadrought {
+            self.drought_warned = true;
         }
         // Droughts: a warning when much of the land dries out, and when it eases.
         let drought = self.world.map.drought;
@@ -7142,9 +7256,12 @@ impl Game {
                             })
                             .collect()
                     },
+                    // Only the niches won (at least `NICHE_MIN_SHARE`):
+                    // playtest 9 read a 0.96% desert "leader" as a prize.
                     niches: e
                         .niches
                         .iter()
+                        .filter(|n| n.player != WILD && n.share >= evo_sim::chronicle::NICHE_MIN_SHARE)
                         .map(|n| NicheView {
                             niche: n.niche.clone(),
                             player: n.player,
@@ -7641,11 +7758,18 @@ fn death_count_words(why: Why, n: usize) -> String {
 }
 
 /// Founder deaths told once per lineage and cause (`Game::announce_deaths`):
-/// hardships a lineage-wide warning covers.
+/// hardships and hunting, which lineage-wide warnings cover.
 fn founder_hardship(cause: DeathCause) -> bool {
+    // Predation too (playtest 9: 42 per-founder "eaten" alerts): the
+    // lineage's hunting warning names the hunters.
     matches!(
         cause,
-        DeathCause::Starvation | DeathCause::Thirst | DeathCause::Exposure | DeathCause::Heat | DeathCause::WinterSleep
+        DeathCause::Starvation
+            | DeathCause::Thirst
+            | DeathCause::Exposure
+            | DeathCause::Heat
+            | DeathCause::WinterSleep
+            | DeathCause::Predation
     )
 }
 
@@ -9895,7 +10019,7 @@ mod tests {
         run_days(&mut g, 2);
         let out = g.command(10, 1, None, ClientMsg::Reinforce);
         assert_eq!(result(&out).1.as_deref(), Some("limit_reached"));
-        assert!(format!("{out:?}").contains("the next is possible on day"), "{out:?}");
+        assert!(format!("{out:?}").contains("the next is possible in"), "{out:?}");
         let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
         // Both were bought on one day and lapse together: the next costs the base price.
         assert_eq!(shop.reinforce_price, economy::reinforce_price(0), "the next one's price");

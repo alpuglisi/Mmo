@@ -238,9 +238,9 @@ impl fmt::Display for CommandError {
                 write!(
                     f,
                     "that circle overlaps another player's territory (rival territories near your groups show on the \
-                     map); claim ground of your own (the attempt costs a short wait). A group ten times the size of a \
-                     small holder (at most {} adults; young don't count) may claim over its ground, and a group twice \
-                     the size of one holding {} times the food it needs",
+                     map); claim ground of your own (the attempt costs a short wait). Two exceptions: a group ten \
+                     times the size of a small holder (at most {} adults; young don't count) may claim over its ground, \
+                     and so may a group twice the size of a holder whose territory has {} times the food it needs",
                     super::groups::SQUAT_MEMBERS,
                     super::groups::OVERCLAIM_FOOD
                 )
@@ -269,7 +269,13 @@ impl fmt::Display for CommandError {
                 )
             }
             CommandError::Sheltered(id) => {
-                write!(f, "organism {id} is down in its burrow, out of reach: wait for it to come out")
+                // The state's `burrowed` flag is the same: one that read
+                // false went down since the last state (playtest 9).
+                write!(
+                    f,
+                    "organism {id} is down in its burrow, out of reach (it went down since your last view if it showed \
+                     above ground): wait for it to come out"
+                )
             }
             CommandError::NewcomerGrace { days_left } => write!(
                 f,

@@ -9280,6 +9280,65 @@ and 8 of 8 (8 and 8 off; viable 7 and 8 either way).
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.77 (± 0.16; 11.82 with the five tunables off). Every lineage survives 12 of 12. |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
 
+### Playtest 9: server Lows
+
+Server-side Lows from `docs/playtest-9.md`:
+
+- **Megadrought's end.** When a megadrought ends with the land still past
+  the drought line, the end alert says so, and no separate "Drought: 96%
+  dry" follows in the same tick.
+- **Die-off grading.** A lineage down 30% or more in 10 days is "crashing",
+  not "dying off slowly". Both texts give the drop and say whose deaths the
+  percentage counts (hunger, thirst and cold, as a share of the starting
+  count).
+- **Hunters' advice.** A lineage living mostly on meat gets advice about
+  prey (move the pack to prey, split it, order hunts) instead of the Food
+  layer.
+- **Prey count.** The text says animals under a newcomer's grace aren't
+  counted.
+- **Overlap refusal.** Its last clause has its verb back.
+- **Niche prizes.** The era's niche list shows only niches won (at least
+  25% of the niche, `chronicle::NICHE_MIN_SHARE`). A 0.96% desert "leader"
+  read as a prize.
+- **Burrows.** The state's `burrowed` is the same flag the attack refusal
+  checks. The refusal now says the animal went down since the last view.
+- **Rounding.** Mating previews and outcomes, body-plan gaps,
+  compatibility rows, listings' body-plan fertility, migrate and claim
+  replies (`water_share`, `dryness`, `distance`, `standing_days`, journey
+  figures) and pasture restores are rounded as f64 when written, so no
+  `0.30000001192092896`.
+- **Offers to a lineage.** An offer that no grown animal of the other sex
+  in the lineage could conceive with is refused (`incompatible_lineage`).
+- **Founders eaten.** Predation joins round 9's once-per-lineage-and-cause
+  founder death alerts; the hunting warning names the hunters.
+- **Reinforcement wait.** The refusal gives the wait in game days and real
+  minutes instead of a day number, and states the size limit too.
+- **Season crown.** The legacy title's mean share is taken over the days a
+  player had living animals, over at least half the season so far
+  (`league::LEGACY_MIN_PLAYED`). Days before a founding counted as 0, so
+  the first to found won season 1.
+- **Eggs failing.** Eggs past the 4 a sitting parent covers
+  (`CLUTCH_COVERED`) are expected to chill. Only losses beyond that
+  expectation, and beyond the day's births, raise the warning.
+- **Drinking water.** The "little or no drinking water" warning says which
+  water doesn't count (ice, a dried bed, water the group can't get down
+  to).
+- **Rival territory.** The warning gives the distance to a nearby rival
+  territory's centre.
+- **Price quotes.** A survey or pasture restore within 10 real seconds of
+  opening the shop costs no more than the price shown
+  (`shop::QUOTE_SECONDS`).
+- **Possessed animal's need.** A move or attack order restarts the need
+  alert's short wait.
+- **Explained, not changed.**
+  - Survey balance against state: the next day's income arrived in
+    between.
+  - Group membership after a migration (102/102 → 11/170): only merges,
+    births (young join the mother's group) and level-of-detail expansion
+    (off on this server) change membership. The numbers fit deaths in the
+    group that stayed and births in the one that left. Note that with
+    `--lod`, animals rebuilt from a cohort come back in group 0.
+
 ### Playtest 8: server Lows
 
 Server-side Lows from `docs/playtest-8.md`, fixed or explained:

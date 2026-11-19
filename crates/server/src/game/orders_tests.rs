@@ -554,7 +554,9 @@ fn drownings_and_slow_die_offs_are_warned() {
     let kinds = |g: &Game| g.lineage_warnings(1).into_iter().map(|w| (w.kind, w.text)).collect::<Vec<_>>();
     let w = kinds(&g);
     assert!(
-        w.iter().any(|(k, t)| k == "decline" && t.contains("63 → 33 alive over the last 10 days, 30 of them")),
+        w.iter().any(|(k, t)| k == "decline"
+            && t.contains("Your lineage is crashing: 63 → 33 alive over the last 10 days")
+            && t.contains("30 died of hunger")),
         "{w:?}"
     );
     // The same deaths in a lineage that grows meanwhile: not a die-off (playtest 8: "954 → 1251").
@@ -1409,4 +1411,49 @@ fn migrate_warns_of_sleep_rival_ground_and_drying_water() {
     assert!(shared.others > 0 && shared.route < alone.route, "{alone:?} {shared:?}");
     // And a crowded destination rates the trip.
     assert!(shared.share() <= shared.destination.unwrap() + 1e-6, "{shared:?}");
+}
+
+/// Playtest 9: an offer to a lineage none of whose animals could conceive
+/// with the offered one was accepted. It is refused now.
+#[test]
+fn an_offer_to_a_lineage_that_cant_conceive_is_refused() {
+    let (mut g, a) = game();
+    g.set_name(2, "bo");
+    // Cold abandoned-egg layers: a body plan apart from ann's warm live bearers.
+    let far = FounderDesign::new("Far", Thermo::Cold, BirthType::AbandonedEggs, 2).founders(6);
+    let bl = g.found(2, &far).unwrap().lineage;
+    let mine = a.iter().copied().find(|&id| g.world.organism(id).is_some_and(|o| o.matured)).unwrap();
+    assert_eq!(
+        run(&mut g, ClientMsg::OfferToLineage { mine, lineage: bl, price: None }),
+        Err("incompatible_lineage".to_string())
+    );
+}
+
+/// Playtest 9: f32 noise (0.30000001192092896) in replies. Rounded at
+/// serialisation.
+#[test]
+fn replies_round_their_fractions() {
+    let v = crate::protocol::BodyPlanGap { gene: "body_size".into(), gap: 0.3 };
+    assert_eq!(serde_json::to_string(&v).unwrap(), r#"{"gene":"body_size","gap":0.3}"#);
+    assert_eq!(crate::protocol::round::tenths(5386.29), 5386.3);
+}
+
+/// Playtest 9: a survey or a pasture restore cost a little more than the
+/// shop had just quoted (the price moves with the head count). The quote
+/// holds for a few seconds, then the price is today's again.
+#[test]
+fn a_shop_quote_holds_for_a_few_seconds() {
+    let (mut g, _) = game();
+    let _ = g.post(1, 5000, LedgerKind::Income, "test".into(), None, None);
+    let now = run(&mut g, ClientMsg::RenownShop).unwrap()["survey_price"].as_u64().unwrap();
+    // As if the price had been lower when shown.
+    g.shop_quotes.get_mut(&1).unwrap().survey = now - 1;
+    assert_eq!(g.survey(1).unwrap().price, now - 1, "the quote holds");
+    run(&mut g, ClientMsg::RenownShop).unwrap();
+    g.shop_quotes.get_mut(&1).unwrap().survey = now - 1;
+    let window = (super::shop::QUOTE_SECONDS * 1000.0 / g.cfg.tick_ms).ceil() as u64;
+    for _ in 0..=window {
+        g.world.step();
+    }
+    assert_eq!(g.survey(1).unwrap().price, economy::survey_price(g.owner_population(1)), "then today's");
 }
