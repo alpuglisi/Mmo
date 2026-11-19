@@ -100,9 +100,11 @@ pub const FOUNDING_DROUGHT: f32 = 0.3;
 /// founding home (`Balance::founding_rivals`).
 const RIVAL_RANGE: f32 = 35.0;
 /// Most a crowd of rivals marks a home down, and the distance-weighted
-/// count of rival animals that gives about 63% of it.
-const RIVAL_WEIGHT: f32 = 3.0;
-const RIVAL_SCALE: f32 = 15.0;
+/// count of rival animals that gives about 63% of it: big enough that a
+/// herd of a thousand counts for more than one of a hundred (a scale of 15
+/// saturated near any herd, so it told crowds apart only at the edges).
+const RIVAL_WEIGHT: f32 = 4.0;
+const RIVAL_SCALE: f32 = 200.0;
 /// How much a home at another player's territory edge is marked down,
 /// falling to nothing `RIVAL_RANGE` tiles out.
 const RIVAL_LAND_WEIGHT: f32 = 1.5;
