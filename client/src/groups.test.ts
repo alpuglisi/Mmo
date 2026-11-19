@@ -107,10 +107,13 @@ describe('groups', () => {
     expect(homeRangeNote(g(0, { territory }))).toBe('');
     expect(homeRangeNote(g(0, { home_range: true }))).toBe('');
     // The protection left, from the server.
-    expect(homeRangeNote({ ...home, protection_left_min: 450 })).toMatch(/Protection left: 7 h 30 min \(at most 12 hours in any 24\)\.$/);
-    expect(protectionLeft({ ...home, protection_left_min: 720 })).toBe('Protection left: 12 h (at most 12 hours in any 24).');
-    expect(protectionLeft({ ...home, protection_left_min: 5 })).toBe('Protection left: 5 min (at most 12 hours in any 24).');
-    expect(protectionLeft({ ...home, protection_left_min: 0 })).toMatch(/^Protection used up for now/);
+    // In real time at this speed, one statement (playtest 7: three durations side by side).
+    const fast = { ...home, protection_budget_min: 75, protection_window_min: 150 };
+    expect(homeRangeNote({ ...fast, protection_left_min: 72 })).toMatch(/Protection left: 1 h 12 min of at most 1 h 15 min in any 2 h 30 min \(real time at this game speed\)\.$/);
+    expect(homeRangeNote(fast)).not.toMatch(/12 hours/);
+    expect(protectionLeft({ ...home, protection_left_min: 720, protection_budget_min: 720, protection_window_min: 1440 })).toBe('Protection left: 12 h of at most 12 h in any 24 h (real time at this game speed).');
+    expect(protectionLeft({ ...home, protection_left_min: 5 })).toBe('Protection left: 5 min (real time at this game speed).');
+    expect(protectionLeft({ ...fast, protection_left_min: 0 })).toMatch(/^Protection used up for now \(you get at most 1 h 15 min in any 2 h 30 min\)/);
     expect(protectionLeft(home)).toBe('');
   });
 });

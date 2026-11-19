@@ -358,8 +358,11 @@ export interface GroupView {
   obedience?: number;
   /** Its territory is the player's home range, shielded while they are offline (absent: no). */
   home_range?: boolean;
-  /** On the home range: minutes of offline protection left (at most 12 hours in any 24, however often you reconnect; absent from older servers). */
+  /** On the home range: real minutes of offline protection left (a rolling budget, however often you reconnect; absent from older servers). */
   protection_left_min?: number;
+  /** On the home range: the most protection, and the rolling window it counts over, in real minutes at this game speed (absent from older servers). */
+  protection_budget_min?: number;
+  protection_window_min?: number;
 }
 
 /** Someone else's organism inside the view window: only what can be seen. */
@@ -1170,6 +1173,8 @@ export interface DesignCompatView {
   refound?: { founders: number; requested: number; cost: number; until_day: number; minutes_left: number; reason: string; fee?: number };
   /** Why founding would refuse the design's name (it looks like another player's); absent when fine. */
   name_warning?: string;
+  /** The newcomer grace a founding of this design would get now (fresh with the first-winter rule, or continued); absent from older servers. */
+  grace_note?: string;
 }
 
 export interface SeasonRow {

@@ -112,8 +112,10 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   const founders = h('input', { id: 'design-founders', type: 'number', min: 2, max: 400, step: 1, value: spec.founders });
   founders.addEventListener('input', () => { spec.founders = Number(founders.value); update(); });
   const graceHint = h('p', { class: 'muted small', id: 'design-grace-winter' });
+  /** The server's word on the grace a founding now would get (a quick re-found continues the last one's). */
+  let serverGrace: string | null = null;
   const showGraceHint = (): void => {
-    graceHint.textContent = graceWinterText(spec.founders, !!refoundNow);
+    graceHint.textContent = serverGrace ?? graceWinterText(spec.founders);
   };
 
   // --- traits
@@ -445,6 +447,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       const warning = r?.water_warning;
       waterBox.hidden = !warning;
       if (warning) waterBox.replaceChildren(h('h2', {}, 'Drinking water'), h('p', { class: 'hybrid-headline' }, '⚠ ', serverText(warning)));
+      serverGrace = r?.grace_note ? serverText(r.grace_note) : null;
+      showGraceHint();
       const rf = r?.refound;
       refoundBox.hidden = !rf;
       if (rf) {
@@ -639,11 +643,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
 export const GRACE_WINTER_FOUNDERS = 40;
 
 /** The designer's line on the first-winter grace rule for `founders`. */
-export function graceWinterText(founders: number, refound = false): string {
-  // Through the spring after that winter (`World::grace_end` with the founding drought on, the default).
-  const rule = `Newcomer grace: a founding of ${GRACE_WINTER_FOUNDERS} or fewer founders whose grace would end in late autumn or winter keeps it through that winter and the spring after it.`;
-  // Founding again soon after continues the last lineage's grace instead of starting one.
-  if (refound) return `Newcomer grace: founding again soon after your last lineage carries on what was left of its grace; a new grace (and its first-winter extension for ${GRACE_WINTER_FOUNDERS} or fewer founders) starts only once the re-founding window has passed.`;
+export function graceWinterText(founders: number): string {
+  const rule = `Newcomer grace: a founding of ${GRACE_WINTER_FOUNDERS} or fewer founders whose grace would end in late autumn or winter keeps it through that first winter (and in most worlds the spring after it). A founding soon after your last one continues that one's grace instead.`;
   return founders <= GRACE_WINTER_FOUNDERS
     ? `${rule} These ${founders} qualify.`
     : `${rule} ${founders} founders don't: their grace ends on time even at winter's start.`;
