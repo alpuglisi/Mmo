@@ -46,8 +46,11 @@ function freePort() {
   });
 }
 
+/** How much longer waits may take when scripts run side by side (`run-all`'s `E2E_TIME_SCALE`). */
+const TIME_SCALE = Math.max(1, Number(process.env.E2E_TIME_SCALE) || 1);
+
 async function waitFor(what, fn, timeoutMs = 20000) {
-  const end = Date.now() + timeoutMs;
+  const end = Date.now() + timeoutMs * TIME_SCALE;
   let last;
   while (Date.now() < end) {
     try {
@@ -78,11 +81,11 @@ async function register(page, base, name, lineage, onDesign = async () => {}) {
   await page.fill('#login-name', name);
   await page.fill('#login-password', 'a long password');
   await page.click('#register-submit');
-  await page.waitForSelector('#design-name', { timeout: 45000 });
+  await page.waitForSelector('#design-name', { timeout: 45000 * TIME_SCALE });
   await page.fill('#design-name', lineage);
   await onDesign();
   await page.click('#design-submit');
-  await page.waitForSelector('#world-canvas', { timeout: 45000 });
+  await page.waitForSelector('#world-canvas', { timeout: 45000 * TIME_SCALE });
   await waitFor('own organisms', () => page.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
   await waitFor('markers', () => page.evaluate(() => (window.evo.screen()?.view.spriteStats().markers ?? 0) > 0));
 }
@@ -917,7 +920,7 @@ async function worldChecks(browser, base, errors) {
   const auth = { headers: { authorization: `Bearer ${watcher.token}` } };
   const online = async () => Object.fromEntries((await (await fetch(`${base}/api/worlds`, auth)).json()).worlds.map((w) => [w.id, w.players_online]));
   await page.goto(`${base}/?tour=off`);
-  await page.waitForSelector('#world-select', { state: 'visible', timeout: 20000 });
+  await page.waitForSelector('#world-select', { state: 'visible', timeout: 20000 * TIME_SCALE });
   const options = await page.$$eval('#world-select option', (os) => os.map((o) => [o.value, o.textContent]));
   if (JSON.stringify(options) !== JSON.stringify([['main', 'Mainland'], ['isle', 'Isle']])) throw new Error(`world options ${JSON.stringify(options)}`);
   const sel = await box(page, '#world-select');
@@ -930,10 +933,10 @@ async function worldChecks(browser, base, errors) {
   if (!(await page.textContent('#world-info')).includes('48×48')) throw new Error(`world info: ${await page.textContent('#world-info')}`);
   await shot(page, 'pixel7-world-picker.png');
   await page.click('#register-submit');
-  await page.waitForSelector('#design-name', { timeout: 45000 });
+  await page.waitForSelector('#design-name', { timeout: 45000 * TIME_SCALE });
   await page.fill('#design-name', 'Isle walkers');
   await page.click('#design-submit');
-  await page.waitForSelector('#world-canvas', { timeout: 45000 });
+  await page.waitForSelector('#world-canvas', { timeout: 45000 * TIME_SCALE });
   await waitFor('own organisms', () => page.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
   await waitFor('Ann online on the isle', async () => {
     const o = await online();
@@ -953,7 +956,7 @@ async function worldChecks(browser, base, errors) {
   await page.waitForSelector('#world-select', { state: 'visible' });
   await page.selectOption('#world-select', 'main');
   await page.click('#register-submit');
-  await page.waitForSelector('#design-name', { timeout: 45000 });
+  await page.waitForSelector('#design-name', { timeout: 45000 * TIME_SCALE });
   await waitFor('Bob online on the mainland', async () => (await online()).main === 1);
   await page.click('text=Log out');
   await page.waitForSelector('#login-name');

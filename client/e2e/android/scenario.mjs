@@ -348,10 +348,15 @@ export async function runScenario(device, { outDir, backgroundSeconds = 25, name
       await waitFor('the tour to close', () => cdp.evaluate(() => !document.querySelector('#tour')), 15000);
       step('onboarding tour shown and skipped');
     }
-    await sleep(2000); // a terrain fetch and a few frames
+    // A terrain fetch and a few frames: waited for, not slept (under a
+    // parallel run 2 s wasn't always enough for the first paint).
+    let m = null;
+    await waitFor('the map painted', async () => {
+      m = await mapColors();
+      return m.colors >= 6;
+    }, 30000).catch(() => {});
     await shoot('map');
-    const m = await mapColors();
-    if (m.colors < 6) throw new Error(`the map looks blank: ${JSON.stringify(m)}`);
+    if (!m || m.colors < 6) throw new Error(`the map looks blank: ${JSON.stringify(m)}`);
     step('map renders', m);
 
     // 5. Background past the 20 s watchdog, resume, and recover.
