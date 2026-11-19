@@ -9,6 +9,7 @@ use crate::design::{BirthType, FounderDesign, Thermo};
 use crate::genome::{Gene, PlayerId};
 use crate::math::Vec2;
 use crate::organism::{Action, DeathCause};
+use crate::rng::rng_for;
 
 const HUNTER: PlayerId = 1;
 const PREY: PlayerId = 2;
@@ -154,6 +155,8 @@ fn the_grace_runs_out() {
 fn the_grace_is_two_sided_lasts_in_real_time_and_survives_refounding() {
     let mut w = flat_world(1500.0);
     w.config.balance.attack_grace = 2.0;
+    // The two-sided grace as it was (`graced_hunting`, tested apart).
+    w.config.balance.graced_hunting = 0.0;
     let tpd = w.config.ticks_per_day as u64;
     // An established player (founded at tick 0, no grace) and a newcomer.
     let prey = place(&mut w, PREY, &walker(), Vec2::new(12.5, 10.5));
@@ -195,6 +198,37 @@ fn the_grace_is_two_sided_lasts_in_real_time_and_survives_refounding() {
         assert_eq!(back.lineage_grace_left(w.organisms[b].lineage), None);
         assert!(back.lineage_grace_left(w.organisms[c].lineage).unwrap() > 1.99);
     }
+}
+
+/// Playtest 11: a graced pack starved beside rival animals whose grace had
+/// ended. With `Balance::graced_hunting` a graced hunter may hunt (and be
+/// ordered onto) an unprotected rival's animal, and its first attack on one
+/// ends its owner's grace; a graced rival is still spared.
+#[test]
+fn a_graced_hunter_may_hunt_and_its_first_attack_ends_its_grace() {
+    let mut w = flat_world(1500.0);
+    w.config.balance.attack_grace = 2.0;
+    let prey = place(&mut w, PREY, &walker(), Vec2::new(11.0, 10.5));
+    grown(&mut w, prey);
+    w.tick = 5;
+    let a = place(&mut w, HUNTER, &hunter(), Vec2::new(10.5, 10.5));
+    grown(&mut w, a);
+    let l = w.organisms[a].lineage;
+    assert!(w.lineage_grace_left(l).is_some());
+    assert!(!w.grace_spares(&w.organisms[a], &w.organisms[prey]));
+    let (aid, pid) = (w.organisms[a].id, w.organisms[prey].id);
+    w.possess(HUNTER, aid).unwrap();
+    assert_eq!(w.possess_attack(HUNTER, aid, pid), Ok(()));
+    let mut rng = rng_for(1, 0, 0, 0);
+    w.attack(a, prey, &mut rng);
+    assert_eq!(w.lineage_grace_left(l), None, "the first attack on a rival ended the grace");
+    // A graced rival is still spared.
+    let mut w2 = flat_world(1500.0);
+    w2.config.balance.attack_grace = 2.0;
+    w2.tick = 5;
+    let h = place(&mut w2, HUNTER, &hunter(), Vec2::new(10.5, 10.5));
+    let g = place(&mut w2, PREY, &walker(), Vec2::new(11.0, 10.5));
+    assert!(w2.grace_spares(&w2.organisms[h], &w2.organisms[g]));
 }
 
 #[test]

@@ -433,3 +433,22 @@ fn hungry_hunters_go_for_a_rival_clutch() {
     w.config.balance.nest_raids = 0.0;
     assert_eq!(w.scent_clutch(&w.organisms[h]), None);
 }
+
+/// A wild species under its refuge breeds faster (`Balance::wild_rebound`):
+/// `1 + wild_rebound × (1 − r)`, `r` its count over the refuge; a player's
+/// lineage, and the wild before the refuge comes in, breed as before.
+#[test]
+fn a_scarce_wild_species_breeds_back() {
+    let mut w = niche(1);
+    let wild = (0..w.lineages.len() as u32).find(|&l| w.lineages[l as usize].owner == crate::WILD).unwrap();
+    let player = (0..w.lineages.len() as u32).find(|&l| w.lineages[l as usize].owner != crate::WILD).unwrap();
+    // Day 0: the refuge hasn't come in (`refuge_ramp`).
+    assert_eq!(w.wild_rebound(wild), 1.0);
+    w.tick = 2 * 4 * w.config.days_per_season() as u64 * w.config.ticks_per_day as u64;
+    let r = w.refuge_fill(wild);
+    assert!(r < 1.0, "{r}");
+    assert!((w.wild_rebound(wild) - (2.0 - r)).abs() < 1e-5, "{}", w.wild_rebound(wild));
+    assert_eq!(w.wild_rebound(player), 1.0);
+    w.config.balance.wild_rebound = 0.0;
+    assert_eq!(w.wild_rebound(wild), 1.0);
+}

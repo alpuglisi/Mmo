@@ -120,6 +120,30 @@ impl World {
         self.map.update_chunks(self.tick % tph, tph, doy, hour, dpy, &bal);
     }
 
+    /// `Balance::share_memory`: today's totals count against the world as
+    /// big as it has been lately. The running (exponential) mean of the
+    /// world's allele total over about `share_memory` days is kept in the
+    /// snapshot (`LegacySnapshot::world_alleles`), and when the world is
+    /// smaller than that, both totals are scaled up to it: every share
+    /// falls with the world instead of the survivors' rising (playtest 11:
+    /// a shrinking leader's share rose 25% → 31% as a drought took the
+    /// wild).
+    pub(super) fn smooth_legacy(&self, s: &mut crate::legacy::LegacySnapshot) {
+        let memory = self.config.balance.share_memory;
+        if memory <= 0.0 || s.total_alleles <= 0.0 {
+            return;
+        }
+        let raw = s.total_alleles;
+        let prev = self.legacy.last().map_or(0.0, |l| l.world_alleles);
+        let mean = if prev > 0.0 { prev + (raw - prev) / memory.max(1.0) as f64 } else { raw };
+        s.world_alleles = mean;
+        if mean > raw {
+            let scale = mean / raw;
+            s.total_alleles = mean;
+            s.weighted_total *= scale;
+        }
+    }
+
     pub(super) fn daily(&mut self) {
         // Remove the dead; indices are stable within a day.
         self.organisms.retain(|o| o.alive);
@@ -154,6 +178,7 @@ impl World {
         if self.config.lod.enabled {
             self.lod_legacy(&mut snapshot);
         }
+        self.smooth_legacy(&mut snapshot);
         self.legacy.push(snapshot);
         if self.legacy.len() > LEGACY_KEPT {
             self.legacy.drain(..self.legacy.len() - LEGACY_KEPT);

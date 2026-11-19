@@ -611,6 +611,39 @@ fn playtest10_off(b: &mut crate::Balance) {
 fn landing_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v90::OLD_VALUE;
     (b.reinforce_clear, b.founding_together) = (old, old);
+    playtest11_off(b);
+}
+
+/// The playtest 11 balance tunables as snapshots before version 92 read
+/// them.
+fn playtest11_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v92::OLD_VALUE;
+    (b.graced_hunting, b.share_memory, b.wild_rebound) = (old, old, old);
+}
+
+/// Version 90 snapshots (before the playtest 11 balance rules) restore with
+/// them off and no remembered world size, and are otherwise the same world.
+#[test]
+fn version_90_snapshots_restore_without_playtest11_balance() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v90();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 90);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.share_memory, crate::serde_util::before_v92::OLD_VALUE);
+    assert!(r.legacy.iter().all(|l| l.world_alleles == 0.0));
+    assert!(r.snapshot_v90() == old);
+    playtest11_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    // This version keeps the remembered world size.
+    let mut w = fixture_world();
+    w.run_days(1);
+    assert!(w.legacy.last().unwrap().world_alleles > 0.0);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.share_memory, 120.0);
+    assert_eq!(r.legacy, w.legacy);
 }
 
 /// Version 85 snapshots (before the playtest 10 balance rules) restore with
@@ -804,6 +837,10 @@ fn fixture_world() -> World {
     // Snapshots before version 58 hold no niche tallies: start with none so
     // the older layouts restore to the same world.
     w.chronicle.niche_tally = Default::default();
+    // Nor before version 92 the remembered world size (`share_memory`).
+    for l in &mut w.legacy {
+        l.world_alleles = 0.0;
+    }
     w
 }
 
@@ -1992,6 +2029,9 @@ fn version_57_snapshots_restore_without_niche_tallies() {
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.chronicle.niche_tally, w.chronicle.niche_tally);
     w.chronicle.niche_tally = Default::default();
+    for l in &mut w.legacy {
+        l.world_alleles = 0.0;
+    }
     founding_drought_off(&mut w.config.balance);
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert!(r.snapshot() == w.snapshot());

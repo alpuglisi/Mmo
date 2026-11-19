@@ -9069,6 +9069,57 @@ around it.
 
 
 
+### Playtest 11: balance
+
+Playtest 11 (`docs/playtest-11.md`, findings 2, 6 and 11). A cold flier won
+both eras (13.0% and 20.5% means) and the pack was back to 250. In year 5,
+a drought peaking at 98%, with no catastrophe, took the wild from 3,472 to
+1,015. Two player herds near the cap (2,100 and 2,000) grazed beside it and
+a 220-strong pack hunted it. The leader's share rose from 25% to 31% while
+its own herd shrank under litters ×0.10: the brake works on the lineage, but
+a share also rises when everything else dies. The replay shows the same
+effect every year. In spring, after winter has taken the wild's breeding
+adults, the cold flier's share doubles (14% → 26–29%) with no more animals.
+
+Three rules, version 92 (each off at 0), and a founding fix:
+
+- **The share counts against the world as big as it has been lately**
+  (`Balance::share_memory`, 120 days). Each day's legacy snapshot keeps an
+  exponential running mean of the world's allele total
+  (`LegacySnapshot::world_alleles`), and when today's world is smaller, both
+  totals are scaled up to that mean (`World::smooth_legacy`). Every share
+  falls with a shrinking world instead of the survivors' rising. The mean
+  follows a lasting change within a season or two, and a growing world
+  counts as it is. Shares then add up to less than the whole; the rest is
+  no one's. The lineage panel's breakdown is scaled the same way.
+- **Wild rebound** (`Balance::wild_rebound`, 1). A wild species below its
+  refuge (30% of its wild cap) breeds faster: litters `1 + wild_rebound ×
+  (1 − r)` times the size, `r` its count over the refuge. Agents and cohorts
+  both follow it, so the wild recovers from a drought or a pack.
+- **A graced hunter may hunt** (`Balance::graced_hunting`, 1). A newcomer's
+  grace no longer keeps its own hunters off rivals' unprotected animals, by
+  instinct or by order. Its first attack on one ends its owner's grace, as
+  End my grace now does. A graced rival is still spared. When a hunting
+  lineage is going hungry while graced, the alert says so.
+- **Re-founding lands at most 10 founders** (`REFOUND_MAX_FOUNDERS`, half the
+  base price's 20): half the request, at most 10. Asking for 40 got 20 for
+  the points of 20, so the halving only bit above 40.
+
+**Replay** (`dominance --only Cold,Herd,Sleepers,Pack,Broker,Steady
+--cold-day 27 --megadrought 500 --trace`: the cold flier founded on day 27
+as in the playtest, and a megadrought from day 500; seeds 1–4, 840 days, two
+eras). Era means, playtest 11 rules (v92 tunables off) → v92 rules: Cold
+15.7% → 17.4%, Herd 18.4% → 14.9%, Broker 6.6% → 9.0%, Pack 7.1% → 7.6%,
+Steady 5.6% → 3.4%, Sleepers 14.4% → 0.7%. No lineage passes 20% for an era
+under either. The replay's players stay far smaller than the playtest's
+(Cold peaks at 721 on average, not 2,100), and its megadrought doesn't
+collapse the wild: spring lows 1,790–2,480 and autumn highs 2,450–3,380 on
+seed 1. The 98% collapse needed two player herds at the cap grazing through
+the drought. The smoothing is tested directly
+(`shares_count_against_the_world_as_big_as_it_has_been`: a world halved
+overnight leaves a quarter-share lineage at 12.6%, not 25%). The 12-seed
+sweep scores 11.92.
+
 ### Playtest 10: balance
 
 Playtest 10 (`docs/playtest-10.md`, findings 7 and 8) had no runaway, with

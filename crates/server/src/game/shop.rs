@@ -1082,13 +1082,29 @@ impl Game {
         self.hosts = self.world.legacy_hosts();
     }
 
+    /// The host tally's total, scaled as the day's legacy snapshot scales
+    /// its own (`Balance::share_memory`: the world as big as it has been
+    /// lately), so the breakdown's shares match the leaderboard's.
+    fn hosts_total(&self) -> f64 {
+        let raw: f64 = self.hosts.values().sum();
+        let scale = self.world.latest_legacy().map_or(1.0, |l| {
+            let sum: f64 = l.alleles.values().sum();
+            if sum > 0.0 && l.total_alleles > sum {
+                l.total_alleles / sum
+            } else {
+                1.0
+            }
+        });
+        raw * scale
+    }
+
     /// `player`'s alleles living in other players' lineages, over all
     /// alleles: what the royalty pays for. Alleles in the wild (a design
     /// that hybridised with a wild species) don't count: they came from
     /// no trade, and at 5 renown a point they paid every lineage about as
     /// much as its income (examples/competition.rs).
     fn traded_share(&self, player: PlayerId) -> f64 {
-        let total: f64 = self.hosts.values().sum();
+        let total = self.hosts_total();
         if total <= 0.0 {
             return 0.0;
         }
@@ -1124,7 +1140,7 @@ impl Game {
 
     /// Whose genes make up `player`'s legacy share (`lineage_stats.score`).
     pub(super) fn score_breakdown(&self, player: PlayerId) -> Option<ScoreBreakdown> {
-        let total: f64 = self.hosts.values().sum();
+        let total = self.hosts_total();
         let day = self.world.latest_legacy().map_or(self.world.day(), |l| l.day);
         if total <= 0.0 {
             return None;

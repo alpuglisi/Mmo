@@ -545,8 +545,10 @@ mod tests {
         let era = &w.chronicle.eras[0];
         assert_eq!((era.era, era.first_day, era.last_day), (0, 0, 7));
         assert!(!era.ranking.is_empty() && era.ranking.windows(2).all(|r| r[0].share >= r[1].share));
+        // At most the whole: with `share_memory` a world smaller than it
+        // has been lately leaves part of the total to no one.
         let total: f64 = era.ranking.iter().map(|r| r.share).sum();
-        assert!((total - 1.0).abs() < 1e-6);
+        assert!(total <= 1.0 + 1e-6 && total > 0.5, "{total}");
         assert!(!era.niches.is_empty());
         // Lineages alive a whole year earn longevity.
         let longevity = w
