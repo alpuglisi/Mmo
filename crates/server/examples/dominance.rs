@@ -31,11 +31,11 @@
 //! - **Loophole** founds Rulebender5's small egg-incubating cold flier as a
 //!   half-size re-found (22 founders) on `--loophole-day` (default 334).
 //!
-//! Two arms on the same seeds. **Playtest 5 rules**: the version 56
-//! tunables off (`thermo_hybrid`, `flight_upkeep`, `avoid_cap`,
-//! `cold_heat`, `species_credit`), or with `--baseline playtest2` playtest
-//! 2's (the version 43 to 56 rules off, the old soft cap), each founded at
-//! any price. **New rules**:
+//! Two arms on the same seeds. **Playtest 6 rules**: the version 62
+//! tunables off (`toxin_upkeep`, `hungry_hunters`, `toxin_source`,
+//! `speciation_credit`, `clutch_cover`), or with `--baseline playtest2`
+//! playtest 2's (the balance rules since version 43 off, the old soft cap),
+//! each founded at any price. **New rules**:
 //! today's defaults, each design fitted to today's prices by dropping
 //! founders.
 
@@ -314,12 +314,14 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         }
     }
     if !new_rules {
-        // Default: playtest 5's rules (the version 56 tunables off: cold
-        // blood sterile with warm, no flight upkeep, uncapped learned
-        // avoidance, no cold-blooded heat limit, species by cluster).
+        // Default: playtest 6's rules (the version 62 tunables off: free
+        // toxins, hungry hunters heeding lessons in full, lessons from any
+        // toxin, credit for any split, big clutches covered in full).
         let b = &mut g.world.config.balance;
-        (b.thermo_hybrid, b.flight_upkeep, b.avoid_cap, b.cold_heat, b.species_credit) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        (b.toxin_upkeep, b.hungry_hunters, b.toxin_source, b.speciation_credit, b.clutch_cover) =
+            (0.0, 0.0, 0.0, 0.0, 0.0);
         if a.playtest2_baseline {
+            (b.thermo_hybrid, b.flight_upkeep, b.avoid_cap, b.cold_heat, b.species_credit) = (0.0, 0.0, 0.0, 0.0, 0.0);
             (b.winter_rest, b.toxic_avoidance, b.egg_attendance, b.player_species, b.raised_cap) =
                 (0.0, 0.0, 0.0, 0.0, 0.0);
             (b.eye_hybrid, b.winter_toll, b.wake_spread, b.dormancy_toll) = (0.0, 0.0, 0.0, 0.08);
@@ -483,7 +485,7 @@ fn main() {
         }
     });
     let results = results.into_inner().unwrap();
-    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 5 rules" };
+    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 6 rules" };
     for (new, title) in [(false, old_title), (true, "New rules")] {
         if a.new_only && !new {
             continue;

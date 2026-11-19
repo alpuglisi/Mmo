@@ -1264,7 +1264,9 @@ pub struct Balance {
     // a late cold flier still reached first place; toxic + bright was in
     // every leading lineage.
     /// Toxins cost food to make: hunger × `1 + 0.4 × toxins × toxin_upkeep`
-    /// (+24% at toxins 0.6), whatever the body's metabolism. 0: off.
+    /// (+12% at toxins 0.6 and the default 0.5), whatever the body's
+    /// metabolism. At 1 and 2 it hurt the toxic fliers and the playtest 2
+    /// egg layer but not playtest 6's herd (dominance replay). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v62"))]
     pub toxin_upkeep: f32,
     /// A hungry hunter heeds a warning less: its learned avoidance of a
@@ -1587,11 +1589,11 @@ impl Default for Balance {
             dry_beds: 1.0,
             drink_reach: 1.0,
             founding_drought: 1.0,
-            toxin_upkeep: 1.0,
+            toxin_upkeep: 0.5,
             hungry_hunters: 1.0,
             toxin_source: 1.0,
             speciation_credit: 1.0,
-            clutch_cover: 1.0,
+            clutch_cover: 1.25,
         }
     }
 }
