@@ -412,8 +412,10 @@ impl World {
             mating::mismatch(&female.pheno, male.display()).max(mating::mismatch(&male.pheno, female.display()));
         let cost = mating::override_cost(mismatch, self.config.override_k);
         let failure_chance = mating::override_failure_chance(cost);
-        let fertility = mating::fertility_with(&female.genome, &male.genome, mating::Relief::of(&self.config.balance))
-            * self.disease_fertility(f, m);
+        let scale = mating::wild_gap_scale(&self.config.balance, female.owner, male.owner);
+        let fertility =
+            mating::fertility_scaled(&female.genome, &male.genome, mating::Relief::of(&self.config.balance), scale)
+                * self.disease_fertility(f, m);
         (mismatch, cost, failure_chance, fertility)
     }
 
@@ -440,11 +442,10 @@ impl World {
             cost,
             failure_chance,
             fertility,
-            body_plan_fertility: mating::fertility_from_gap(mating::fertility_gap(
-                ga,
-                gb,
-                mating::Relief::of(&self.config.balance),
-            )),
+            body_plan_fertility: mating::fertility_from_gap(
+                mating::fertility_gap(ga, gb, mating::Relief::of(&self.config.balance))
+                    * mating::wild_gap_scale(&self.config.balance, oa.owner, ob.owner),
+            ),
             distance_fertility: mating::distance_fertility(ga.distance(gb)),
             body_plan_gaps,
             distance: oa.pos.dist(ob.pos),
@@ -552,7 +553,11 @@ impl World {
         (lesson >= super::toxic::LOOKS_POISONOUS).then(|| {
             format!(
                 "#{target} looks poisonous to your kind: your animals have been poisoned eating its kind (on their own they pass it up {:.0}% of the time)",
-                100.0 * self.toxic_avoidance(o.lineage, q)
+                100.0 * if self.config.balance.honest_signals > 0.0 {
+                    self.hunter_avoidance(o, q)
+                } else {
+                    self.toxic_avoidance(o.lineage, q)
+                }
             )
         })
     }

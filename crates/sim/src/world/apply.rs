@@ -847,7 +847,7 @@ impl World {
         }
         let prey_power = b.power().max(guard_power);
         let prey_fights = super::decide::fight_back(b, self.config.balance.generalist_tax);
-        let prey_bright = b.pheno[Gene::Coloration] > 0.6;
+        let prey_bright = self.is_bright(b.pheno[Gene::Coloration]);
         // Whether the prey's toxin is its lineage's own (`Balance::toxin_source`):
         // one of its toxin alleles carries the lineage owner's origin.
         let own_toxin = self.config.balance.toxin_source <= 0.0 || {
@@ -994,9 +994,11 @@ impl World {
         if !accept_f || mm > 1.5 {
             return;
         }
-        let fert = mating::fertility_with(&female.genome, &male.genome, mating::Relief::of(&self.config.balance))
-            * self.disease_fertility(f, m)
-            * self.conception_boost(female);
+        let scale = mating::wild_gap_scale(&self.config.balance, female.owner, male.owner);
+        let fert =
+            mating::fertility_scaled(&female.genome, &male.genome, mating::Relief::of(&self.config.balance), scale)
+                * self.disease_fertility(f, m)
+                * self.conception_boost(female);
         self.mating_contact(f, m);
         if fert <= 0.0 {
             // Courtship without conception.

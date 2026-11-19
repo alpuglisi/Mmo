@@ -1731,7 +1731,8 @@ pub struct RampView {
 /// an alert when it starts.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct LineageWarning {
-    /// `starving`, `near_cap` or `territory_starving`.
+    /// `starving`, `near_cap`, `territory_starving`, `heat`, `cold`,
+    /// `hunted`, `eggs` and the like.
     pub kind: String,
     pub text: String,
 }

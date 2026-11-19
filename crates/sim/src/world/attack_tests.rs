@@ -713,3 +713,42 @@ fn the_pack_larder_follows_the_prey_there_is() {
     w.refresh_pack_room();
     assert_eq!(w.pack_room(HUNTER), 1.0);
 }
+
+/// Honest signals, whole (`Balance::honest_signals`): a hunter's own
+/// aversion to bright prey is capped and lowered by hunger like its
+/// lineage's lesson, and fades over the days; coloration 0.6 counts as
+/// warning colours.
+#[test]
+fn hungry_hunters_take_bright_prey_and_aversions_fade() {
+    let mut w = world();
+    let pk = pack(&mut w, HUNTER, &hunter(), 2, Vec2::new(10.5, 10.5));
+    let preys = pack(&mut w, PREY, &toxic(0.6), 2, Vec2::new(11.5, 10.5));
+    for &j in &preys {
+        w.organisms[j].pheno.0[Gene::Coloration.index()] = 0.6;
+    }
+    w.organisms[pk[0]].bright_aversion = true;
+    w.organisms[pk[0]].needs.hunger = 20.0;
+    let (o, q) = (&w.organisms[pk[0]], &w.organisms[preys[0]]);
+    let fed = w.hunter_avoidance(o, q);
+    assert!((fed - w.config.balance.avoid_cap).abs() < 1e-6, "capped: {fed}");
+    w.organisms[pk[0]].needs.hunger = 100.0;
+    let starving = w.hunter_avoidance(&w.organisms[pk[0]], &w.organisms[preys[0]]);
+    assert!(starving < 0.5 * fed, "{starving} vs {fed}");
+    // Off: the aversion holds in full, and 0.6 isn't bright.
+    w.config.balance.honest_signals = 0.0;
+    assert_eq!(w.hunter_avoidance(&w.organisms[pk[0]], &w.organisms[preys[0]]), 0.0);
+    w.config.balance.honest_signals = 1.0;
+    // The aversion fades: about half within 40 days.
+    let n = 400;
+    let mut aversive = pack(&mut w, HUNTER, &hunter(), n, Vec2::new(20.5, 20.5));
+    for &i in &aversive {
+        w.organisms[i].bright_aversion = true;
+    }
+    let tpd = w.config.ticks_per_day as u64;
+    for day in 0..40 {
+        w.tick = day * tpd;
+        w.fade_bright_aversions();
+    }
+    aversive.retain(|&i| w.organisms[i].bright_aversion);
+    assert!((n / 3..2 * n / 3).contains(&aversive.len()), "{} of {n} still averse", aversive.len());
+}

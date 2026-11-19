@@ -162,6 +162,7 @@ impl World {
             self.bonus_slots.clear();
         }
         self.fade_toxic_lessons();
+        self.fade_bright_aversions();
         self.chronicle_daily();
     }
 

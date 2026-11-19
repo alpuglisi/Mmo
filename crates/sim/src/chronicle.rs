@@ -258,6 +258,27 @@ impl NicheTally {
 
     /// Each niche's leader by mean daily share over the days tallied (a day
     /// without enough adults counts as 0), with its mean adults.
+    /// [`Self::leaders`] among the players (the wild ecosystem left out).
+    pub fn player_leaders(&self) -> Vec<NicheLeader> {
+        let days = self.days.max(1) as f64;
+        self.niches
+            .iter()
+            .filter_map(|(niche, n)| {
+                let (player, sum) = n
+                    .shares
+                    .iter()
+                    .filter(|(&p, _)| p != crate::genome::WILD)
+                    .fold((crate::genome::WILD, -1.0), |b, (&p, &s)| if s > b.1 { (p, s) } else { b });
+                (player != crate::genome::WILD && n.days > 0).then(|| NicheLeader {
+                    niche: niche.clone(),
+                    player,
+                    share: sum / days,
+                    adults: n.adults / n.days as f64,
+                })
+            })
+            .collect()
+    }
+
     pub fn leaders(&self) -> Vec<NicheLeader> {
         let days = self.days.max(1) as f64;
         self.niches
