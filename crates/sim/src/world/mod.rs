@@ -677,6 +677,13 @@ pub struct World {
     /// saved.
     #[cfg_attr(feature = "serde", serde(skip))]
     rendezvous: BTreeMap<OrgId, (OrgId, Vec2)>,
+    /// Organisms barred from natural mating with another player's animals
+    /// until a tick (`World::bar_cross_mating`): set by the server while one
+    /// is possessed and a while after, so a player can't walk a male into a
+    /// rival's herd to sire its young without consent or a fee (playtest 8's
+    /// "stud raid"). Not saved, like rendezvous.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    cross_mate_bar: BTreeMap<OrgId, u64>,
     /// Attack orders of possessed organisms, attacker → target
     /// (`World::possess_attack`; version 36).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36::list"))]
@@ -819,6 +826,7 @@ impl World {
             bonus_slots: BTreeMap::new(),
             attack_orders: BTreeMap::new(),
             rendezvous: BTreeMap::new(),
+            cross_mate_bar: BTreeMap::new(),
             lineage_founded: Vec::new(),
             lineage_homes: Vec::new(),
             group_plans: groups::GroupPlans::default(),

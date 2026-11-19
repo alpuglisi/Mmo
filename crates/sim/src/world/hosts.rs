@@ -275,6 +275,19 @@ impl World {
         }
     }
 
+    /// Bar `id` from natural mating with another player's animals until
+    /// `until` (a tick); expired bars are dropped as new ones are set.
+    pub fn bar_cross_mating(&mut self, id: OrgId, until: u64) {
+        let tick = self.tick;
+        self.cross_mate_bar.retain(|_, &mut t| t > tick);
+        self.cross_mate_bar.insert(id, until);
+    }
+
+    /// Whether `id` may not mate naturally with another player's animal now.
+    pub fn cross_mating_barred(&self, id: OrgId) -> bool {
+        self.cross_mate_bar.get(&id).is_some_and(|&t| t > self.tick)
+    }
+
     /// End `a`'s rendezvous (and its partner's).
     pub fn clear_rendezvous(&mut self, a: OrgId) {
         if let Some((b, _)) = self.rendezvous.remove(&a) {
@@ -516,6 +529,33 @@ mod tests {
         // Near it (breaks to eat or drink allowed), never at the possessed one.
         assert!(pa.dist(meet) <= 10.0, "a waits near the meeting point: {:.1} away", pa.dist(meet));
         assert!(pa.dist(away) > 20.0, "a followed: {:.1} from the possessed partner", pa.dist(away));
+    }
+
+    /// A possessed male (or one barred for a while after) sires no young
+    /// in another player's herd outside an agreement (playtest 8's stud
+    /// raid); barred, the same male still may not.
+    #[test]
+    fn a_possessed_male_does_not_sire_a_rivals_young() {
+        let mut w = presets::standard_world(WorldConfig { seed: 8, width: 64, height: 64, ..Default::default() }, 1);
+        let m = w.organisms.iter().find(|o| o.owner == 1 && o.matured && o.sex == Sex::Male).unwrap().id;
+        let females: Vec<OrgId> =
+            w.organisms.iter().filter(|o| o.owner == 2 && o.matured && o.sex == Sex::Female).map(|o| o.id).collect();
+        w.possess(1, m).unwrap();
+        let im = w.organism_index(m).unwrap();
+        for _ in 0..4 * w.config.ticks_per_day {
+            // Keep him among her females.
+            let at = w.organism(females[0]).map(|f| f.pos);
+            if let Some(p) = at {
+                w.organisms[im].pos = p;
+            }
+            w.step();
+        }
+        let sired =
+            w.organisms.iter().filter(|o| o.owner == 2).any(|o| o.pregnancy.as_ref().is_some_and(|p| p.father_id == m));
+        assert!(!sired, "the possessed male sired a rival's young");
+        w.release(1, m).ok();
+        w.bar_cross_mating(m, w.tick() + 1_000);
+        assert!(w.cross_mating_barred(m));
     }
 
     #[test]

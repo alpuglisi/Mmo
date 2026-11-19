@@ -2009,6 +2009,27 @@ minutes, every purchase failed when the buyer's animal died):
   past 90% of their lifespan say "old"; accepted agreements' escort views
   refresh twice a game day.
 
+**Playtest 8 changes** (economy):
+
+- **Seller-caused failures**: the buyer's animal killed by the seller's
+  own lineage, or a lapse where the seller's animal ended more than 3
+  tiles farther from the meeting point than it started (or never came
+  while the buyer's reached it), is the seller's fault
+  (`Game::seller_at_fault`): the buyer is refunded and paid the hold fee
+  by the seller, owed when short (`Game::charge_owed`). The meeting point
+  avoids the seller's predators too. Each side's distance to the point
+  is tracked (`Offer::start_dist`, `Offer::buyer_best`).
+- **Stud raid**: two players' animals don't mate naturally while either
+  is possessed, or for two game days after (`World::bar_cross_mating`,
+  not saved, like rendezvous): the market's agreements are the way.
+- The seller-retire penalty is charged in full, the shortfall owed
+  (renown owed is taken from what comes in next, for any of these).
+- `preview_mating`'s `cost` and listings' `body_plan_fertility` are
+  rounded to tenths for others' animals.
+- `/api/metrics` per-command counts only for an operator
+  (`EVO_ADMIN_TOKEN` in `x-admin-token`); `/api/assign?name=` tells
+  neither whether the account exists nor that a lineage was found.
+
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.
 
