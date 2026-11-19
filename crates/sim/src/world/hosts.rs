@@ -168,6 +168,24 @@ impl World {
         // more than any food is worth. A wider search when none is near.
         let clear = self.config.balance.rival_clear > 0.0;
         let anchor = probe.pos;
+        // Other players' animals near (`Balance::animal_clear`; playtest 11:
+        // reinforcements landed in the middle of a rival herd holding no
+        // territory).
+        let herds: Vec<Vec2> = if clear && self.config.balance.animal_clear > 0.0 {
+            self.organisms
+                .iter()
+                .filter(|o| {
+                    o.alive
+                        && o.owner != owner
+                        && o.owner != crate::WILD
+                        && o.pos.dist(probe.pos) < Self::REINFORCE_REACH + super::ANIMAL_CLEAR + 6.0
+                })
+                .map(|o| o.pos)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let crowded = |p: Vec2| herds.iter().any(|q| q.dist(p) < super::ANIMAL_CLEAR);
         let (packs, lands): (Vec<Vec2>, Vec<super::groups::Territory>) = if clear {
             tries = tries.max(40);
             (
@@ -213,7 +231,10 @@ impl World {
                     if clear {
                         let edge =
                             cand.x.min(cand.y).min(self.map.width as f32 - cand.x).min(self.map.height as f32 - cand.y);
-                        if edge < super::EDGE_KEEP || lands.iter().any(|t| t.center.dist(cand) < t.radius + margin) {
+                        if edge < super::EDGE_KEEP
+                            || lands.iter().any(|t| t.center.dist(cand) < t.radius + margin)
+                            || crowded(cand)
+                        {
                             continue;
                         }
                         let packs_near = packs.iter().filter(|q| q.dist(cand) < super::PACK_CLEAR).count();
@@ -244,6 +265,7 @@ impl World {
                     if edge < super::EDGE_KEEP
                         || !self.passable_for(probe, cand)
                         || lands.iter().any(|t| t.center.dist(cand) < t.radius + margin)
+                        || crowded(cand)
                     {
                         continue;
                     }
@@ -860,5 +882,42 @@ mod tests {
         let (ids, moved) = old.reinforce_lineage_report(l, 6);
         assert!(moved.is_none());
         assert!(ids.iter().any(|&id| old.organism(id).unwrap().pos.dist(herd) < t.radius));
+    }
+
+    /// Playtest 11: reinforcements landed in the middle of a rival herd
+    /// holding no territory. With `Balance::animal_clear` they keep
+    /// `ANIMAL_CLEAR` tiles from other players' animals, moving out when
+    /// the group stands among them.
+    #[test]
+    fn reinforcements_keep_clear_of_a_rival_herd() {
+        let mut w = presets::standard_world(WorldConfig { seed: 6, width: 96, height: 96, ..Default::default() }, 1);
+        w.run_days(1);
+        let l = w.lineages.iter().position(|l| l.owner == 2).unwrap() as u32;
+        let herd = w.map.clamp(Vec2::new(48.0, 48.0));
+        let mine: Vec<usize> =
+            (0..w.organisms.len()).filter(|&i| w.organisms[i].alive && w.organisms[i].lineage == l).collect();
+        for &i in &mine {
+            w.organisms[i].pos = herd;
+        }
+        // Another player's animals all around, no territory.
+        let theirs: Vec<usize> = (0..w.organisms.len())
+            .filter(|&i| w.organisms[i].alive && w.organisms[i].owner != 2 && w.organisms[i].owner != crate::WILD)
+            .take(16)
+            .collect();
+        assert!(theirs.len() >= 8);
+        for (k, &i) in theirs.iter().enumerate() {
+            let a = std::f32::consts::TAU * k as f32 / theirs.len() as f32;
+            w.organisms[i].pos = w.map.clamp(herd + Vec2::new(a.cos(), a.sin()) * 5.0);
+        }
+        let rivals: Vec<Vec2> = theirs.iter().map(|&i| w.organisms[i].pos).collect();
+        let mut c = w.clone();
+        let ids = c.reinforce_lineage(l, 6);
+        assert_eq!(ids.len(), 6);
+        for id in ids {
+            let p = c.organism(id).unwrap().pos;
+            let near = rivals.iter().map(|q| q.dist(p)).fold(f32::MAX, f32::min);
+            // Within 3 tiles of a home at least 8 from them.
+            assert!(near > super::super::ANIMAL_CLEAR - 3.0, "{near:.1} tiles from a rival animal");
+        }
     }
 }

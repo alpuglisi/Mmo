@@ -337,11 +337,28 @@ impl Game {
                 format!("{}'s territory is {} away", self.name(p), super::tiles(d))
             }
         });
-        Some(match (animal, ground) {
+        let text = match (animal, ground) {
             (None, None) => format!("{at}: no other player's animals or territories on the map yet."),
             (Some(a), None) => format!("{at}: {a}."),
             (None, Some(g)) => format!("{at}: {g}."),
             (Some(a), Some(g)) => format!("{at}: {a}; {g}."),
+        };
+        // No ground clear of rival animals anywhere (`Balance::animal_clear`):
+        // said, with how crowded the spot is (playtest 11: "0 tiles away", no
+        // word why).
+        let crowded = founders
+            .first()
+            .and_then(|&id| self.world.organism(id))
+            .map_or(0, |o| self.world.founding_crowded(o.lineage));
+        Some(if crowded > 0 {
+            format!(
+                "{text} The map is crowded: no ground was clear of other players' animals, so they landed on the \
+                 emptiest found, with {crowded} rival animal{} within {:.0} tiles.",
+                if crowded == 1 { "" } else { "s" },
+                evo_sim::world::ANIMAL_CLEAR
+            )
+        } else {
+            text
         })
     }
 }

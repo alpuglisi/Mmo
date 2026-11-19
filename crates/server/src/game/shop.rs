@@ -890,7 +890,7 @@ impl Game {
         // (playtest 10: no hint the rule was relaxed).
         let note = moved.map(|(_, d)| {
             format!(
-                "your group stands in or beside another player's territory, so they landed on the nearest clear \
+                "your group stands in or beside another player's territory or animals, so they landed on the nearest clear \
                  ground, {d:.0} tiles from it"
             )
         });

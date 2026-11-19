@@ -376,6 +376,9 @@ struct HomeSearch {
     /// Homes where the owner's earlier foundings died out
     /// (`Balance::founding_conditions`): avoided.
     avoid: Vec<Vec2>,
+    /// The owner's retired lineages' homes (`Balance::animal_clear`):
+    /// avoided only in the picks that must keep clear.
+    avoid_retired: Vec<Vec2>,
     /// Founders placed at each home (the group size).
     founders: u32,
     /// Tiles founders may settle on (`Balance::founding_safety`, in a
@@ -462,23 +465,30 @@ impl HomeSearch {
         // least half their founders died), so a re-founding doesn't land on
         // the same fatal spot (playtest 3: one player, the same peninsula,
         // three times).
-        let avoid = if w.config.balance.founding_conditions > 0.0 {
-            (0..lineage as usize)
-                .filter(|&l| w.lineages[l].owner == probe.owner && w.lineage_alive.get(l).copied().unwrap_or(0) == 0)
-                // Retired ones too (`Balance::rival_clear`; playtest 9).
-                .filter(|&l| {
-                    if w.config.balance.rival_clear > 0.0 {
-                        return true;
+        // Retired ones too (`Balance::rival_clear`; playtest 9), kept apart
+        // with `Balance::animal_clear` (`avoid_retired`): avoided only while
+        // other ground is clear (playtest 11: the ground a retired herd just
+        // left empty was ruled out when nothing else was).
+        let (mut avoid, mut avoid_retired) = (Vec::new(), Vec::new());
+        if w.config.balance.founding_conditions > 0.0 {
+            for l in 0..lineage as usize {
+                if w.lineages[l].owner != probe.owner || w.lineage_alive.get(l).copied().unwrap_or(0) != 0 {
+                    continue;
+                }
+                let Some(home) = w.lineage_homes.get(l).copied().flatten() else { continue };
+                let died: u64 =
+                    w.counters.deaths_by_lineage.iter().filter(|((k, _), _)| *k == l as u32).map(|(_, n)| n).sum();
+                if 2 * died >= w.lineages[l].founders as u64 {
+                    avoid.push(home);
+                } else if w.config.balance.rival_clear > 0.0 {
+                    if w.config.balance.animal_clear > 0.0 {
+                        avoid_retired.push(home);
+                    } else {
+                        avoid.push(home);
                     }
-                    let died: u64 =
-                        w.counters.deaths_by_lineage.iter().filter(|((k, _), _)| *k == l as u32).map(|(_, n)| n).sum();
-                    2 * died >= w.lineages[l].founders as u64
-                })
-                .filter_map(|l| w.lineage_homes.get(l).copied().flatten())
-                .collect()
-        } else {
-            Vec::new()
-        };
+                }
+            }
+        }
         let settle = (w.config.balance.founding_safety > 0.0 && w.tick > 0).then(|| {
             let ground = w.map.ground();
             (0..w.map.width * w.map.height)
@@ -552,6 +562,7 @@ impl HomeSearch {
             prey_grid,
             crowd,
             avoid,
+            avoid_retired,
             founders,
             settle,
             rivals,
@@ -835,6 +846,11 @@ pub struct World {
     /// Recomputed before every tick, so not saved.
     #[cfg_attr(feature = "serde", serde(skip))]
     pack_homes: BTreeMap<(PlayerId, u8), Vec2>,
+    /// Other players' animals within `ANIMAL_CLEAR` tiles of each player
+    /// lineage's first home when no clear ground was found
+    /// (`Balance::animal_clear`), for the founding's reply. Not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    founding_crowded: BTreeMap<u32, u32>,
 }
 
 /// Steps from water a founder's tile needs (`Balance::dry_sites`).
@@ -946,6 +962,7 @@ impl World {
             crowding: Vec::new(),
             pack_room: BTreeMap::new(),
             pack_homes: BTreeMap::new(),
+            founding_crowded: BTreeMap::new(),
             clutch_at: IdMap::default(),
             path_scratch: PathScratch::default(),
             season_offset: Map::seasonal_offset(0, config.days_per_year),
@@ -1124,6 +1141,13 @@ impl World {
     /// `owner`'s room for the pack larder as this tick started (0–1).
     pub(crate) fn pack_room(&self, owner: PlayerId) -> f32 {
         self.pack_room.get(&owner).copied().unwrap_or(0.0)
+    }
+
+    /// Other players' animals within `ANIMAL_CLEAR` tiles of lineage `l`'s
+    /// first home, when no clear ground was found for it
+    /// (`Balance::animal_clear`); 0 otherwise.
+    pub fn founding_crowded(&self, l: u32) -> u32 {
+        self.founding_crowded.get(&l).copied().unwrap_or(0)
     }
 
     /// Where a player's group's pack hunters are thickest
@@ -1492,6 +1516,16 @@ impl World {
                 }
                 if k == 0 {
                     self.lineage_homes[lineage as usize] = Some(home);
+                    if self.config.balance.animal_clear > 0.0 {
+                        let mut n = 0u32;
+                        if let Some(s) = search.as_ref() {
+                            s.rival_animals
+                                .near(home, ANIMAL_CLEAR, |q, _| n += u32::from(q.dist(home) < ANIMAL_CLEAR));
+                        }
+                        if n > 0 {
+                            self.founding_crowded.insert(lineage, n);
+                        }
+                    }
                     if self.config.balance.founding_together > 0.0 && owner != crate::WILD && self.tick > 0 {
                         if let Some(s) = search.as_mut() {
                             s.near = Some(home);
@@ -1680,6 +1714,7 @@ impl World {
             prey_grid,
             crowd,
             avoid,
+            avoid_retired,
             founders,
             settle,
             rivals,
@@ -1714,14 +1749,19 @@ impl World {
         // anywhere would rule out most of the map).
         let pack_clear = PACK_CLEAR.min(self.map.width.min(self.map.height) as f32 / 5.0);
         let mut best = (f32::MIN, Map::tile_center(self.map.width / 2, self.map.height / 2));
+        let animal_clear = self.config.balance.animal_clear > 0.0 && self.config.balance.rival_clear > 0.0 && now;
         // With `founding_safety`, 200 picks on dry land; if none has room,
         // 200 more under the old rules (better somewhere than nowhere).
-        let rounds = if settle.is_some() { 2 } else { 1 };
-        for k in 0..200 * rounds {
-            if k == 200 && best.0 > f32::MIN {
+        let rounds = if settle.is_some() || animal_clear { 2 } else { 1 };
+        // With `Balance::animal_clear`: twice the strict picks, every one
+        // clear of rival animals; then, if none was, the emptiest ground.
+        let picks = if animal_clear { 400 } else { 200 };
+        let (hard, half) = (picks * 3 / 4, picks / 2);
+        for k in 0..picks * rounds {
+            if k == picks && best.0 > f32::MIN {
                 break;
             }
-            let strict = k < 200;
+            let strict = k < picks;
             let settle = settle.as_ref().filter(|_| strict);
             let p = Vec2::new(rng.gen_range(0.0..self.map.width as f32), rng.gen_range(0.0..self.map.height as f32));
             // Passable (`passable_for`): the region map marks every tile.
@@ -1754,11 +1794,18 @@ impl World {
             };
             if strict && self.config.balance.rival_clear > 0.0 {
                 // Nor beside where this owner's last foundings died or retired.
-                if k < 150 && (packs_close + animals_close > 0 || avoid.iter().any(|h| h.dist(p) < 0.75 * AVOID_RADIUS))
+                if k < hard
+                    && (packs_close + animals_close > 0
+                        || avoid.iter().chain(avoid_retired.iter()).any(|h| h.dist(p) < 0.75 * AVOID_RADIUS))
                 {
                     continue;
                 }
-                if k < 150 && water_far {
+                // Clear of rival animals in every strict pick
+                // (`Balance::animal_clear`; playtest 11: "0 tiles away").
+                if animal_clear && animals_close > 0 {
+                    continue;
+                }
+                if k < hard && water_far {
                     continue;
                 }
             }
@@ -1770,7 +1817,7 @@ impl World {
             }
             // Nor, in the first half of the strict pass, where rival groups
             // range and are headed (`Balance::rival_reach`).
-            if k < 100 && rival_ranges.iter().any(|t| t.center.dist(p) < t.radius + RIVAL_TERRITORY_MARGIN) {
+            if k < half && rival_ranges.iter().any(|t| t.center.dist(p) < t.radius + RIVAL_TERRITORY_MARGIN) {
                 continue;
             }
             // With `founding_safety`: dry land, with room for the founders.
@@ -1923,8 +1970,12 @@ impl World {
                 rivalry += RIVAL_LAND_WEIGHT * (1.0 - gap / RIVAL_RANGE).max(0.0);
             }
             // Rival animals at the spot itself (`Balance::rival_clear`).
+            // Past the strict picks, the emptiest ground (`animal_clear`):
+            // each rival animal near counts.
+            let crowd_cost = if animal_clear && !strict { 0.5 * animals_close as f32 } else { 0.0 };
             let clear_cost = 4.0 * (packs_close as f32).min(1.0)
                 + 2.0 * (animals_close as f32).min(1.0)
+                + crowd_cost
                 + if water_far { 2.0 } else { 0.0 };
             let score = water + food + comfort + safety
                 - rivalry
@@ -2771,6 +2822,59 @@ mod winter_tests {
             worst_old = worst_old.max(spread(&old, owner));
         }
         assert!(worst_old > FOUNDING_TOGETHER + 16.0, "the old rule spread them {worst_old:.1} at most");
+    }
+
+    /// Playtest 11: on a crowded map a founding landed inside a rival herd
+    /// ("0 tiles away"). With `Balance::animal_clear` every strict pick
+    /// keeps `ANIMAL_CLEAR` tiles from other players' animals; with no such
+    /// ground, the emptiest is taken and the world records how many were
+    /// near (`World::founding_crowded`).
+    #[test]
+    fn foundings_keep_clear_of_rival_animals_or_say_how_crowded() {
+        let mut w = World::new(WorldConfig { seed: 11, width: 96, height: 96, ..Default::default() });
+        for (owner, design) in crate::presets::wild_designs() {
+            let n = (design.founders / 3).max(4);
+            w.found_lineage_unchecked(owner, &design.founders(n));
+        }
+        w.run_days(1);
+        let herd =
+            crate::design::FounderDesign::new("herd", crate::design::Thermo::Warm, crate::design::BirthType::Live, 2)
+                .founders(160);
+        let ids = w.found_lineage_unchecked(50, &herd);
+        // Rival animals on a grid `step` tiles apart over the map.
+        let spread = |w: &mut World, step: f32| {
+            let per_row = (96.0 / step).ceil() as usize;
+            for (k, id) in ids.iter().enumerate() {
+                let i = w.index[id];
+                let (x, y) = ((k % per_row) as f32 * step + 2.0, (k / per_row) as f32 * step + 2.0);
+                w.organisms[i].pos = w.map.clamp(Vec2::new(x, y));
+            }
+        };
+        let design =
+            crate::design::FounderDesign::new("late", crate::design::Thermo::Warm, crate::design::BirthType::Live, 2)
+                .founders(20);
+        let rivals = |w: &World| -> Vec<Vec2> { ids.iter().filter_map(|id| w.organism(*id)).map(|o| o.pos).collect() };
+        // Sparse (24 tiles apart): clear ground exists, and every home is on it.
+        let mut sparse = w.clone();
+        spread(&mut sparse, 24.0);
+        let at = rivals(&sparse);
+        for owner in 60..63 {
+            let mut c = sparse.clone();
+            c.found_lineage_unchecked(owner, &design);
+            let l = c.lineages.len() as u32 - 1;
+            let home = c.lineage_homes[l as usize].unwrap();
+            let near = at.iter().map(|p| p.dist(home)).fold(f32::MAX, f32::min);
+            assert!(near >= ANIMAL_CLEAR, "owner {owner}: {near:.1} tiles from a rival animal");
+            assert_eq!(c.founding_crowded(l), 0);
+        }
+        // Dense (8 tiles apart, everywhere within 6): none, so the
+        // emptiest, and how crowded is recorded.
+        let mut dense = w.clone();
+        spread(&mut dense, 8.0);
+        let mut c = dense.clone();
+        c.found_lineage_unchecked(60, &design);
+        let l = c.lineages.len() as u32 - 1;
+        assert!(c.founding_crowded(l) > 0, "no clear ground, yet nothing recorded");
     }
 
     /// Playtest 8: founders landed old (85 days 11 days after landing).
