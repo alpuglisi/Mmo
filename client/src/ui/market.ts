@@ -174,7 +174,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       h('div', { class: 'row' }, h('label', {}, 'As', listKind)),
       h('div', { class: 'row' }, feeLabel, expiryLabel, daysLabel),
       h('div', { class: 'row' }, listBtn),
-      h('p', { class: 'muted small' }, 'Anyone may buy one mating with a listed organism: the listing is your consent. The fee is held in escrow and paid to you when the two meet and mate; it is refunded if the two never get together before the listing closes. A dam takes one buyer at a time. An auction sells one mating to the highest bid at or above the reserve when it closes; bids are held in escrow and refunded when outbid.')),
+      h('p', { class: 'muted small' }, 'Anyone may buy one mating with a listed organism: the listing is your consent. The fee is held in escrow and paid to you when the two meet and mate; it is refunded if the two never get together before the listing closes. A dam takes one buyer at a time. An auction sells one mating to the highest bid at or above the reserve when it closes; bids are held in escrow and refunded when outbid. A listed animal isn\'t protected from other players\' predators; once a mating is agreed, both animals are spared by other players\' animals while they walk to the meeting (wild predators still hunt).')),
     h('h4', {}, 'My listings'), myListingsEl,
     h('h3', {}, 'Renown shop'), shopEl,
     h('h3', {}, 'Ledger'), ledgerEl);
@@ -454,12 +454,13 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     // A preview first: the food it would add now (the season caps it) and the price.
     const p = await deps.send({ type: 'restore_pasture', group, preview: true });
     if (!p.ok) return;
-    const v = p.data as { restored: number; unit: string; price: number; priced_by?: string; also_feeds?: string[] };
+    const v = p.data as { restored: number; unit: string; price: number; feeds_others?: boolean; hint?: string };
     if (v.restored < 1) return model.toast('error', 'Nothing would regrow there now (midwinter, a drought, or already grown).');
     const body = [
       `About ${Math.round(v.restored)} ${v.unit} of plants regrow within ${RESTORE_RADIUS} tiles of ${groupName(group)}, as high as the season allows.`,
-      v.priced_by ? `Priced by ${v.priced_by}'s larger lineage, which grazes there too.` : '',
-      v.also_feeds?.length ? `Also feeds: ${v.also_feeds.join(', ')}.` : '',
+      v.feeds_others ? 'Other players\' animals graze there too and eat from it (they count toward the price).' : '',
+      v.hint ? `${v.hint.charAt(0).toUpperCase()}${v.hint.slice(1)}.` : '',
+      'This price holds for about 30 seconds.',
     ].filter(Boolean);
     if (!(await confirmDialog({ id: 'restore-confirm', title: `Restore the pasture for ${v.price} renown?`, ok: 'Restore', body }))) return;
     const r = await deps.send({ type: 'restore_pasture', group });

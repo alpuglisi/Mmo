@@ -378,10 +378,15 @@ impl World {
         }
     }
 
-    /// The animals in open market offers and agreements: other players'
-    /// animals spare them (`World::grace_spares`).
+    /// The animals walking to an accepted market agreement's meeting: other
+    /// players' animals spare them (`World::grace_spares`).
     pub fn set_market_shield(&mut self, ids: impl IntoIterator<Item = OrgId>) {
         self.market_shield = ids.into_iter().collect();
+    }
+
+    /// Whether `id` is shielded by a market agreement now.
+    pub fn market_shielded(&self, id: OrgId) -> bool {
+        self.market_shield.contains(&id)
     }
 
     /// Bar `id` from natural mating with another player's animals until
