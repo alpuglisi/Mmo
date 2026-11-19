@@ -15,18 +15,15 @@
 /// Punctuation a name may use besides letters, digits and single spaces.
 pub const PUNCTUATION: &str = ".,'!?-:+#()_";
 
-/// Folded fragments a name may not contain anywhere: they would pass for
-/// the server or its staff.
+/// Folded fragments a name may not contain anywhere: long enough that no
+/// common word holds them, and they would pass for the server or its staff.
+/// (Shorter staff words are matched per word: [`STAFF_STEMS`].)
 const RESERVED_ANYWHERE: &[&str] = &[
-    "admin",
     "moderator",
+    "administrator",
     "gamemaster",
     "gamemod",
     "sysop",
-    "server",
-    "staff",
-    "system",
-    "official",
     "developer",
     "anthropic",
     // Misspellings that read the same (playtest 6).
@@ -35,8 +32,7 @@ const RESERVED_ANYWHERE: &[&str] = &[
     "rootuser",
 ];
 
-/// Words a name may not use as a whole word (folded): too short or too
-/// common to match inside other words ("model", "modest", "owners'…").
+/// Words a name may not use as a whole word (folded).
 const RESERVED_WORDS: &[&str] = &[
     "gm",
     "gms",
@@ -51,80 +47,121 @@ const RESERVED_WORDS: &[&str] = &[
     "claude",
     "operator",
     "operators",
+    "admin",
+    "admins",
+    "sysop",
+    "server",
+    "servers",
+    "system",
+    "staff",
+    "official",
 ];
 
-/// Staff words a word may not start or end with, whatever its case
-/// ("claudebot", "GMbob", "ownerbob", "Supportbot", "botmod": playtest 7),
-/// unless the word is a common one in [`AFFIX_ALLOWED`]. ("dev" is left
-/// out: device, devil, Devon, develop.)
-const RESERVED_AFFIXES: &[&str] =
-    &["gm", "mod", "mods", "owner", "owners", "claude", "support", "operator", "sysop", "root"];
+/// Staff words a word may not start or end with ("claudebot", "GMbob",
+/// "botmod": playtest 7), nor hold inside after a lead-in or before a role
+/// word ("realclaudebot", "theownerbob", "mygmherd": playtest 8), unless a
+/// common word in [`ALLOWED_WORDS`] covers them ("modest", "landowner",
+/// "cooperator"). Inside a word otherwise they pass: "dogma",
+/// "badminton", "commodore".
+const STAFF_STEMS: &[&str] = &[
+    "gm", "gms", "mod", "mods", "admin", "admins", "owner", "owners", "claude", "support", "operator", "sysop",
+    "official",
+];
 
-/// Common words that start or end with a staff word, folded: allowed.
-const AFFIX_ALLOWED: &[&str] = &[
+/// Staff words that are also parts of common words ("ecosystem",
+/// "observer", "distaff", "taproot", "device", "helpful": playtest 8): only
+/// refused run together with a lead-in or a role word and nothing else
+/// ("serverbot", "realstaff", "rootuser", "helpteam").
+const SOFT_STEMS: &[&str] = &["server", "servers", "system", "staff", "root", "dev", "devs", "help"];
+
+/// Words that, run together before a staff word, make it a claim ("the",
+/// "real", "my": "TheOwnerBob", "RealClaudeBot", "mygmherd").
+const LEAD_INS: &[&str] = &[
+    "the", "my", "our", "your", "ur", "real", "true", "legit", "head", "chief", "lead", "top", "im", "iam", "not",
+    "ask", "official",
+];
+
+/// Words that, run together after a staff word, make it a role ("bot",
+/// "team", "official").
+const ROLE_WORDS: &[&str] = &[
+    "bot", "bots", "team", "crew", "squad", "official", "user", "account", "ai", "hq", "desk", "admin", "help",
+    "support",
+];
+
+/// Common words holding a staff word, folded: a staff word inside one of
+/// these is the word, not the staff.
+const ALLOWED_WORDS: &[&str] = &[
     "mode",
-    "modes",
     "model",
-    "models",
     "modest",
     "modern",
     "module",
-    "modules",
     "modular",
     "moderate",
     "modify",
     "modified",
     "modulate",
     "modicum",
+    "modena",
+    "modish",
+    "modulo",
+    "commodore",
+    "gmelina",
     "paradigm",
     "phlegm",
     "diaphragm",
     "landowner",
-    "landowners",
     "homeowner",
-    "homeowners",
     "shipowner",
-    "rooted",
-    "rooting",
-    "rootstock",
-    "roots",
-    "rooty",
-    "supportive",
-    "supporter",
-    "supporters",
+    "downer",
+    "sundowner",
+    "browner",
+    "drowner",
     "ownerless",
     "ownership",
+    "supports",
+    "supported",
+    "supporting",
+    "supportive",
+    "supporter",
+    "claudette",
+    "cooperator",
+    "officially",
+    "unofficial",
 ];
 
-/// Words starting with "wild" that don't read as the wild (a lineage or
-/// species named "Wildherd" would): allowed.
-const WILD_ALLOWED: &[&str] = &[
-    "wildebeest",
-    "wildebeests",
-    "wildflower",
-    "wildflowers",
-    "wilderness",
-    "wildfire",
-    "wildfires",
-    "wildwood",
-    "wildcat",
-    "wildcats",
+/// What may follow "wild" in one word and read as the wild's own ("WildHerd",
+/// "Wildlings", "Wildborn"); other words starting "wild" pass ("Wildly",
+/// "Wildrose", "Wilder", "Wilde", "Wildebeest": playtest 8).
+const WILD_TAILS: &[&str] = &[
+    "", "s", "herd", "herds", "pack", "packs", "ling", "lings", "one", "ones", "folk", "folks", "kin", "kind", "clan",
+    "clans", "tribe", "tribes", "born", "blood", "beast", "beasts", "thing", "things", "life", "team", "crew", "bot",
+    "bots",
 ];
 
 /// What a whole name may not come down to, once folded with its spaces and
 /// punctuation dropped, a leading "the", a trailing team word and trailing
 /// digits taken off (playtest 5: "G.M.", "M.o.d", "TheOwner",
 /// "SupportTeam", "Help desk" and "wild" all passed): the staff words, the
-/// wild (the owner of every wild animal) and the root account.
+/// wild (the owner of every wild animal) and the root account. ("Help" is
+/// a plain word: "The Help", playtest 8.)
 const RESERVED_WHOLE: &[&str] =
-    &["gm", "mod", "dev", "owner", "support", "helpdesk", "help", "claude", "wild", "root", "admin", "op", "ops"];
+    &["gm", "mod", "dev", "owner", "support", "helpdesk", "claude", "wild", "root", "admin", "op", "ops"];
 
 /// Words a staff name may end in ("SupportTeam", "DevCrew", "Mods").
 const TEAM_SUFFIXES: &[&str] = &["team", "crew", "squad", "s"];
 
 /// Whole forms that are also plain words whose plural is just a plural
-/// ("Roots", "Helps"): no `s` suffix for them (playtest 6: "Roots" refused).
-const PLAIN_PLURALS: &[&str] = &["root", "help"];
+/// ("Roots", "Supports"): no `s` suffix for them (playtests 6 and 8).
+const PLAIN_PLURALS: &[&str] = &["root", "support"];
+
+/// Words that only decorate a copied name ("Meadow vole II", "New
+/// Sunbright Drove": playtest 8); roman numerals and digits are dropped
+/// before.
+const DECORATIONS: &[&str] = &[
+    "new", "old", "true", "real", "original", "neo", "second", "third", "junior", "jr", "sr", "senior", "prime",
+    "reborn", "redux", "returns", "again", "clone", "copy", "official", "nd", "rd", "th", "st", "the", "a", "an",
+];
 
 /// What a name is for: a nameplate title shows beside its owner's name, so
 /// it can't claim to be the wild either.
@@ -163,45 +200,75 @@ fn spaced(p: &str) -> String {
     p.chars().map(String::from).collect::<Vec<_>>().join(" ")
 }
 
-/// Whether `text` would pass for the server, its staff or (a title) the
-/// wild: a [`RESERVED_ANYWHERE`] fragment anywhere, or a
-/// [`RESERVED_WORDS`] word, after folding.
+/// Whether `text` would pass for the server, its staff or (not an
+/// account) the wild: a [`RESERVED_ANYWHERE`] fragment anywhere, the whole
+/// name a [`RESERVED_WHOLE`] one, a [`RESERVED_WORDS`] word, or a word
+/// built on a staff word ([`staff_word`]), after folding.
 pub fn reserved(text: &str, kind: Kind) -> bool {
-    let folded = fold(text);
-    if RESERVED_ANYWHERE.iter().any(|w| folded.contains(&fold(w))) {
+    // `8` also read "at" ("Moder8or": playtest 7).
+    let folded = [fold(text), fold(&text.replace('8', "at"))];
+    if RESERVED_ANYWHERE.iter().any(|w| folded.iter().any(|f| f.contains(&fold(w)))) {
         return true;
     }
     if reserved_whole(text) {
         return true;
     }
     let words = words(text);
-    let word = |w: &str| words.iter().any(|x| *x == fold(w));
-    if RESERVED_WORDS.iter().any(|w| word(w)) {
+    if words.iter().any(|x| RESERVED_WORDS.iter().any(|w| *x == fold(w))) {
         return true;
     }
-    // A staff word at either end of a word ("claudebot"), unless common.
-    let allowed: Vec<String> = AFFIX_ALLOWED.iter().map(|w| fold(w)).collect();
-    let affix = |x: &String| {
-        !allowed.contains(x)
-            && RESERVED_AFFIXES
-                .iter()
-                .map(|w| fold(w))
-                .any(|w| x.len() > w.len() && (x.starts_with(&w) || x.ends_with(&w)))
-    };
-    if words.iter().any(affix) {
+    if words.iter().any(|w| staff_word(w)) {
         return true;
     }
-    // The wild: no title, lineage or species may use it as a word or start
-    // a word with it ("Wild herd", "WildHerd", "A Wild2 herd": playtests 6
-    // and 7), but common words starting with it pass ("Wildebeest").
-    let wild = fold("wild");
-    let wild_ok: Vec<String> = WILD_ALLOWED.iter().map(|w| fold(w)).collect();
+    // The wild: no title, lineage or species may use it as a word or build
+    // a word on it ("Wild herd", "WildHerd", "A Wild2 herd", "TheWild":
+    // playtests 6 to 8); other words starting with it pass ("Wildly").
     match kind {
-        Kind::Title | Kind::Lineage | Kind::Species => {
-            words.iter().any(|w| w.starts_with(&wild) && !wild_ok.contains(w))
-        }
+        Kind::Title | Kind::Lineage | Kind::Species => words.iter().any(|w| wild_word(w)),
         Kind::Account => false,
     }
+}
+
+/// Whether one folded word is built on a staff word: a [`STAFF_STEMS`]
+/// word at either end or after a lead-in or before a role word, or a
+/// [`SOFT_STEMS`] word with only a lead-in or role word beside it; where no
+/// [`ALLOWED_WORDS`] word covers it.
+fn staff_word(w: &str) -> bool {
+    let lead = |x: &str| LEAD_INS.iter().any(|l| fold(l) == x);
+    let role = |x: &str| ROLE_WORDS.iter().any(|r| fold(r) == x);
+    let hits = |stems: &[&str], refused: &dyn Fn(&str, &str) -> bool| {
+        stems.iter().map(|s| fold(s)).any(|s| {
+            w.match_indices(s.as_str()).any(|(i, _)| {
+                let j = i + s.len();
+                refused(&w[..i], &w[j..]) && !covered(w, i, j)
+            })
+        })
+    };
+    hits(STAFF_STEMS, &|before, after| before.is_empty() || after.is_empty() || lead(before) || role(after))
+        || hits(SOFT_STEMS, &|before, after| {
+            !(before.is_empty() && after.is_empty())
+                && (before.is_empty() || lead(before))
+                && (after.is_empty() || role(after))
+        })
+}
+
+/// Whether an [`ALLOWED_WORDS`] word, or its plural, in `w` spans its
+/// bytes `i..j` ("landowners" for "owners").
+fn covered(w: &str, i: usize, j: usize) -> bool {
+    ALLOWED_WORDS
+        .iter()
+        .map(|a| fold(a))
+        .flat_map(|a| [format!("{a}s"), a])
+        .any(|a| w.match_indices(a.as_str()).any(|(p, _)| p <= i && p + a.len() >= j))
+}
+
+/// Whether one folded word reads as the wild: "wild" and a [`WILD_TAILS`]
+/// ending, or a lead-in and "wild" ("thewild", "realwild").
+fn wild_word(w: &str) -> bool {
+    let wild = fold("wild");
+    let tail = w.strip_prefix(wild.as_str()).is_some_and(|t| WILD_TAILS.iter().any(|x| fold(x) == t));
+    let led = w.strip_suffix(wild.as_str()).is_some_and(|b| LEAD_INS.iter().any(|l| fold(l) == b));
+    tail || led
 }
 
 /// The words of a name, folded, for the reserved-word check: split at
@@ -213,7 +280,7 @@ fn words(text: &str) -> Vec<String> {
     let parts: Vec<&str> = text.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).collect();
     let mut raw: Vec<String> = Vec::new();
     let mut run = String::new();
-    for p in parts {
+    for &p in &parts {
         if p.chars().count() == 1 {
             run.push_str(p);
             continue;
@@ -226,6 +293,21 @@ fn words(text: &str) -> Vec<String> {
     if !run.is_empty() {
         raw.push(run);
     }
+    // A single letter set apart from its word is read with it too ("C
+    // laude", "Claud e": playtest 8).
+    let mut joined = Vec::new();
+    for (k, p) in parts.iter().enumerate() {
+        if p.chars().count() != 1 {
+            continue;
+        }
+        if let Some(next) = parts.get(k + 1).filter(|n| n.chars().count() > 1) {
+            joined.push(format!("{p}{next}"));
+        }
+        if let Some(prev) = k.checked_sub(1).map(|i| parts[i]).filter(|n| n.chars().count() > 1) {
+            joined.push(format!("{prev}{p}"));
+        }
+    }
+    raw.extend(joined);
     let mut out = Vec::new();
     for w in raw {
         let mut forms = vec![w.clone()];
@@ -240,15 +322,21 @@ fn words(text: &str) -> Vec<String> {
 }
 
 /// A word folded, and, when it has digits, its letters before the first
-/// digit too ("Claude2", "GM2", "Wild2", "Moder8or" read "claude", "gm",
-/// "wild", "moder"): a digit after a word doesn't hide it. Only the leading
-/// run: dropping every digit made a random id such as "mi8k3gm2" read as
-/// ending in "gm" (an e2e account refused at random, after playtest 7).
+/// digit ("Claude2", "GM2", "Wild2", "Moder8or" read "claude", "gm",
+/// "wild", "moder") and the word with digits at either end taken off when
+/// what is left has no digit but look-alike ones ("2claude2", "2wild":
+/// playtest 8): digits around a word don't hide it. Not every digit:
+/// dropping all made a random id such as "mi8k3gm2" read as ending in "gm"
+/// (an e2e account refused at random, after playtest 7).
 fn digit_forms(w: &str) -> Vec<String> {
     let mut v = vec![fold(w)];
     if let Some(i) = w.find(|c: char| c.is_ascii_digit()) {
         if i > 0 {
             v.push(fold(&w[..i]));
+        }
+        let trimmed = w.trim_matches(|c: char| c.is_ascii_digit());
+        if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_alphabetic() || "013457".contains(c)) {
+            v.push(fold(trimmed));
         }
     }
     v
@@ -305,18 +393,53 @@ fn strip_digits(text: &str) -> String {
     alnum.trim_end_matches(|c: char| c.is_ascii_digit()).to_string()
 }
 
-/// A name's key for comparing with another name: its words without the
-/// articles (the, a, an) and without digits, folded and run together, a
-/// plural `s` dropped ("The Meadow vole 2" and "Meadow voles" alike).
-pub fn name_key(text: &str) -> String {
-    let words: Vec<String> = text
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|w| !w.is_empty() && !["the", "a", "an"].contains(&w.to_ascii_lowercase().as_str()))
-        .map(|w| w.chars().filter(|c| !c.is_ascii_digit()).collect::<String>())
+/// Whether `text` copies `other` (a wild species' or a rival's lineage
+/// name): the same words once articles, digits, roman numerals and plurals
+/// are set aside ("The Meadow voles 2"), or with only decorating words
+/// added ("Meadow vole II", "Red Foxes", "New Sunbright Drove": playtest
+/// 8). Names of fewer than 4 folded letters only when equal.
+pub fn copies(text: &str, other: &str) -> bool {
+    let o = key_words(other);
+    let oc = o.concat();
+    if oc.len() < 4 {
+        return false;
+    }
+    let t = key_words(text);
+    let decoration = |w: &String| DECORATIONS.iter().any(|d| fold(d) == *w);
+    // Words of `text` run together to `other`'s ("MeadowVole II"), the rest
+    // decorations.
+    (0..t.len()).any(|i| {
+        (i + 1..=t.len())
+            .any(|j| t[i..j].concat() == oc && t[..i].iter().all(decoration) && t[j..].iter().all(decoration))
+    })
+}
+
+/// A name's words for [`copies`]: lower case, articles, roman numerals and
+/// digits dropped, folded, a plural taken off each ("foxes" "fox", "voles"
+/// "vole").
+fn key_words(text: &str) -> Vec<String> {
+    const ROMAN: &[&str] = &["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii"];
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .map(str::to_ascii_lowercase)
+        .filter(|w| !w.is_empty() && !["the", "a", "an"].contains(&w.as_str()) && !ROMAN.contains(&w.as_str()))
+        .map(|w| fold(&w.chars().filter(|c| !c.is_ascii_digit()).collect::<String>()))
         .filter(|w| !w.is_empty())
-        .collect();
-    let f = fold(&words.concat());
-    f.strip_suffix('s').map(str::to_string).unwrap_or(f)
+        .map(|w| singular(&w))
+        .collect()
+}
+
+/// A folded word without its plural ending ("foxes" "fox", "voles" "vole",
+/// "grass" as it is).
+fn singular(w: &str) -> String {
+    if let Some(stem) = w.strip_suffix("es") {
+        if ["x", "s", "z", "ch", "sh"].iter().any(|e| stem.ends_with(e)) {
+            return stem.to_string();
+        }
+    }
+    match w.strip_suffix('s') {
+        Some(stem) if stem.len() >= 3 && !stem.ends_with('s') => stem.to_string(),
+        _ => w.to_string(),
+    }
 }
 
 /// A text folded for look-alike comparison: its letters and digits only,
@@ -340,18 +463,35 @@ pub fn fold(text: &str) -> String {
 
 /// Whether `text` looks like one of `others` (other players' names): folded
 /// alike, alike once trailing digits are dropped from both ("Herdmaster"
-/// against "Herdmaster5", at least 4 characters), or, for a title,
-/// containing one ("Herdmaster4 (alt)"). Names of fewer than 3 folded
-/// characters only count when equal.
+/// against "Herdmaster5"), or every digit ("8Rulebender" against
+/// "Rulebender8", playtest 8), at least 4 characters; for an account, also
+/// one holding the other with at most 2 letters more ("Herdmaster8x"); for
+/// a title, containing one ("Herdmaster4 (alt)"). Names of fewer than 3
+/// folded characters only count when equal.
 pub fn impersonates<'a>(text: &str, others: impl IntoIterator<Item = &'a str>, kind: Kind) -> bool {
     let f = fold(text);
     let fb = fold(&strip_digits(text));
+    let fl = fold(&letters(text));
     others.into_iter().any(|n| {
         let o = fold(n);
         let ob = fold(&strip_digits(n));
+        let ol = fold(&letters(n));
+        let (short, long) = if fl.len() <= ol.len() { (&fl, &ol) } else { (&ol, &fl) };
         !o.is_empty()
-            && (o == f || (ob.len() >= 4 && ob == fb) || (kind == Kind::Title && o.len() >= 3 && f.contains(&o)))
+            && (o == f
+                || (ob.len() >= 4 && ob == fb)
+                || (ol.len() >= 4 && ol == fl)
+                || (kind == Kind::Account
+                    && short.len() >= 5
+                    && long.len() - short.len() <= 2
+                    && long.contains(short.as_str()))
+                || (kind == Kind::Title && o.len() >= 3 && f.contains(&o)))
     })
+}
+
+/// The letters of `text` (digits and the rest dropped).
+fn letters(text: &str) -> String {
+    text.chars().filter(char::is_ascii_alphabetic).collect()
 }
 
 /// A name saved before the filter, made showable: characters it doesn't
@@ -489,7 +629,6 @@ mod tests {
                 "ownerbob",
                 "Supportbot",
                 "botmod",
-                "RootGrazers",
             ] {
                 assert!(check(bad, 40, kind).is_err(), "{bad:?} as {kind:?}");
             }
@@ -557,8 +696,104 @@ mod tests {
         }
         assert!(benign.len() >= 50);
         // Random ids with digits don't trip on a staff word inside them.
-        for id in ["ctx_mi8k3gm2", "push_k3gm2x", "spec_8mod2", "e2e_9root4", "x2wild"] {
+        for id in ["ctx_mi8k3gm2", "push_k3gm2x", "spec_8k3mo2", "e2e_9root4", "x2wild"] {
             assert!(check(id, 24, Kind::Account).is_ok(), "{id:?} refused");
+        }
+    }
+
+    /// Playtest 8: ordinary words holding a staff word pass; staff words
+    /// with a lead-in, a role word, digits around them or a letter set apart
+    /// are refused.
+    #[test]
+    fn staff_words_are_matched_per_word_with_common_words_allowed() {
+        let accepted = [
+            "Taproot grazers",
+            "Beetroot voles",
+            "Arrowroot herd",
+            "Ecosystem grazers",
+            "Systematic grazers",
+            "Observer pack",
+            "Badminton hares",
+            "Distaff herd",
+            "Cooperator ants",
+            "Modesty voles",
+            "Modena runners",
+            "Claudette herd",
+            "Wildly happy herd",
+            "Wildrose grazers",
+            "Wilder herd",
+            "Oscar Wilde voles",
+            "Supports",
+            "The Help",
+            "Gmelina moths",
+            "Staffpick",
+            // Others of the same kinds.
+            "Dogma runners",
+            "Pigment moths",
+            "Commodore herd",
+            "Sundowner foxes",
+            "Helpful herd",
+            "Devon cattle",
+            "Root grazers",
+            "RootGrazers",
+            "Wildebeest",
+        ];
+        for kind in [Kind::Lineage, Kind::Species, Kind::Title] {
+            for ok in accepted {
+                assert!(check(ok, 40, kind).is_ok(), "{ok:?} as {kind:?} refused");
+            }
+        }
+        let refused_everywhere = [
+            "realclaudebot",
+            "theownerbob",
+            "mygmherd",
+            "2claude2 fan",
+            "C laude fan",
+            "Claud e fan",
+            "serverbot",
+            "realstaff",
+            "rootuser",
+            "adminbob",
+            "Badmin",
+            "officialbob",
+            "TheModsTeam",
+            "Supportbot",
+            "Mod2 squad",
+        ];
+        let refused_names = ["2wild herd", "TheWild", "Wildherd", "Wildlings", "Wild herd"];
+        for kind in [Kind::Lineage, Kind::Species, Kind::Title, Kind::Account] {
+            for bad in refused_everywhere {
+                assert!(check(bad, 40, kind).is_err(), "{bad:?} as {kind:?} passed");
+            }
+        }
+        for kind in [Kind::Lineage, Kind::Species, Kind::Title] {
+            for bad in refused_names {
+                assert!(check(bad, 40, kind).is_err(), "{bad:?} as {kind:?} passed");
+            }
+        }
+    }
+
+    /// Playtest 8: copies of a wild or rival name with decorations added.
+    #[test]
+    fn copies_with_decorations_are_copies() {
+        let cases: &[(&str, &str, bool)] = &[
+            ("Meadow vole", "Meadow vole", true),
+            ("The Meadow voles 2", "Meadow vole", true),
+            ("Meadow vole II", "Meadow vole", true),
+            ("MeadowVole III", "Meadow vole", true),
+            ("New Meadow vole", "Meadow vole", true),
+            ("Red Foxes", "Red fox", true),
+            ("Sunbright Drove II", "Sunbright Drove", true),
+            ("New Sunbright Drove", "Sunbright Drove", true),
+            ("Real Sunbright Drove 2", "Sunbright Drove", true),
+            ("Meadow vole hunters", "Meadow vole", false),
+            ("Sunbright", "Sunbright Drove", false),
+            ("Red foxglove", "Red fox", false),
+            ("Grass snakes", "Grass", false),
+            ("L2", "L1", false),
+        ];
+        for &(text, other, copy) in cases {
+            assert_eq!(copies(text, other), copy, "{text:?} against {other:?}");
         }
     }
 
@@ -574,6 +809,20 @@ mod tests {
         assert!(impersonates("Herdmaster", others, Kind::Lineage));
         assert!(impersonates("Herdmaster7", others, Kind::Species));
         assert!(!impersonates("Bo2", ["Bo1"], Kind::Lineage), "too short to compare without digits");
+        // Playtest 8: digits moved or a letter or two added.
+        let cases: &[(&str, &str, Kind, bool)] = &[
+            ("8Rulebender", "Rulebender8", Kind::Account, true),
+            ("8Rulebender", "Rulebender8", Kind::Lineage, true),
+            ("Herdmaster8x", "Herdmaster8", Kind::Account, true),
+            ("xHerdmaster", "Herdmaster8", Kind::Account, true),
+            ("Herdmaster8x", "Herdmaster8", Kind::Lineage, false),
+            ("Herdmasterxyz", "Herdmaster8", Kind::Account, false),
+            ("usera", "userb", Kind::Account, false),
+            ("Grazers", "Grazer", Kind::Lineage, false),
+        ];
+        for &(text, other, kind, alike) in cases {
+            assert_eq!(impersonates(text, [other], kind), alike, "{text:?} against {other:?} as {kind:?}");
+        }
     }
 
     #[test]

@@ -9726,7 +9726,32 @@ mod tests {
         g.set_name(2, "bob");
         let copy = g.found(2, &design("The Grazers of the north 2"));
         assert!(matches!(copy, Err(FoundError::BadName(_))), "{:?}", copy.map(|o| o.lineage));
-        assert!(g.found(2, &design("Grazers of the south")).is_ok());
+        // Nor with decorations added (playtest 8).
+        for n in [format!("{singular} II"), format!("New {singular}"), "New Grazers of the north".into()] {
+            assert!(matches!(g.found(2, &design(&n)), Err(FoundError::BadName(_))), "{n}");
+        }
+        let bob = g.found(2, &design("Grazers of the south")).unwrap();
+        // Animal names and nameplates are checked against wild and rival
+        // names too (playtest 8: a stud listed under a rival's lineage name).
+        let _ = g.post(2, 5000, LedgerKind::Income, "test".into(), None, None);
+        let stud = bob.founders[0];
+        for (name, code) in [
+            ("Grazers of the north II", "name_taken"),
+            (singular.as_str(), "bad_name"),
+            (&*format!("{singular} II"), "bad_name"),
+        ] {
+            let out = g.command(11, 2, None, ClientMsg::NameAnimal { organism: stud, name: name.into() });
+            assert_eq!(result(&out).1.as_deref(), Some(code), "{name}");
+        }
+        let out = g.command(12, 2, None, ClientMsg::NameAnimal { organism: stud, name: "Old Thunder".into() });
+        assert_eq!(result(&out), (true, None));
+        let out = g.command(
+            13,
+            2,
+            None,
+            ClientMsg::SetNameplate { color: "amber".into(), title: "New Grazers of the north".into() },
+        );
+        assert_eq!(result(&out).1.as_deref(), Some("bad_title"));
     }
 
     /// A juvenile reads `not_mature`, not `same_sex` (playtest 5), in a
