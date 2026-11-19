@@ -188,7 +188,7 @@ impl Game {
             slots_bought: bought,
             slot_price: economy::slot_price(bought),
             reinforce_size: economy::REINFORCE_SIZE,
-            reinforce_price: economy::reinforce_price(reinforced),
+            reinforce_price: self.reinforce_price_quote(player, reinforced),
             reinforce_max_alive: max_alive,
             reinforce_blocked: self.reinforce_blocked(player).err().map(|e| e.message),
             market_fee_percent: economy::MARKET_FEE_PERCENT,
@@ -223,6 +223,21 @@ impl Game {
     fn recent_count(&self, days: Option<&Vec<u64>>) -> u32 {
         let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
         days.map_or(0, |d| d.iter().filter(|&&day| day + window > today).count() as u32)
+    }
+
+    /// The price of the next reinforcement: now, or with the window full,
+    /// on the day it frees a slot (playtest 8: a blocked purchase quoted
+    /// 600, the price with every recent purchase still counted, and the
+    /// next one cost 150).
+    fn reinforce_price_quote(&self, player: PlayerId, reinforced: u32) -> u64 {
+        let Some((day, _)) = self.reinforce_next(player) else { return economy::reinforce_price(reinforced) };
+        let window = self.cfg.season_days.max(1);
+        let then = self
+            .economy
+            .reinforce_days
+            .get(&player)
+            .map_or(0, |d| d.iter().filter(|&&x| x + window > day).count() as u32);
+        economy::reinforce_price(then)
     }
 
     /// When the reinforcement window frees a slot, if it is full: the day
@@ -365,7 +380,11 @@ impl Game {
                     x: coarse(mid.x),
                     y: coarse(mid.y),
                     members: g.members.div_ceil(10) * 10,
-                    territory: g.territory.map(|t| [t.center.x.round(), t.center.y.round(), t.radius.round()]),
+                    // Or the one it holds while away (playtest 8: left out).
+                    territory: g
+                        .territory
+                        .or_else(|| self.world.territory_away(p, g.id))
+                        .map(|t| [t.center.x.round(), t.center.y.round(), t.radius.round()]),
                 });
             }
         }
@@ -645,6 +664,11 @@ impl Game {
     pub(super) fn buy_mating_slot(&mut self, player: PlayerId) -> Result<ShopView, ErrorInfo> {
         if self.lineage_of(player).is_none() {
             return Err(ErrorInfo::new("no_lineage", "found a lineage first"));
+        }
+        // Playtest 8: slots were sold to a player whose lineage had retired
+        // (they lapse with the weather season, unused).
+        if self.is_extinct(player) {
+            return Err(ErrorInfo::new("no_lineage", "your lineage has no living animals: found a new one first"));
         }
         let bought = self.world.bonus_slots(player);
         let price = economy::slot_price(bought).ok_or_else(|| {

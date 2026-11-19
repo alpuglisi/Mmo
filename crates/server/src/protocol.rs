@@ -602,6 +602,10 @@ pub enum ServerMsg {
     },
     /// A directed-mating offer changed status (sent to both sides).
     MatingUpdate {
+        /// The day it changed (from 0, like every day in the API; playtest
+        /// 8: feed entries for offers had none).
+        #[serde(default)]
+        day: u64,
         offer: OfferView,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         outcome: Option<MatingOutcome>,
@@ -1905,7 +1909,8 @@ pub struct ShopView {
     pub slot_price: Option<u64>,
     /// Adults one reinforcement adds.
     pub reinforce_size: u32,
-    /// Price of the next reinforcement.
+    /// Price of the next reinforcement: now, or with the window full, on
+    /// `reinforce_next_day`.
     pub reinforce_price: u64,
     /// Most living members a lineage may have to be reinforced.
     pub reinforce_max_alive: usize,
@@ -1958,7 +1963,9 @@ pub struct ShopView {
     #[serde(default)]
     pub restores_bought: u32,
     /// When the next reinforcement is possible if the window is full: the
-    /// simulated day and about how many real minutes from now.
+    /// simulated day and about how many real minutes from now. Days count
+    /// from 0 like every day in the API; texts (and the client) say them
+    /// from 1, so "day 166" in a reply is `reinforce_next_day` 165.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reinforce_next_day: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2232,6 +2239,46 @@ pub struct LedgerView {
     pub escrow: u64,
     /// Newest first.
     pub entries: Vec<LedgerEntry>,
+    /// Every entry's renown by kind since `since_day`, not only the entries
+    /// sent (playtest 8: "spent in the shop 0" after 600 spent, the
+    /// purchases older than the entries listed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub totals: Option<LedgerTotals>,
+}
+
+/// [`LedgerView::totals`]: renown by kind (all positive amounts).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct LedgerTotals {
+    /// The first day counted (from 0).
+    pub since_day: u64,
+    /// Income, grants, achievements and royalties.
+    pub earned: u64,
+    pub royalties: u64,
+    /// Paid into escrow.
+    pub escrow: u64,
+    pub sales: u64,
+    pub refunds: u64,
+    /// Spent in the shop.
+    pub shop: u64,
+}
+
+impl LedgerTotals {
+    /// Count one ledger entry.
+    pub fn add(&mut self, e: &LedgerEntry) {
+        let (gain, loss) = (e.delta.max(0) as u64, e.delta.min(0).unsigned_abs());
+        match e.kind {
+            LedgerKind::Income | LedgerKind::Grant | LedgerKind::Achievement => self.earned += gain,
+            LedgerKind::Royalty => {
+                self.earned += gain;
+                self.royalties += gain;
+            }
+            LedgerKind::Purchase => self.shop += loss,
+            LedgerKind::Escrow => self.escrow += loss,
+            LedgerKind::Sale => self.sales += gain,
+            LedgerKind::Refund => self.refunds += gain,
+        }
+    }
 }
 
 /// An expressed gene value of a listed organism.

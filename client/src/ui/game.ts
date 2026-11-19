@@ -1064,9 +1064,17 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }
   void refreshMatingHistory();
 
+  // Overlapping refreshes can resolve out of order: keep only the newest
+  // (playtest 8: "77 lost since founding" then "74", an older reply last).
+  let statsAsked = 0;
+  let statsShown = 0;
   async function refreshStats(): Promise<void> {
+    const asked = ++statsAsked;
     try {
-      stats = await api.lineageStats(deps.token);
+      const fresh = await api.lineageStats(deps.token);
+      if (asked < statsShown) return;
+      statsShown = asked;
+      stats = fresh;
       model.addFeed(stats.alerts.map(alertEntry));
       if (tab === 'genetics') renderGenetics();
       if (tab === 'lineage') renderLineage();

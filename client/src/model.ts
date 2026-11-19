@@ -241,7 +241,7 @@ export class GameModel {
         this.trimClosed();
         const text = offerUpdateText(m.offer, m.outcome, m.error, this.player);
         this.toast(m.error && m.offer.status !== 'accepted' ? 'error' : 'info', text);
-        this.addFeed([{ kind: 'offer', text, tick: this.tick() }]);
+        this.addFeed([{ kind: 'offer', text, tick: this.tick(), day: m.day ?? this.state?.clock.day }]);
         this.emit('offers');
         break;
       }

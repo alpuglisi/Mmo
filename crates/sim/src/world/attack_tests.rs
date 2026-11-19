@@ -687,6 +687,17 @@ fn the_prey_check_counts_only_prey_the_pack_can_take() {
     assert!(fewer.feeds <= all.feeds);
     // Six small walkers can't carry three hunters for good.
     assert!(all.feeds < all.members, "{all:?}");
+    // Learned poisonous (playtest 8: a pack lived on a toxic herd while the
+    // check said "feeds 0"): counted as often as hungry hunters take it.
+    let hl = w.organisms[pack[0]].lineage;
+    let toxic = w.organisms[prey[2]].lineage;
+    w.toxic_lessons.insert((hl, toxic), 1.0);
+    let partly = w.prey_check(HUNTER, 0, c, 4.0).unwrap();
+    assert_eq!(partly.prey, 4, "taken by hungry hunters: {partly:?}");
+    // Without hunger's relief it is taken less, so it feeds no more.
+    (w.config.balance.hungry_hunters, w.config.balance.avoid_cap) = (0.0, 0.0);
+    let strict = w.prey_check(HUNTER, 0, c, 4.0).unwrap();
+    assert!(strict.feeds <= partly.feeds && partly.feeds <= fewer.feeds, "{strict:?} {partly:?} {fewer:?}");
 }
 
 /// Playtest 6: the pack larder faded between 60 and 100 of the player's

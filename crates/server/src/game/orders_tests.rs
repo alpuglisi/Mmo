@@ -1262,6 +1262,83 @@ fn far_claims_rate_the_clamped_circle_and_a_starving_hold_loosens() {
     assert!(texts.iter().any(|t| t.contains("the hold is loosened")), "{texts:?}");
 }
 
+/// Playtest 8 Lows in the shop: no mating slot for a player with no living
+/// lineage; a blocked reinforcement quotes what the next will cost (not the
+/// price with every recent purchase counted).
+#[test]
+fn the_shop_refuses_slots_without_a_lineage_and_quotes_the_next_reinforcement() {
+    let (mut g, _) = game();
+    let _ = g.post(1, 5000, LedgerKind::Income, "test".into(), None, None);
+    let today = g.world.day();
+    // Two bought on different days: the first frees its slot first.
+    g.economy.reinforce_days.insert(1, vec![today, today + 1]);
+    let shop = g.shop_view(1);
+    assert!(shop.reinforce_blocked.is_some() && shop.reinforce_next_day.is_some(), "{shop:?}");
+    assert_eq!(shop.reinforce_price, economy::reinforce_price(1), "the price once the old one lapses");
+    // Retired: no slots for sale.
+    let lineage = g.lineage_of(1).unwrap();
+    g.retire(1, lineage).unwrap();
+    assert_eq!(run(&mut g, ClientMsg::BuyMatingSlot), Err("no_lineage".to_string()));
+}
+
+/// Playtest 8: two alerts with one id, after the alert holding the highest
+/// id was dropped. Ids never repeat.
+#[test]
+fn alert_ids_never_repeat_when_alerts_are_dropped() {
+    let (mut g, _) = game();
+    let mut out = Outbox::new();
+    g.alert(1, AlertKind::DailySummary, "summary".into(), None, &mut out);
+    let first = g.alerts(1).last().unwrap().id;
+    g.alerts.get_mut(&1).unwrap().pop_back();
+    g.alert(1, AlertKind::World, "next".into(), None, &mut out);
+    assert!(g.alerts(1).last().unwrap().id > first);
+}
+
+/// Playtest 8: "spent in the shop 0" after real purchases, which had
+/// scrolled out of the entries sent. The ledger reply carries every entry's
+/// totals.
+#[test]
+fn the_ledger_reply_totals_every_entry() {
+    let (mut g, _) = game();
+    let _ = g.post(1, 1000, LedgerKind::Income, "test".into(), None, None);
+    let shop = g.shop_view(1);
+    run(&mut g, ClientMsg::BuyMatingSlot).unwrap();
+    for _ in 0..economy::LEDGER_KEPT {
+        let _ = g.post(1, 1, LedgerKind::Income, "filler".into(), None, None);
+    }
+    let d = run(&mut g, ClientMsg::Ledger { limit: Some(5) }).unwrap();
+    assert_eq!(d["totals"]["shop"].as_u64(), shop.slot_price, "{d}");
+    assert!(d["entries"].as_array().unwrap().iter().all(|e| e["kind"] != "purchase"));
+}
+
+/// Playtest 8: the survey left out a territory held while its group was
+/// away, and refused while the main group was empty.
+#[test]
+fn the_survey_shows_territories_held_away_and_works_without_a_main_group() {
+    let (mut g, a) = game();
+    let _ = g.post(1, 5000, LedgerKind::Income, "test".into(), None, None);
+    g.set_name(2, "bo");
+    g.found(2, &design("B")).unwrap();
+    let mine = g.world.group_middle(1, 0).unwrap();
+    // Bo's group 0 holds a territory near ann, then migrates off keeping it.
+    let near = land_away(&g, mine, 6.0);
+    for o in g.world.organisms.iter_mut().filter(|o| o.owner == 2) {
+        o.pos = near;
+    }
+    g.world.claim_territory(2, 0, near, 4.0).unwrap();
+    // Migrating keeps the territory, held while away.
+    let far = land_away(&g, near, 12.0);
+    g.world.command_migrate_group(2, 0, far).unwrap();
+    assert!(g.world.territory(2, 0).is_none() && g.world.territory_away(2, 0).is_some());
+    // Ann's main group empties into group 1.
+    for o in g.world.organisms.iter_mut().filter(|o| a.contains(&o.id)) {
+        o.group = 1;
+    }
+    let s = g.survey(1).expect("from the largest group");
+    let bo = s.groups.iter().find(|x| x.player == 2).expect("bo surveyed");
+    assert!(bo.territory.is_some(), "{s:?}");
+}
+
 /// Playtest 8 (M9): a group about to bed down, a destination on a rival's
 /// territory, water that won't last a drought, a journey's food shared
 /// with the grazers along the way, and where founders landed.

@@ -568,26 +568,32 @@ fn balance73_off(b: &mut crate::Balance) {
 fn playtest8_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v77::OLD_VALUE;
     (b.clutch_split, b.dry_spell, b.pack_prey) = (old, old, old);
+    founder_youth_off(b);
+}
+
+/// The playtest 8 founder tunable as snapshots before version 81 read it.
+fn founder_youth_off(b: &mut crate::Balance) {
+    b.founder_youth = crate::serde_util::before_v81::OLD_VALUE;
     rival_reach_off(b);
 }
 
-/// The playtest 8 founding tunable as snapshots before version 78 read it.
+/// The playtest 8 founding tunable as snapshots before version 82 read it.
 fn rival_reach_off(b: &mut crate::Balance) {
-    b.rival_reach = crate::serde_util::before_v78::OLD_VALUE;
+    b.rival_reach = crate::serde_util::before_v82::OLD_VALUE;
 }
 
-/// Version 77 snapshots (before the farther-sighted founding search)
+/// Version 81 snapshots (before the farther-sighted founding search)
 /// restore with it off, and are otherwise the same world.
 #[test]
-fn version_77_snapshots_restore_without_rival_reach() {
+fn version_81_snapshots_restore_without_rival_reach() {
     let mut w = fixture_world();
-    let old = w.snapshot_v77();
+    let old = w.snapshot_v81();
     let h = SnapshotHeader::read(&old).unwrap();
-    assert_eq!(h.version, 77);
+    assert_eq!(h.version, 81);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
-    assert_eq!(r.config.balance.rival_reach, crate::serde_util::before_v78::OLD_VALUE);
-    assert!(r.snapshot_v77() == old);
+    assert_eq!(r.config.balance.rival_reach, crate::serde_util::before_v82::OLD_VALUE);
+    assert!(r.snapshot_v81() == old);
     rival_reach_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
@@ -2050,4 +2056,24 @@ fn version_73_snapshots_restore_without_clutch_split() {
     let w = fixture_world();
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!((r.config.balance.clutch_split, r.config.balance.dry_spell), (1.0, 1.0));
+}
+
+/// Version 77 snapshots (before the playtest 8 founder rule) restore with
+/// that tunable off, and are otherwise the same world.
+#[test]
+fn version_77_snapshots_restore_without_founder_youth() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v77();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 77);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.founder_youth, crate::serde_util::before_v81::OLD_VALUE);
+    assert!(r.snapshot_v77() == old);
+    founder_youth_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.founder_youth, 1.0);
 }
