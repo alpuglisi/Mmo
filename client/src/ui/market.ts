@@ -408,7 +408,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   });
   reinBtn.addEventListener('click', async () => {
     const s = shop;
-    if (s && !(await confirmDialog({ id: 'reinforce-confirm', title: `Buy reinforcements for ${s.reinforce_price} renown?`, ok: 'Buy',
+    if (!s || !(await confirmDialog({ id: 'reinforce-confirm', title: `Buy reinforcements for ${s.reinforce_price} renown?`, ok: 'Buy',
       body: `${s.reinforce_size} young adults copied from your own join your lineage. The price doubles with each purchase, at most ${s.reinforcements_max ?? 2} within a ranked season's length.` }))) return;
     const r = await deps.send({ type: 'reinforce' });
     if (r.ok) {
@@ -427,7 +427,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     const fresh = await deps.send({ type: 'renown_shop' });
     shop = (fresh.ok && parseShopView(fresh.data)) || shop;
     const s = shop;
-    if (s && !(await confirmDialog({ id: 'provision-confirm', title: `Buy a provision for ${s.provision_price} renown?`, ok: 'Buy',
+    if (!s || !(await confirmDialog({ id: 'provision-confirm', title: `Buy a provision for ${s.provision_price} renown?`, ok: 'Buy',
       body: `Your lineage's ${s.provision_size ?? 20} hungriest or thirstiest adults get 50 off their hunger and thirst, once.` }))) return;
     const r = await deps.send({ type: 'provision' });
     if (r.ok) {
@@ -441,14 +441,20 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   const surveyBtn = h('button', { id: 'shop-survey', class: 'secondary' }) as HTMLButtonElement;
   const surveyNote = h('span', { class: 'muted small' }, 'Where rivals\' groups and territories are within 64 tiles of your main group, roughly, right now.');
   const surveyOut = h('ul', { id: 'shop-survey-result', class: 'small', hidden: true });
+  // The ledger sequence of the survey shown: a newer one (bought elsewhere) hides it (playtest 7: the first
+  // survey's result stayed after later ones).
+  let surveySeq = -1;
   surveyBtn.addEventListener('click', async () => {
     const s = shop;
-    if (s && !(await confirmDialog({ id: 'survey-confirm', title: `Survey for ${s.survey_price ?? '?'} renown?`, ok: 'Survey',
+    if (!s || !(await confirmDialog({ id: 'survey-confirm', title: `Survey for ${s.survey_price ?? '?'} renown?`, ok: 'Survey',
       body: 'You see where rivals\' groups and territories near your main group are now (to the nearest 8 tiles).' }))) return;
     const r = await deps.send({ type: 'survey' });
     if (!r.ok) return;
     const v = r.data as SurveyView;
     shop = parseShopView(v.shop) ?? shop;
+    const led = await deps.send({ type: 'ledger', limit: 5 });
+    if (led.ok) ledger = parseLedgerView(led.data) ?? ledger;
+    surveySeq = ledger?.entries.find((e) => e.text.startsWith('Survey:'))?.seq ?? surveySeq;
     surveyOut.hidden = false;
     // Dated: a survey is a snapshot (playtest 7: an old result looked current).
     const day = model.state?.clock.day;
@@ -466,7 +472,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     const name = nameText.value.trim();
     if (!organism || !name) return model.toast('error', 'Name an animal: give its # and a name.');
     const s = shop;
-    if (s && !(await confirmDialog({ id: 'name-animal-confirm', title: `Name #${organism} “${name}” for ${s.animal_name_price ?? '?'} renown?`, ok: 'Name it',
+    if (!s || !(await confirmDialog({ id: 'name-animal-confirm', title: `Name #${organism} “${name}” for ${s.animal_name_price ?? '?'} renown?`, ok: 'Name it',
       body: 'Cosmetic: the name shows on its listings. Renaming costs the same again.' }))) return;
     const r = await deps.send({ type: 'name_animal', organism, name });
     if (r.ok) {
@@ -487,7 +493,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   plateBtn.addEventListener('click', async () => {
     const s = shop;
     const title = plateTitle.value.trim();
-    if (s && !(await confirmDialog({ id: 'nameplate-confirm', title: `${s.nameplate ? 'Change' : 'Buy'} your nameplate for ${s.nameplate_price ?? '?'} renown?`, ok: s.nameplate ? 'Change' : 'Buy',
+    if (!s || !(await confirmDialog({ id: 'nameplate-confirm', title: `${s.nameplate ? 'Change' : 'Buy'} your nameplate for ${s.nameplate_price ?? '?'} renown?`, ok: s.nameplate ? 'Change' : 'Buy',
       body: `${plateColor.value}${title ? `, "${title}"` : ', no title'}: it is cosmetic, shown with your name.` }))) return;
     const r = await deps.send({ type: 'set_nameplate', color: plateColor.value, title: plateTitle.value });
     if (r.ok) {
@@ -612,6 +618,10 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       const [first, l, sh, cp] = await Promise.all([fetchPage(), deps.send({ type: 'ledger', limit: 50 }),
         deps.send({ type: 'renown_shop' }), deps.send({ type: 'compatibility' })]);
       if (l.ok) ledger = parseLedgerView(l.data) ?? ledger;
+      const newest = ledger?.entries.find((e) => e.text.startsWith('Survey:'))?.seq;
+      if (newest !== undefined && newest > surveySeq && !surveyOut.hidden) {
+        surveyOut.replaceChildren(h('li', { class: 'muted' }, 'A newer survey was bought elsewhere: survey again to see it here.'));
+      }
       if (sh.ok) shop = parseShopView(sh.data) ?? shop;
       if (cp.ok) compat = parseCompatibilityView(cp.data) ?? compat;
       if (first) {
