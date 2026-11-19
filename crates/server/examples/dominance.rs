@@ -7,7 +7,7 @@
 //!  [--first-seed N] [--days D] [--size N] [--late-year Y] [--flier-day D]
 //!  [--baseline playtest2] [--set NAME=V ..] [--new-only]`
 //!
-//! Eight players through the server's own rules (`Game`: founding with the
+//! Ten players through the server's own rules (`Game`: founding with the
 //! winter provision, the renown shop, seasons) on the standard world with
 //! its wild species:
 //!
@@ -28,12 +28,15 @@
 //! - **Herd** founds Herdmaster6's warm, egg-incubating, hibernating, toxic,
 //!   bright, very sociable herd (playtest 6's runaway; 50 founders) on
 //!   `--herd-day` (default 28).
+//! - **Sleepers** founds PocketNomad7's copy of the leading class (warm,
+//!   small, incubated eggs, toxic, bright, hibernating and estivating; 20
+//!   founders, a re-found) on day 234; **LoopHerd** Rulebender7's copy of
+//!   Herdmaster6's herd (estivation 0.35, 40 founders) on day 34.
 //! - **Loophole** founds Rulebender5's small egg-incubating cold flier as a
 //!   half-size re-found (22 founders) on `--loophole-day` (default 334).
 //!
-//! Two arms on the same seeds. **Playtest 6 rules**: the version 62
-//! tunables off (`toxin_upkeep`, `hungry_hunters`, `toxin_source`,
-//! `speciation_credit`, `clutch_cover`), or with `--baseline playtest2`
+//! Two arms on the same seeds. **Playtest 7 rules**: the version 64
+//! tunables off (`honest_signals`, `wild_isolation`), or with `--baseline playtest2`
 //! playtest 2's (the balance rules since version 43 off, the old soft cap),
 //! each founded at any price. **New rules**:
 //! today's defaults, each design fitted to today's prices by dropping
@@ -57,9 +60,15 @@ const FLIER: PlayerId = 5;
 const COLD: PlayerId = 6;
 const LOOPHOLE: PlayerId = 7;
 const HERD: PlayerId = 8;
-const PLAYERS: u32 = 8;
-const NAMES: [&str; 8] = ["Steady", "Big", "Broker", "Eggs", "Flier", "Cold", "Loophole", "Herd"];
+const SLEEPERS: PlayerId = 9;
+const LOOPHERD: PlayerId = 10;
+const PLAYERS: u32 = 10;
+const NAMES: [&str; 10] =
+    ["Steady", "Big", "Broker", "Eggs", "Flier", "Cold", "Loophole", "Herd", "Sleepers", "LoopHerd"];
 const SEASON: u64 = 60;
+/// PocketNomad7's and Rulebender7's founding days (playtest 7).
+const SLEEPERS_DAY: u64 = 234;
+const LOOPHERD_DAY: u64 = 34;
 
 struct Args {
     seeds: u64,
@@ -255,6 +264,32 @@ fn herd() -> FounderDesign {
         .founders(50)
 }
 
+/// PocketNomad7's "Pocket Sleepers" (`docs/playtest-7-logs/PocketNomad7.md`,
+/// a copy of the leading class from the starter, so its litter of 3): warm,
+/// incubated eggs, small, toxic, bright, hibernating and estivating, very
+/// sociable; a re-found (20 of 40 founders) on day 234.
+fn sleepers() -> FounderDesign {
+    use Gene::*;
+    FounderDesign::new("Sleepers", Thermo::Warm, BirthType::IncubatedEggs, 3)
+        .with(BodySize, 0.25)
+        .with(Toxins, 0.7)
+        .with(Coloration, 0.8)
+        .with(Hibernation, 0.6)
+        .with(Estivation, 0.4)
+        .with(GroupTolerance, 0.95)
+        .founders(20)
+}
+
+/// Rulebender7's "Loophole Herd" (`docs/playtest-7-logs/Rulebender7.md`):
+/// Herdmaster6's design with estivation 0.35 and sociability 0.9, 40
+/// founders, founded on day 34.
+fn loopherd() -> FounderDesign {
+    let mut d = herd().with(Gene::Estivation, 0.35).with(Gene::GroupTolerance, 0.9).founders(40);
+    // Its own lineage name (the server refuses another player's).
+    d.name = "Rolling Copies".into();
+    d
+}
+
 /// Rulebender5's "Loophole Fliers" (`docs/playtest-5-logs/Rulebender5.md`):
 /// a small cold-blooded, egg-incubating, brumating, toxic, bright flier,
 /// re-founded at half size (22 of 44 founders) on day 334.
@@ -314,13 +349,15 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         }
     }
     if !new_rules {
-        // Default: playtest 6's rules (the version 62 tunables off: free
-        // toxins, hungry hunters heeding lessons in full, lessons from any
-        // toxin, credit for any split, big clutches covered in full).
+        // Default: playtest 7's rules (the version 64 tunables off: hunger
+        // and the cap lower only the learned lesson, a bite's aversion to
+        // bright prey lasts for life, player and wild lineages fertile by
+        // body plan alone).
         let b = &mut g.world.config.balance;
-        (b.toxin_upkeep, b.hungry_hunters, b.toxin_source, b.speciation_credit, b.clutch_cover) =
-            (0.0, 0.0, 0.0, 0.0, 0.0);
+        (b.honest_signals, b.wild_isolation) = (0.0, 0.0);
         if a.playtest2_baseline {
+            (b.toxin_upkeep, b.hungry_hunters, b.toxin_source, b.speciation_credit, b.clutch_cover) =
+                (0.0, 0.0, 0.0, 0.0, 0.0);
             (b.thermo_hybrid, b.flight_upkeep, b.avoid_cap, b.cold_heat, b.species_credit) = (0.0, 0.0, 0.0, 0.0, 0.0);
             (b.winter_rest, b.toxic_avoidance, b.egg_attendance, b.player_species, b.raised_cap) =
                 (0.0, 0.0, 0.0, 0.0, 0.0);
@@ -363,6 +400,12 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         }
         if day == a.herd_day {
             found(&mut g, HERD, herd(), &mut o);
+        }
+        if day == SLEEPERS_DAY {
+            found(&mut g, SLEEPERS, sleepers(), &mut o);
+        }
+        if day == LOOPHERD_DAY {
+            found(&mut g, LOOPHERD, loopherd(), &mut o);
         }
         if founded.is_none() && day >= a.late_year * year && g.world.season() == Season::Winter {
             found(&mut g, EGGS, eggrunner(), &mut o);
@@ -448,7 +491,8 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
 
 fn main() {
     let a = args();
-    for d in [steady(), big(), broker(), eggrunner(), flier(), cold_flier(), loophole(), herd()] {
+    for d in [steady(), big(), broker(), eggrunner(), flier(), cold_flier(), loophole(), herd(), sleepers(), loopherd()]
+    {
         let f = fitted(d.clone());
         println!(
             "{}: {:.1} points at today's prices, {} of {} founders fit",
@@ -485,7 +529,7 @@ fn main() {
         }
     });
     let results = results.into_inner().unwrap();
-    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 6 rules" };
+    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 7 rules" };
     for (new, title) in [(false, old_title), (true, "New rules")] {
         if a.new_only && !new {
             continue;
@@ -530,9 +574,15 @@ fn main() {
             .map(|o| [FLIER, COLD, LOOPHOLE].iter().map(|p| o.titles.get(p).copied().unwrap_or(0)).sum::<u32>())
             .sum();
         println!("  cold fliers as a class (Flier + Cold + Loophole): {fliers}/{seasons} titles");
-        let eggers: u32 =
-            os.iter().map(|o| [EGGS, HERD].iter().map(|p| o.titles.get(p).copied().unwrap_or(0)).sum::<u32>()).sum();
-        println!("  warm egg-laying hibernators as a class (Eggs + Herd): {eggers}/{seasons} titles");
+        let eggers: u32 = os
+            .iter()
+            .map(|o| {
+                [EGGS, HERD, SLEEPERS, LOOPHERD].iter().map(|p| o.titles.get(p).copied().unwrap_or(0)).sum::<u32>()
+            })
+            .sum();
+        println!(
+            "  warm egg-laying hibernators as a class (Eggs + Herd + Sleepers + LoopHerd): {eggers}/{seasons} titles"
+        );
         println!(
             "  (* from Eggs' founding on: mean share over those days; legacy titles of the whole seasons after it)"
         );

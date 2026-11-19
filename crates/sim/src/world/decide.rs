@@ -174,10 +174,6 @@ pub(super) fn genes_of(o: &Organism) -> Genes {
     out
 }
 
-/// Most a starving hunter discounts a learned toxin lesson
-/// (`Balance::hungry_hunters`: from hunger 60, to this at 100).
-const HUNGRY_HEED: f32 = 0.6;
-
 /// `mating::body_plan_gap` from [`Genes`] (the same value, bit for bit: the
 /// same differences, folded in the same order, then the morphology's gap).
 fn body_plan_gap(a: &Genes, b: &Genes) -> f32 {
@@ -1419,22 +1415,9 @@ impl World {
                     matches!(self.map.traverse_at(&o.traits.body, q.pos, false), Traverse::Passable { .. }) && wades()
                 };
                 if v.hunter && q.mass() < v.prey_cap && !q.sheltered && !self.grace_spares(o, q) && reachable() {
-                    // Learned avoidance of bright prey where warning coloration holds.
-                    let avoid = if q.pheno[Gene::Coloration] > 0.6 {
-                        if o.bright_aversion {
-                            1.0
-                        } else {
-                            self.group.benefit(GroupTrait::WarningColoration, q.pos)
-                        }
-                    } else {
-                        0.0
-                    };
-                    // What its lineage has learned of this prey's toxins
-                    // (`Balance::toxic_learning`).
-                    // A hungry hunter heeds the lesson less (`Balance::hungry_hunters`).
-                    let heed = 1.0
-                        - HUNGRY_HEED * cfg.balance.hungry_hunters * ((o.needs.hunger - 60.0) / 40.0).clamp(0.0, 1.0);
-                    let avoid = avoid.max(self.toxic_avoidance(o.lineage, q) * heed);
+                    // Avoidance of bright and known-toxic prey, lowered by
+                    // hunger (`World::hunter_avoidance`).
+                    let avoid = self.hunter_avoidance(o, q);
                     // A lone hunter won't take on a guarding parent it can't beat.
                     let guard = self.guardian(q).0;
                     let my_power = v.my_power;
@@ -1503,11 +1486,12 @@ impl World {
             && q.needs.breeding > 20.0
             && mating::fertility_from_gap({
                 let relief = mating::Relief::of(&cfg.balance);
-                if relief.is_none() {
+                let gap = if relief.is_none() {
                     gap
                 } else {
                     fertility_gap(&v.genes, genes, &mating::plan_weights(relief), relief.eye_weight())
-                }
+                };
+                gap * mating::wild_gap_scale(&cfg.balance, o.owner, q.owner)
             }) > 0.0
             // A female in a taken breeding territory isn't courted either
             // (`Balance::breeding_territory`): she can't be bred there.

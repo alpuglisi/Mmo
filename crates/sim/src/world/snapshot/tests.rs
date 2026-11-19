@@ -552,6 +552,35 @@ fn founding_rivals_off(b: &mut crate::Balance) {
 fn playtest7_off(b: &mut crate::Balance) {
     b.winter_larder = crate::serde_util::before_v72::OLD_VALUE;
     b.prey_floor = crate::serde_util::before_v72::OLD_VALUE;
+    balance73_off(b);
+}
+
+/// The playtest 7 balance tunables as snapshots before version 73 read
+/// them.
+fn balance73_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v73::OLD_VALUE;
+    (b.honest_signals, b.wild_isolation) = (old, old);
+}
+
+/// Version 72 snapshots (before the playtest 7 balance rules) restore with
+/// those tunables off, and are otherwise the same world.
+#[test]
+fn version_72_snapshots_restore_without_playtest7_balance() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v72();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 72);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.honest_signals, crate::serde_util::before_v73::OLD_VALUE);
+    assert!(r.snapshot_v72() == old);
+    balance73_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    // This version keeps them.
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.honest_signals, 1.0);
 }
 
 /// Version 61 snapshots (before the playtest 6 balance rules) restore with

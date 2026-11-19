@@ -148,6 +148,26 @@ pub fn fertility_with(a: &Genome, b: &Genome, relief: Relief) -> f32 {
     distance_fertility(a.distance(b)).min(fertility_from_gap(fertility_gap(a, b, relief)))
 }
 
+/// How many times the fertility gap counts between animals of `a` and `b`
+/// (owners): `1 + Balance::wild_isolation` when exactly one is wild, so
+/// player herds of most sizes aren't diluted by a wild species; 1 otherwise.
+pub fn wild_gap_scale(bal: &crate::Balance, a: crate::genome::PlayerId, b: crate::genome::PlayerId) -> f32 {
+    if bal.wild_isolation > 0.0 && (a == crate::WILD) != (b == crate::WILD) {
+        1.0 + bal.wild_isolation
+    } else {
+        1.0
+    }
+}
+
+/// [`fertility_with`] with the body-plan gap counted `scale` times
+/// ([`wild_gap_scale`]); the same at 1.
+pub fn fertility_scaled(a: &Genome, b: &Genome, relief: Relief, scale: f32) -> f32 {
+    if scale == 1.0 {
+        return fertility_with(a, b, relief);
+    }
+    distance_fertility(a.distance(b)).min(fertility_from_gap(fertility_gap(a, b, relief) * scale))
+}
+
 /// Whether two organisms recognize each other as their own kind: never hunted
 /// or fled from, and counted for grouping, herd defense, crowding and larval
 /// competition. `distance` is `a.distance(b)`, passed in because the caller

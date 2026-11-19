@@ -45,6 +45,15 @@ pub const RECOGNIZE_DRAB_STRONG: f32 = 0.7;
 pub const LOOKS_POISONOUS: f32 = 0.3;
 /// Lessons below this are forgotten.
 const FORGOTTEN: f32 = 0.02;
+/// Days over which an animal's own aversion to bright prey after a bite
+/// halves (`Balance::honest_signals`).
+const BRIGHT_AVERSION_HALF_LIFE: f32 = 40.0;
+/// Most a starving hunter discounts its avoidance of a toxic or bright prey
+/// (`Balance::hungry_hunters`: from hunger 60, to this at 100).
+pub(crate) const HUNGRY_HEED: f32 = 0.6;
+/// Coloration from which an animal wears warning colours (above it before
+/// `Balance::honest_signals`).
+pub(crate) const BRIGHT: f32 = 0.6;
 
 impl World {
     /// What predator lineage `predator` has learned about prey lineage
@@ -105,6 +114,68 @@ impl World {
     }
 
     /// Daily: lessons fade ([`LESSON_DAYS`]); faint ones are forgotten.
+    /// Whether coloration `c` reads as warning colours (from 0.6 with
+    /// `Balance::honest_signals`, above it before).
+    pub(crate) fn is_bright(&self, c: f32) -> bool {
+        if self.config.balance.honest_signals > 0.0 {
+            c >= BRIGHT - 1e-4
+        } else {
+            c > BRIGHT
+        }
+    }
+
+    /// How readily hunter `o` passes up prey `q` (0 to 1): its own aversion
+    /// to bright prey, the warning-colour group benefit where bright animals
+    /// are mostly toxic, and its lineage's lesson of `q`'s toxins. A hungry
+    /// hunter heeds them less (`Balance::hungry_hunters`); with
+    /// `Balance::honest_signals` the hunger and the cap (`Balance::avoid_cap`)
+    /// apply to the whole, before only to the lesson (playtest 7: hungry
+    /// packs never took bright toxic prey).
+    pub(crate) fn hunter_avoidance(&self, o: &crate::organism::Organism, q: &crate::organism::Organism) -> f32 {
+        let bal = &self.config.balance;
+        let colour = if self.is_bright(q.pheno[crate::Gene::Coloration]) {
+            if o.bright_aversion {
+                1.0
+            } else {
+                self.group.benefit(crate::group::GroupTrait::WarningColoration, q.pos)
+            }
+        } else {
+            0.0
+        };
+        let hunger = ((o.needs.hunger - 60.0) / 40.0).clamp(0.0, 1.0);
+        let heed = 1.0 - HUNGRY_HEED * bal.hungry_hunters * hunger;
+        if bal.honest_signals > 0.0 {
+            // The colour's pull weakens with hunger by `honest_signals` of
+            // the lesson's (at 1, as much).
+            let colour_heed = 1.0 - HUNGRY_HEED * bal.hungry_hunters * bal.honest_signals.min(1.0) * hunger;
+            let avoid = (colour * colour_heed).max(self.toxic_avoidance(o.lineage, q) * heed);
+            if bal.avoid_cap > 0.0 {
+                avoid.min(bal.avoid_cap)
+            } else {
+                avoid
+            }
+        } else {
+            colour.max(self.toxic_avoidance(o.lineage, q) * heed)
+        }
+    }
+
+    /// Daily: animals' own aversions to bright prey fade
+    /// (`Balance::honest_signals`, half-life [`BRIGHT_AVERSION_HALF_LIFE`]).
+    pub(super) fn fade_bright_aversions(&mut self) {
+        if self.config.balance.honest_signals <= 0.0 {
+            return;
+        }
+        let day = self.tick / self.config.ticks_per_day.max(1) as u64;
+        let forget = 1.0 - (-std::f32::consts::LN_2 / BRIGHT_AVERSION_HALF_LIFE).exp();
+        let seed = self.config.seed;
+        for o in self.organisms.iter_mut().filter(|o| o.alive && o.bright_aversion) {
+            let mut rng = crate::rng::rng_for(seed, crate::rng::stream::CHRONICLE, day, (1 << 63) | o.id);
+            if rand::Rng::gen::<f32>(&mut rng) < forget {
+                o.bright_aversion = false;
+            }
+        }
+    }
+
     pub(super) fn fade_toxic_lessons(&mut self) {
         if self.toxic_lessons.is_empty() {
             return;
