@@ -31,7 +31,7 @@ import { GROUND, ICE, SNOW, toCss, WATER, type Rgb } from '../world/palette';
 import { describeLook } from '../world/creature';
 import { visionLines, visionStats } from '../world/visionCones';
 import { visionSummary } from '../vision';
-import { append, clear, h, pct } from './dom';
+import { append, clear, h, pct, tiles } from './dom';
 import { icon, type IconName } from './icons';
 import { renderAlertPrefs, renderDashboard, renderFeed } from './dashboard';
 import { catastropheBanner, catastropheEffect, catastropheLabel, renderWorld, type Chronicle } from './chronicle';
@@ -221,7 +221,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (why === null) delete btn.dataset.why;
     else btn.dataset.why = why;
   }
-  for (const b of [splitBtn, viewGroupBtn]) {
+  for (const b of [splitBtn, viewGroupBtn, migrateBtn, territoryBtn, rallyBtn]) {
     b.addEventListener('click', (e) => {
       if (!b.dataset.why) return;
       e.stopImmediatePropagation();
@@ -304,7 +304,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     };
     let stored: string | null = null;
     try { stored = localStorage.getItem(key); } catch { /* storage may be blocked */ }
-    set(stored === 'folded', false);
+    // On a phone a notice starts folded to one line until the player opens it
+    // (playtest 9: a drought notice and toasts covered ~55% of the map).
+    // (The media query itself: `narrow` is declared further down.)
+    set(stored === 'folded' || (stored === null && window.matchMedia(NARROW).matches), false);
     fold.addEventListener('click', () => set(!alert.classList.contains('folded'), true));
     return set;
   }
@@ -493,8 +496,14 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const tg = targetGroup(groupChoice, groups);
     const g = tg === null ? undefined : groups.find((x) => x.id === tg);
     const can = !full && (g === undefined || canSplit(g, groups));
-    softDisable(splitBtn, can ? null : full ? `You have ${MAX_GROUPS} groups, the most: merge two (Lineage tab) to split again.`
-      : 'Too few animals in this group to split.', 'Split the group in two (the far half across its widest spread)');
+    // No living lineage (retired or died out): nothing to order (playtest 9: "Group A (main) · 0" with live buttons).
+    const none = (model.state?.population ?? 0) === 0 ? 'Your lineage has no animals: start a new lineage first.' : null;
+    softDisable(splitBtn, none ?? (can ? null : full ? `You have ${MAX_GROUPS} groups, the most: merge two (Lineage tab) to split again.`
+      : 'Too few animals in this group to split.'), 'Split the group in two (the far half across its widest spread)');
+    softDisable(migrateBtn, none, 'Click the map to send your adults there (the group picked in the group menu, or all)');
+    softDisable(territoryBtn, none, 'Claim a territory for the group: tap its center, then its edge');
+    softDisable(rallyBtn, none, 'Gather the group at a point: tap where; it holds there until the rally lapses (at least 5 minutes; the group card shows when)');
+    groupSelect.disabled = none !== null;
   }
   groupSelect.addEventListener('change', () => setGroupChoice(parseChoice(groupSelect.value)));
   /** The one group a tool acts on, or a toast asking to pick one. */
@@ -869,9 +878,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const t: { x: number; y: number; note?: string; warning?: string } = (r?.data as { x: number; y: number; note?: string; warning?: string } | undefined) ?? c;
       const who = groupChoice === 'all' ? 'Adults' : `${groupName(groupChoice)} adults`;
       if (r?.ok) {
-        model.toast('info', `${who} migrating toward (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? `: ${t.note}` : ''}`);
-        if (t.warning) model.toast('warn', `Migrating, but: ${t.warning}`);
-        broodingToast(r.data);
+        // One toast for the order and its warnings, posted last so it is the newest (playtest 9: on a phone,
+        // where two toasts show, a brooding note and an alert pushed "migrating toward…" out of sight).
+        const brood = (r.data as { brooding_note?: string } | undefined)?.brooding_note;
+        model.toast(t.warning ? 'warn' : 'info', `Order given: ${who.toLowerCase()} migrating toward (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? `: ${t.note}` : ''}.${t.warning ? ` But: ${t.warning}` : ''}${brood ? ` ${brood}` : ''}`);
       } else if (r?.error) {
         model.toast('error', `Migrate: ${r.error.message}`);
       }
@@ -1347,7 +1357,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (droughtAdvice.textContent !== dn.advice) droughtAdvice.textContent = dn.advice;
     }
     // Toasts start below the notices, not under them.
-    stageWrap.style.setProperty('--cat-h', cat || dn.on ? `${notices.offsetHeight + 8}px` : '0px');
+    // (Every notice counts, the "you retired" one too: toasts hid behind it on phones, playtest 9.)
+    stageWrap.style.setProperty('--cat-h', cat || dn.on || !extinctAlert.hidden ? `${notices.offsetHeight + 8}px` : '0px');
     updateEdgePad();
     const bal = balanceText(s.balance, s.escrow);
     if (balanceEl.title !== bal) {
@@ -1737,14 +1748,14 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       // those of a lineage that can't breed with yours are marked.
       const ownPartners = adults.filter((o) => o.id !== me?.id && opposite(o.sex)).map((o): PickItem => ({
         id: o.id, label: `#${o.id} ${o.sex} (yours)`,
-        detail: [o.pregnant && 'pregnant', busy.has(o.id) && 'promised', `${dist(o).toFixed(0)} tiles`].filter(Boolean).join(' · '),
+        detail: [o.pregnant && 'pregnant', busy.has(o.id) && 'promised', `${tiles(dist(o))}`].filter(Boolean).join(' · '),
         sex: o.sex, pregnant: o.pregnant, free: !busy.has(o.id) && !o.pregnant, disabled: o.pregnant, distance: dist(o),
       }));
       const others = (s.nearby ?? []).filter((o) => o.matured && o.owner !== WILD && o.owner !== model.player && opposite(o.sex)).map((o): PickItem => {
         const sterile = sterileWith(o.lineage);
         return {
           id: o.id, label: `#${o.id} ${o.sex} · ${ownerName(o.owner)}`,
-          detail: [sterile && 'sterile with yours', `${dist(o).toFixed(0)} tiles`].filter(Boolean).join(' · '),
+          detail: [sterile && 'sterile with yours', tiles(dist(o))].filter(Boolean).join(' · '),
           sex: o.sex, free: !sterile, disabled: sterile, distance: dist(o),
         };
       });
@@ -2296,6 +2307,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }
 
   function renderGroups(s: StateView): void {
+    if (s.population === 0) {
+      keyed(groupsEl, 'no-lineage', () => [h('p', { class: 'muted small' }, 'No groups: the lineage has no animals.')]);
+      return;
+    }
     const groups = groupsOf(s);
     const tick = s.clock.tick;
     // The cards (and their buttons) are rebuilt only when the buttons
@@ -2348,7 +2363,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
 
   function renderToasts(): void {
     clear(toasts);
-    for (const t of model.toasts.slice(-4)) append(toasts, [h('div', { class: `toast ${t.kind}` }, t.text, t.count ? h('span', { class: 'toast-more' }, ` (and ${t.count - 1} more like it)`) : null)]);
+    // The three newest (playtest 9: a tall stack covered tools and map).
+    for (const t of model.toasts.slice(-3)) append(toasts, [h('div', { class: `toast ${t.kind}` }, t.text, t.count ? h('span', { class: 'toast-more' }, ` (and ${t.count - 1} more like it)`) : null)]);
   }
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
 

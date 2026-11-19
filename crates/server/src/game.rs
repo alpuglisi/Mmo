@@ -387,6 +387,16 @@ fn egg_losses(now: &evo_sim::world::EggCounts, before: &evo_sim::world::EggCount
     .collect()
 }
 
+/// "1 tile", "12 tiles": a distance rounded to whole tiles (playtest 9: "1 tiles").
+pub(crate) fn tiles(d: impl Into<f64>) -> String {
+    let n = d.into().round().max(0.0);
+    if n == 1.0 {
+        "1 tile".to_string()
+    } else {
+        format!("{n:.0} tiles")
+    }
+}
+
 /// An egg loss cause in a sentence. `abandoned`: the lineage leaves its
 /// eggs by design (abandoned eggs), so a chilled clutch is expected, not a
 /// parent's failure.
@@ -2030,6 +2040,12 @@ impl Game {
         // New organisms: the next state build indexes the world again.
         self.state_cache.invalidate();
         self.lineage_of.insert(player, lineage);
+        // A new lineage starts with no orders and no group history: the last
+        // lineage's ("last order: migration … stalled", a migration under way)
+        // showed on the new one (playtest 9).
+        self.outcomes.retain(|&(p, _), _| p != player);
+        self.routes.retain(|&(p, _), _| p != player);
+        self.world.clear_migration(player);
         self.founded.insert(lineage, self.founding_sample(&founders));
         self.founded_day.insert(player, self.world.day());
         self.unpin_views(player);
@@ -2153,6 +2169,7 @@ impl Game {
         // Not deaths: no alerts for founders or the possessed.
         self.watched.retain(|_, (p, _)| *p != player);
         self.routes.retain(|&(p, _), _| p != player);
+        self.outcomes.retain(|&(p, _), _| p != player);
         if let Some(prog) = self.progress.get_mut(&player) {
             prog.extinct = true;
         }
@@ -6523,7 +6540,7 @@ impl Game {
             let d = m.dist(center);
             data["distance"] = crate::protocol::round::tenths(d).into();
             if far && d > FAR_CIRCLE_TILES {
-                warnings.push(format!("It is {d:.0} tiles from the group, which has to walk there first."));
+                warnings.push(format!("It is {} from the group, which has to walk there first.", tiles(d)));
             }
         }
         warnings
@@ -8085,8 +8102,8 @@ fn attack_result_text(w: &World, attacker: OrgId, target: OrgId) -> Option<Strin
             Some(format!("Attack over: #{target} went to ground (a burrow or shelter) and escaped your #{attacker}."))
         }
         Some(t) if a.pos.dist(t.pos) > evo_sim::world::commands::ORDER_KEPT * w.attack_range() => Some(format!(
-            "Attack over: #{target} escaped; your #{attacker} lost sight of it ({:.0} tiles away).",
-            a.pos.dist(t.pos)
+            "Attack over: #{target} escaped; your #{attacker} lost sight of it ({} away).",
+            tiles(a.pos.dist(t.pos))
         )),
         Some(_) => None, // another order replaced it
         None => Some(format!("Attack over: your #{attacker} lost track of #{target} (it died or left the area).")),

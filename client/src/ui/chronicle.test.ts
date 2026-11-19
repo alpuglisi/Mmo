@@ -32,6 +32,11 @@ describe('speciesTree', () => {
     const rows = speciesTree([sp(7, 'Orphan', { parent: 99 }), sp(8, 'Loop', { parent: 8 })]);
     expect(rows.map((r) => [r.species.id, r.depth])).toEqual([[7, 0], [8, 0]]);
   });
+
+  it('draws a player\'s founding as a root, not a split under the species it was found next to', () => {
+    const rows = speciesTree([sp(1, 'Emberwool', { origin: 'founding' }), sp(2, 'Pocket emberkin', { origin: 'founding', parent: 1 }), sp(3, 'Emberwool II', { origin: 'split', parent: 1 })]);
+    expect(rows.map((r) => [r.species.id, r.depth])).toEqual([[1, 0], [3, 1], [2, 0]]);
+  });
 });
 
 describe('catastrophes', () => {

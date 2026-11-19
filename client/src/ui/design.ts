@@ -77,6 +77,8 @@ export async function designScreen(cb: DesignCallbacks): Promise<HTMLElement> {
 
 /** How often the editor re-reads the world (season notice, founding hint, species): a game day is seconds. */
 export const DESIGN_WORLD_REFRESH_MS = 10000;
+/** An unchanged design is checked with the server again after this long. */
+export const RECHECK_IDLE_MS = 60000;
 
 export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldSummary | null = null, species: SpeciesList | null = null): HTMLElement {
   // The one design both modes edit: traits plus the whole body plan.
@@ -413,9 +415,19 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   let waterTimer: ReturnType<typeof setTimeout> | undefined;
   /** The first check goes at once (playtest 8: the first load lagged one check). */
   let firstCheck = true;
+  /** The design last sent to the server, and when. */
+  let lastAsked = '';
+  let lastAskedAt = 0;
   let waterSeq = 0;
   /** Ask the server (a moment after the last change) whether the founders can reach most water. */
   function checkWater(): void {
+    // Only for a changed design, or a minute on (the world moves: drought,
+    // the re-founding window); not on every redraw (playtest 9: 19 checks in
+    // three idle minutes, from the 10 s world refresh).
+    const asked = JSON.stringify(payload());
+    if (asked === lastAsked && Date.now() - lastAskedAt < RECHECK_IDLE_MS) return;
+    lastAsked = asked;
+    lastAskedAt = Date.now();
     clearTimeout(waterTimer);
     const delay = firstCheck ? 0 : 600;
     firstCheck = false;
@@ -509,7 +521,10 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       c.morph > 0 ? `body plan ${c.morph.toFixed(1)}` : '',
       ...bodyParts(c.body),
     ].filter(Boolean);
-    breakdown.textContent = [`traits ${c.traits.toFixed(1)}`, `offspring ${c.litter.toFixed(1)}`, `extra founders ${c.founders.toFixed(1)}`, ...extras].join(' · ');
+    // The founders' points are for all the design asks for; a re-founding's price (the server's, for the
+    // founders that land) is on its own line below (playtest 9: "31.9" here and "21.0" there read as a contradiction).
+    const foundersPart = rf && rf.founders < rf.requested ? `extra founders ${c.founders.toFixed(1)} (for all ${rf.requested})` : `extra founders ${c.founders.toFixed(1)}`;
+    breakdown.textContent = [`traits ${c.traits.toFixed(1)}`, `offspring ${c.litter.toFixed(1)}`, foundersPart, ...extras].join(' · ');
     // Most of the budget unspent (the starting design): say so before the player founds a bare-minimum animal.
     // The same figure as the total above.
     const left = cat.budget - c.total;
