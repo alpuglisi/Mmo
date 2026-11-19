@@ -82,6 +82,7 @@ export type ClientMsg =
    * member (at least 200), doubled for each restoration within a ranked season's length. Data: `{restored, price, shop}`. */
   | { type: 'restore_pasture'; group?: number; preview?: boolean }
   | { type: 'survey' }
+  | { type: 'lineage_candidates'; request: number }
   | { type: 'name_animal'; organism: OrgId; name: string }
   | { type: 'animal_names' }
   | { type: 'substitute_mating'; request: number; mine: OrgId }
@@ -209,6 +210,10 @@ export interface OfferView {
   lost?: string;
   /** A pending offer: about how far apart the two animals are (8-tile steps). */
   apart?: number;
+  /** Why an accepted agreement's meeting point isn't the usual one. */
+  meet_note?: string;
+  /** A long lone walk for the requester's animal: what to watch for. */
+  walk_warning?: string;
   /** While `lost`: the sex a substitute must be. */
   substitute_sex?: Sex;
 }
