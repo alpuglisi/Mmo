@@ -2936,3 +2936,49 @@ pub mod before_v63 {
         }
     }
 }
+
+/// What world snapshot version 66 added: territory holds loosened for
+/// starving holders and territories kept while their group migrates
+/// (`GroupPlans::held`). On a thread holding a [`before_v66::Guard`]
+/// (reading or hashing a snapshot of version 65 or before) the field is
+/// written as nothing and read as empty.
+pub mod before_v66 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer, T: Serialize>(v: &T, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(d: D) -> Result<T, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(T::default())
+        } else {
+            T::deserialize(d)
+        }
+    }
+}

@@ -176,9 +176,13 @@ fn territory_claims_are_validated() {
     let t = w.claim_territory(HERD, 0, Vec2::new(0.0, 64.0), 0.5).unwrap();
     assert_eq!(t.radius, TERRITORY_MIN_RADIUS, "rounded up");
     assert_eq!(t.center, w.map.clamp(Vec2::new(0.0, 64.0)), "the edge is on the map");
-    // A migration order replaces the territory; abandoning twice fails.
+    // A migration order keeps the territory until it arrives (not held,
+    // but still its ground); abandoning gives that up, and twice fails.
     w.command_migrate_group(HERD, 0, c).unwrap();
     assert_eq!(w.territory(HERD, 0), None);
+    assert_eq!(w.territory_away(HERD, 0), Some(t));
+    assert_eq!(w.abandon_territory(HERD, 0), Ok(t));
+    assert_eq!(w.territory_away(HERD, 0), None);
     assert_eq!(w.abandon_territory(HERD, 0), Err(CommandError::NoTerritory(0)));
     assert!(w.abandon_territory(HERD, 9).is_err());
 }

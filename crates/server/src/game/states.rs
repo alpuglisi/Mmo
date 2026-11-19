@@ -696,23 +696,29 @@ impl Game {
             escrow,
             grace: self.grace_view(player),
             poisonous: self.poisonous_to(player),
-            territories: self.rival_territories(player, view),
+            territories: self.rival_territories(player, view, &group_middles(mine.iter().map(|&i| &orgs[i as usize]))),
         }
     }
 
-    /// Other players' territories reaching into `view` (`StateView::territories`).
+    /// Other players' territories reaching into `view` or within
+    /// [`OUTLINES_NEAR_GROUP`] tiles of one of the player's groups
+    /// (`middles`, [`group_middles`]): a split group far from the view
+    /// claims with its rivals' ground in sight (playtest 7)
+    /// (`StateView::territories`).
     pub(super) fn rival_territories(
         &self,
         player: PlayerId,
         view: ViewWindow,
+        middles: &[Vec2],
     ) -> Vec<crate::protocol::TerritoryOutline> {
         let mut v: Vec<crate::protocol::TerritoryOutline> = self
             .world
             .all_territories()
             .filter(|&(p, _, t)| {
                 p != player
-                    && (t.center.x - view.x).abs() <= view.radius + t.radius
-                    && (t.center.y - view.y).abs() <= view.radius + t.radius
+                    && (((t.center.x - view.x).abs() <= view.radius + t.radius
+                        && (t.center.y - view.y).abs() <= view.radius + t.radius)
+                        || middles.iter().any(|m| m.dist(t.center) <= OUTLINES_NEAR_GROUP + t.radius))
             })
             .map(|(_, _, t)| crate::protocol::TerritoryOutline { x: t.center.x, y: t.center.y, radius: t.radius })
             .collect();
@@ -888,6 +894,23 @@ impl Game {
 /// Own organism views of players who steer, aligned with
 /// `StateIndex::owned` (`None`: to be made again).
 type OwnViews = HashMap<PlayerId, Vec<Option<OwnOrganism>>>;
+
+/// Tiles around each of a player's groups within which rival territories
+/// are sent ([`Game::rival_territories`]): past a far claim's reach
+/// (`groups::FAR_CLAIM_TILES`) and the largest territory.
+pub(super) const OUTLINES_NEAR_GROUP: f32 = 48.0;
+
+/// The middle of each of the player's groups, from their living organisms
+/// `mine`, by group id.
+pub(super) fn group_middles<'a>(mine: impl IntoIterator<Item = &'a Organism>) -> Vec<Vec2> {
+    let mut sums: std::collections::BTreeMap<u8, (Vec2, usize)> = std::collections::BTreeMap::new();
+    for o in mine.into_iter().filter(|o| o.alive) {
+        let e = sums.entry(o.group).or_insert((Vec2::ZERO, 0));
+        e.0 += o.pos;
+        e.1 += 1;
+    }
+    sums.values().map(|&(s, n)| s * (1.0 / n as f32)).collect()
+}
 
 #[cfg(test)]
 mod tests;

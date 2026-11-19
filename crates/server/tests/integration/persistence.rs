@@ -748,9 +748,11 @@ async fn two_servers_share_accounts(a_cfg: ServerConfig, b_cfg: ServerConfig) {
     };
     // Twelve registrations on each server, all at once.
     let mut calls = Vec::new();
+    // (Letters, not digits: "east1" and "east2" are look-alikes.)
+    const L: &[u8] = b"abcdefghjkpq";
     for k in 0..12 {
-        calls.push(tokio::spawn(register(&ca, format!("east{k}"))));
-        calls.push(tokio::spawn(register(&cb, format!("west{k}"))));
+        calls.push(tokio::spawn(register(&ca, format!("east{}", L[k] as char))));
+        calls.push(tokio::spawn(register(&cb, format!("west{}", L[k] as char))));
     }
     let mut players = Vec::new();
     for c in calls {

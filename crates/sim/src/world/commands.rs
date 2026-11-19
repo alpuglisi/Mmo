@@ -79,7 +79,21 @@ pub enum GroupEvent {
         /// Tiles the median member got closer than it started.
         gained: f32,
         pending_claim: bool,
+        /// The group was still on the territory it left, and holds it again.
+        territory_kept: bool,
     },
+    /// Enough of a territory's holders are starving or parched
+    /// (`groups::HOLD_LOOSEN_SHARE`) that the group forages beyond the
+    /// edge until they recover. Shares of the group.
+    HoldLoosened { player: PlayerId, group: u8, hungry_share: f32, parched_share: f32 },
+    /// A loosened hold tightened again: the holders recovered.
+    HoldRestored { player: PlayerId, group: u8 },
+    /// A much larger group of player `by` claimed over this group's small
+    /// territory (`groups::SQUAT_MEMBERS`, `SQUAT_RATIO`): it is gone.
+    Displaced { player: PlayerId, group: u8, by: PlayerId, territory: super::groups::Territory },
+    /// A far claim's migration arrived, but another player's territory now
+    /// covers the ground: the group arrived without claiming it.
+    ClaimBlocked { player: PlayerId, group: u8, target: Vec2 },
     /// A far territory claim's migration arrived and the territory was
     /// claimed (`World::claim_or_migrate`).
     ClaimedOnArrival { player: PlayerId, group: u8, territory: super::groups::Territory },
@@ -219,8 +233,10 @@ impl fmt::Display for CommandError {
             CommandError::Overlaps => {
                 write!(
                     f,
-                    "that circle overlaps another player's territory (territories show on the map); claim ground of \
-                     your own (the attempt costs a short wait)"
+                    "that circle overlaps another player's territory (rival territories near your groups show on the \
+                     map); claim ground of your own (the attempt costs a short wait). A group ten times the size of a \
+                     small holder (at most {}) may claim over its ground",
+                    super::groups::SQUAT_MEMBERS
                 )
             }
             CommandError::BadRadius => write!(f, "a territory's radius must be a positive number of tiles"),
@@ -985,7 +1001,12 @@ impl World {
         };
         let deadline = self.tick + self.migration_timeout_ticks(middle.map_or(0.0, |m| m.dist(target)));
         self.group_plans.migrations.insert(key, MigrationPlan::new(self.tick, deadline));
-        self.territories.remove(&key);
+        // The territory is kept (public, and held again if the order is
+        // cleared) until the group arrives or claims anew.
+        if let Some(t) = self.territories.remove(&key) {
+            self.group_plans.held.away.insert(key, t);
+        }
+        self.group_plans.held.loosened.remove(&key);
         self.rallies.remove(&key);
         self.group_plans.settles.remove(&key);
         Ok(target)
@@ -1162,8 +1183,12 @@ impl World {
     }
 
     /// Drop the migration orders of all the player's groups.
+    /// Each group holds the territory it left again ([`World::clear_migration_group`]).
     pub fn clear_migration(&mut self, player: PlayerId) {
-        self.migrate_orders.retain(|&(p, _), _| p != player);
+        let groups: Vec<u8> = self.migrate_orders.keys().filter(|&&(p, _)| p == player).map(|&(_, g)| g).collect();
+        for g in groups {
+            self.clear_migration_group(player, g);
+        }
     }
 
     /// Drop one group's migration order.
@@ -1172,8 +1197,16 @@ impl World {
         self.organisms.iter().any(|o| o.alive && o.owner == player && o.group == group)
     }
 
+    /// The group holds the territory it left for the migration again, if
+    /// it had one (and no other claim since); a waiting far claim is
+    /// dropped with the order.
     pub fn clear_migration_group(&mut self, player: PlayerId, group: u8) {
-        self.migrate_orders.remove(&(player, group));
+        let key = (player, group);
+        self.migrate_orders.remove(&key);
+        self.group_plans.pending.claims.remove(&key);
+        if let Some(t) = self.group_plans.held.away.remove(&key) {
+            self.territories.insert(key, t);
+        }
     }
 
     /// A group's migration order.
