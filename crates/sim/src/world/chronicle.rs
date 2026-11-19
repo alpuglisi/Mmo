@@ -68,6 +68,10 @@ fn spaced(len: usize, take: usize) -> impl Iterator<Item = usize> {
     (0..take).map(move |k| k * len / take)
 }
 
+/// A niche, its breeding adults and its players by share, best first
+/// (`World::capped_niche_leaders`).
+type RankedNiche = (String, f64, Vec<(PlayerId, f64)>);
+
 impl World {
     /// The current era (0-based).
     pub fn era(&self) -> u64 {
@@ -313,6 +317,53 @@ impl World {
 
     /// The leading player (the wild ecosystem left out) of each niche with
     /// enough adults today: who an era's niche prize can go to.
+    /// The niche prizes with `Balance::niche_cap`: at most that many per
+    /// player an era. Niches go in order of their leading share, each to
+    /// the best-placed player not yet at the cap (at least
+    /// `NICHE_MIN_SHARE`); playtest 12's biggest herd covered every biome
+    /// and took four of six.
+    pub(crate) fn capped_niche_leaders(&self, tally: &crate::chronicle::NicheTally) -> Vec<NicheLeader> {
+        let cap = self.config.balance.niche_cap.max(1.0) as usize;
+        let rows: Vec<(String, f64, BTreeMap<PlayerId, f64>)> = if tally.days == 0 {
+            self.niche_shares()
+        } else {
+            let days = tally.days.max(1) as f64;
+            tally
+                .niches
+                .iter()
+                .filter(|(_, n)| n.days > 0)
+                .map(|(k, n)| {
+                    (k.clone(), n.adults / n.days as f64, n.shares.iter().map(|(&p, &v)| (p, v / days)).collect())
+                })
+                .collect()
+        };
+        let mut ranked: Vec<RankedNiche> = rows
+            .into_iter()
+            .map(|(niche, adults, shares)| {
+                let mut v: Vec<(PlayerId, f64)> = shares.into_iter().filter(|&(p, _)| p != WILD).collect();
+                v.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+                (niche, adults, v)
+            })
+            .filter(|(_, _, v)| !v.is_empty())
+            .collect();
+        ranked.sort_by(|a, b| b.2[0].1.total_cmp(&a.2[0].1).then(a.0.cmp(&b.0)));
+        let mut won: BTreeMap<PlayerId, usize> = BTreeMap::new();
+        let mut out = Vec::new();
+        for (niche, adults, v) in ranked {
+            let pick = v.iter().find(|&&(p, s)| s >= NICHE_MIN_SHARE && won.get(&p).copied().unwrap_or(0) < cap);
+            // Below the cap nobody else qualifies: the leader is still
+            // listed (and refused the prize by the share check).
+            let (player, share) = pick.copied().unwrap_or(v[0]);
+            if pick.is_some() {
+                *won.entry(player).or_default() += 1;
+            } else if won.get(&player).copied().unwrap_or(0) >= cap {
+                continue;
+            }
+            out.push(NicheLeader { niche, player, share, adults });
+        }
+        out
+    }
+
     pub fn niche_player_leaders(&self) -> Vec<NicheLeader> {
         self.niche_shares()
             .into_iter()
@@ -394,7 +445,13 @@ impl World {
         let tally = std::mem::take(&mut self.chronicle.niche_tally);
         // The prize goes to the leading player of each niche (playtest 7:
         // the wild led every niche, so nobody won one), by the same share.
-        let niches = if tally.days == 0 { self.niche_player_leaders() } else { tally.player_leaders() };
+        let niches = if self.config.balance.niche_cap > 0.0 {
+            self.capped_niche_leaders(&tally)
+        } else if tally.days == 0 {
+            self.niche_player_leaders()
+        } else {
+            tally.player_leaders()
+        };
         for n in &niches {
             if n.player != WILD && n.share >= NICHE_MIN_SHARE {
                 self.chronicle.award(
@@ -508,6 +565,31 @@ mod tests {
             .collect();
         assert_eq!(awarded, c.survivors);
         assert!(!awarded.is_empty());
+    }
+
+    /// Playtest 12: the biggest herd covered every biome and took four of
+    /// six niche prizes. At most `niche_cap` per player an era: niches go
+    /// by their leading share, each to the best-placed player not yet at
+    /// the cap with at least the minimum share.
+    #[test]
+    fn niche_prizes_are_capped_per_player() {
+        let w = presets::standard_world(WorldConfig { seed: 2, width: 32, height: 32, ..Default::default() }, 1);
+        assert_eq!(w.config.balance.niche_cap, 2.0);
+        let mut tally = crate::chronicle::NicheTally { days: 1, ..Default::default() };
+        let niche = |shares: &[(crate::genome::PlayerId, f64)]| crate::chronicle::NicheDays {
+            days: 1,
+            adults: 100.0,
+            shares: shares.iter().copied().collect(),
+        };
+        tally.niches.insert("biome:a".into(), niche(&[(1, 0.9), (2, 0.05)]));
+        tally.niches.insert("biome:b".into(), niche(&[(1, 0.8), (2, 0.1)]));
+        tally.niches.insert("biome:c".into(), niche(&[(1, 0.7), (2, 0.3)]));
+        tally.niches.insert("biome:d".into(), niche(&[(1, 0.6), (3, 0.1)]));
+        let won = w.capped_niche_leaders(&tally);
+        let by = |n: &str| won.iter().find(|l| l.niche == n).map(|l| l.player);
+        assert_eq!((by("biome:a"), by("biome:b")), (Some(1), Some(1)));
+        assert_eq!(by("biome:c"), Some(2), "the runner-up, with a quarter");
+        assert_eq!(by("biome:d"), None, "nobody else qualifies");
     }
 
     #[test]
