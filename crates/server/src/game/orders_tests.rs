@@ -507,6 +507,39 @@ fn possession_ends_when_the_player_is_gone() {
     assert!(!r.world.organisms.iter().any(|o| o.possessed_by == Some(1)));
 }
 
+/// Playtest 12: a helper socket possessed an animal and closed while the
+/// player's main session stayed: the possession ends after the grace.
+#[test]
+fn possession_ends_when_its_socket_closes() {
+    let (mut g, a) = game();
+    let grace = minutes_to_ticks(POSSESSION_GRACE_MINUTES, g.cfg.tick_ms);
+    g.connect(11, 1, "ann");
+    g.command(11, 1, None, ClientMsg::Possess { organism: a[0] });
+    let possessed = |g: &Game| g.world.organisms.iter().any(|o| o.id == a[0] && o.possessed_by == Some(1));
+    assert!(possessed(&g));
+    g.disconnect(11);
+    for _ in 0..grace + 1 {
+        tick(&mut g);
+    }
+    assert!(!possessed(&g), "the possessing socket closed: released though conn 10 stays");
+}
+
+/// Playtest 12: refused `claim_cooldown` 11 days after a "grazed bare"
+/// alert; the alert waives the wait until the ground recovers.
+#[test]
+fn a_bare_alert_waives_the_claim_cooldown() {
+    let (mut g, _) = game();
+    let home = g.world.group_middle(1, 0).unwrap();
+    run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 5.0 }).unwrap();
+    let again = ClientMsg::ClaimTerritory { group: 0, x: home.x + 1.0, y: home.y, radius: 5.0 };
+    assert_eq!(run(&mut g, again.clone()), Err("claim_cooldown".into()));
+    // Told it is bare (the daily check's state), though the sim's own
+    // check may find the plants back above its line.
+    g.territory_alerted.insert((1, 0, 1));
+    assert!(run(&mut g, again).is_ok());
+    assert!(!g.territory_alerted.contains(&(1, 0, 1)), "a new circle: the old alert is no longer news");
+}
+
 /// Playtest 6: a big lineage lost 20–75 a day unflagged (5% rule); a
 /// thirst-only crash read "going hungry"; mass cold deaths had no alert.
 #[test]
@@ -567,7 +600,7 @@ fn drownings_and_slow_die_offs_are_warned() {
     assert!(
         w.iter().any(|(k, t)| k == "decline"
             && t.contains("Your lineage is crashing: 63 → 33 alive over the last 10 days")
-            && t.contains("30 died (30 of hunger")),
+            && t.contains("30 died in that time (30 of hunger)")),
         "{w:?}"
     );
     // The same deaths in a lineage that grows meanwhile: not a die-off (playtest 8: "954 → 1251").
@@ -1163,6 +1196,10 @@ fn a_stalled_migration_says_how_far_it_got_and_bare_alerts_dont_repeat() {
     let home = g.world.group_middle(1, 0).unwrap();
     run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 100.0 }).unwrap();
     let t = g.world.territory(1, 0).unwrap();
+    // Past the days a fresh claim isn't called bare.
+    for _ in 0..(BARE_DAYS as u64) * g.world.config.ticks_per_day as u64 {
+        g.world.step();
+    }
     let record = g.daily_record();
     let mut out = Outbox::new();
     let set_veg = |g: &mut Game, f: f32| {
@@ -1728,4 +1765,57 @@ fn toxin_deaths_count_toward_a_decline() {
     let w = g.lineage_warnings(1);
     let d = w.iter().find(|w| w.kind == "decline").expect("a decline warning");
     assert!(d.text.contains("of toxins") && d.text.contains("poisonous prey"), "{}", d.text);
+}
+
+/// Loss warnings share one budget: one alert, the most severe in full and
+/// the others by headline, then none for NEED_BUDGET_DAYS (playtest 12:
+/// about one a game day in a crash).
+#[test]
+fn loss_warnings_merge_into_one_alert_per_budget() {
+    let (mut g, _) = game();
+    run_days(&mut g, 1);
+    let r = g.history.back_mut().unwrap();
+    let e = r.lineages.iter_mut().find(|e| e.owner == 1).unwrap();
+    e.alive = 40;
+    e.deaths.insert("starved".into(), 6);
+    e.deaths.insert("thirst".into(), 2);
+    e.deaths.insert("cold".into(), crate::game::COLD_MIN.max(1));
+    let kinds: Vec<String> = g.lineage_warnings(1).into_iter().map(|w| w.kind).collect();
+    assert!(kinds.contains(&"starving".to_string()) && kinds.contains(&"cold".to_string()), "{kinds:?}");
+    let mut out = Outbox::new();
+    g.warning_alerts(10, &mut out);
+    let need = alerts(&g, AlertKind::Need);
+    assert_eq!(need.len(), 1, "{need:?}");
+    assert!(need[0].contains("Also:"), "{}", need[0]);
+    g.warning_alerts(11, &mut out);
+    assert_eq!(alerts(&g, AlertKind::Need).len(), 1, "within the budget");
+}
+
+/// One window, one baseline, graded: a small dip is no alert, a quarter
+/// fewer is a crash (playtest 12: "dying off slowly" for 1% and for 29%).
+#[test]
+fn declines_are_graded_on_one_window() {
+    let (mut g, _) = game();
+    let lineage = g.lineage_of(1).unwrap();
+    let base = g.daily_record();
+    let fill = |g: &mut Game, end: u64| {
+        g.history.clear();
+        for k in 0..=DECLINE_DAYS {
+            let mut r = base.clone();
+            r.day = 100 + k;
+            let e = r.lineages.iter_mut().find(|e| e.lineage == lineage).unwrap();
+            e.alive = (100 - (100 - end) * k / DECLINE_DAYS) as usize;
+            e.deaths.clear();
+            if k > 0 {
+                e.deaths.insert("starved".into(), 3);
+            }
+            g.history.push_back(r);
+        }
+    };
+    fill(&mut g, 98);
+    assert!(g.lineage_warnings(1).iter().all(|w| w.kind != "decline"), "a 2% dip");
+    fill(&mut g, 71);
+    let w = g.lineage_warnings(1);
+    let d = w.iter().find(|w| w.kind == "decline").expect("a decline");
+    assert!(d.text.starts_with("Your lineage is crashing: 100 → 71"), "{}", d.text);
 }

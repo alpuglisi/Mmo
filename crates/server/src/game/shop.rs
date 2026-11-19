@@ -38,7 +38,7 @@ fn coarsen_rivals(rows: &mut [CompatibilityRow], player: PlayerId) {
         (r.fertility, r.fertility_low, r.fertility_high) =
             (tenth(r.fertility), tenth(r.fertility_low), tenth(r.fertility_high));
         (r.best_fertility, r.fertile_share, r.gap) = (tenth(r.best_fertility), tenth(r.fertile_share), tenth(r.gap));
-        r.limiting = "body_plan".into();
+        r.limiting = if r.gap > 0.0 { "body_plan" } else { "none" }.into();
     }
 }
 
@@ -165,7 +165,15 @@ pub fn spread(a: &[&Genome], b: &[&Genome], relief: Relief, scale: f32, litter: 
         .zip(weights)
         .map(|(&g, w)| (g, (x.expr(g) - y.expr(g)).abs() * w * scale))
         .fold((BODY_PLAN_GENES[0], -1.0f32), |m, v| if v.1 > m.1 { v } else { m });
-    let limiting = if gap > gene_gap + 1e-6 { "morphology".to_string() } else { gene_key(gene) };
+    // No gap, nothing limiting (playtest 12: `limiting: body_plan` at
+    // fertility 1.0).
+    let limiting = if gap < 0.005 {
+        "none".to_string()
+    } else if gap > gene_gap + 1e-6 {
+        "morphology".to_string()
+    } else {
+        gene_key(gene)
+    };
     let margin = gap - BODY_PLAN_STERILE;
     let drift_risk = if fertile > 0 || margin < DRIFT_HIGH {
         "high"
@@ -977,12 +985,7 @@ impl Game {
                  ground, {d:.0} tiles from it"
             )
         });
-        let site = ReinforceSite {
-            at: [crate::protocol::round::c2(at.x), crate::protocol::round::c2(at.y)],
-            nearby_count: nearby,
-            group,
-            note,
-        };
+        let site = ReinforceSite { at: [at.x, at.y], nearby_count: nearby, group, note };
         self.spend(
             player,
             price,
