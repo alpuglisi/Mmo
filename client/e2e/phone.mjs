@@ -532,19 +532,26 @@ async function main() {
     }, g);
     const order = await page.evaluate(() => window.evo.model.state.groups.filter((g) => g.members > 0).map((g) => g.id));
     const seen = [];
+    const label = () => page.evaluate(() => document.querySelector('#view-group .tool-label').textContent);
     for (const g of order.slice(0, 2)) {
+      const before = await label();
       await page.tap('#tools-more');
       await page.tap('#view-group');
+      // The button names the new group: groups split from one another can stand
+      // within a few tiles, so the view being near this group's middle alone
+      // passed before the tap had landed.
       await waitFor(`the view on group ${g}`, async () => {
         const c = await centre(g);
-        return page.evaluate((c) => {
+        return page.evaluate(([c, before]) => {
           const v = window.evo.model.state?.view;
-          return !!c && v?.pinned && Math.hypot(v.x - c.x, v.y - c.y) <= 6 && document.querySelector('#view-group').classList.contains('active');
-        }, c);
+          const b = document.querySelector('#view-group');
+          return !!c && v?.pinned && Math.hypot(v.x - c.x, v.y - c.y) <= 12 && b.classList.contains('active')
+            && b.querySelector('.tool-label').textContent !== before;
+        }, [c, before]);
       });
-      seen.push(await page.evaluate(() => document.querySelector('#view-group .tool-label').textContent));
+      seen.push(await label());
     }
-    check(/on Group B/.test(await page.evaluate(() => document.querySelector('#hint').textContent)), 'the hint names the viewed group');
+    await waitFor('the hint names the viewed group', () => page.evaluate(() => /on Group B/.test(document.querySelector('#hint').textContent)));
     // Unpin view ends it.
     await page.tap('#tools-more');
     await page.tap('#pin-view');
