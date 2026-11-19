@@ -464,6 +464,10 @@ async function main() {
     // Those rounds are retried with another pair (up to 5 retries); any other
     // ending fails the test.
     const rounds = 6;
+    // Bob's males on the market after an out-of-sight refusal: a request may
+    // name them from anywhere, so ann picks among them from then on (he can
+    // list at most 8, fewer than his males).
+    const listedMales = new Set();
     for (let round = 1; round <= rounds && !done; round++) {
       if (round > 1) await Promise.all([releaseAll(page), releaseAll(bob)]);
       // Organisms keep breeding on their own, so a chosen female can conceive
@@ -485,7 +489,9 @@ async function main() {
           const adults = (p) => p.evaluate(() => window.evo.model.state.organisms.filter((o) => o.matured && !o.pregnant && !o.possessed)
             .map((o) => ({ id: o.id, sex: o.sex, urge: o.needs.breeding, action: o.action, x: o.x, y: o.y })));
           const b = await adults(bob);
-          const bobMales = b.filter((o) => o.sex === 'male');
+          const allMales = b.filter((o) => o.sex === 'male');
+          const listed = allMales.filter((o) => listedMales.has(o.id));
+          const bobMales = listed.length > 0 ? listed : allMales;
           const late = Date.now() - since > 20000;
           // Prefer the closest pair: predators pick off organisms on a long
           // trip to the meeting. Then the least breeding urge in the female,
@@ -542,14 +548,19 @@ async function main() {
           // one at a time ran out of attempts when the founding search
           // placed the lineages apart).
           if (req.error?.code === 'out_of_sight') {
-            await bob.evaluate(async (first) => {
+            const ok = await bob.evaluate(async (first) => {
               const s = window.evo.model.state;
-              const listed = new Set((s.listings ?? []).map((l) => l.organism));
               const ids = [first, ...s.organisms.filter((o) => o.sex === 'male' && o.matured).map((o) => o.id)];
-              for (const id of [...new Set(ids)].filter((id) => !listed.has(id))) {
-                await window.evo.socket.send({ type: 'create_listing', organism: id, fee: 0 });
+              const listed = [];
+              for (const id of [...new Set(ids)]) {
+                const r = await window.evo.socket.send({ type: 'create_listing', organism: id, fee: 0 });
+                // Listed now, or already (a second listing of one is refused).
+                if (r.ok || /already|listed/.test(r.error?.code ?? '')) listed.push(id);
+                if (r.error?.code === 'too_many_listings') break;
               }
+              return listed;
             }, req.partner);
+            for (const id of ok) listedMales.add(id);
           }
           const server = (await (await fetch(`${base}/api/world`)).json()).clock.tick;
           const look = (p, id) => p.evaluate((id) => { const s = window.evo.model.state; const o = s.organisms.find((o) => o.id === id); return `${s.clock.tick}:${o ? `${o.sex[0]}${o.pregnant ? 'P' : ''}${o.matured ? 'A' : ''}` : '-'}`; }, id);
