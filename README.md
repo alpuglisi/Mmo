@@ -1222,6 +1222,7 @@ Client → server:
 | `provision` | | The hungriest or thirstiest adults of your lineage get 50 off hunger and thirst, priced per adult fed: 20 adults at 2 renown each while at most a fifth of the soft lineage cap is alive, else 20 per fifth of the cap alive (at most 200) at 4 each; at most 3 within a ranked season's length (`limit_reached`, `no_adults`, `no_lineage`, `insufficient_funds`); `data` = `{fed, shop}` |
 | `name_animal` | `organism`, `name` | Name one of your living animals (cosmetic, 50 renown each time; the species-name filter; `same_name`, `bad_name`, `not_owned`); shown on its listings (`animal_name`); `data` = `{name, shop}` |
 | `animal_names` | | Your living animals' names; `data` = `{names: {id: name}}` |
+| `lineage_candidates` | `request` | Your animals an open offer to your lineage would take as the partner now; `data` = `{request, candidates}` (`not_a_lineage_offer`) |
 | `survey` | | Rival groups and territories within 64 tiles of your main group's middle, in 8-tile cells (members rounded to tens), now: 30 renown plus 1 per 10 of your animals alive; `data` = `{price, x, y, radius, groups: [{player, name, x, y, members, territory?: [x, y, radius]}], shop}` (`no_lineage`, `insufficient_funds`) |
 | `substitute_mating` | `request`, `mine` | The requester of an accepted agreement whose animal died sends another adult of theirs instead, before the deadline (the purchase checks; `not_substitutable` while the first still lives or for anyone else); `data` = `{offer}` |
 | `set_nameplate` | `color, title` | A cosmetic nameplate (a palette color, a 1–24 character title) shown with your name: 500 renown, 100 per change (`bad_color`, `bad_title`); `data` = `{nameplate, shop}` |
@@ -2078,6 +2079,28 @@ minutes, every purchase failed when the buyer's animal died):
   renown per food, and its price is honoured for 30 real seconds; nothing
   regrows during winter, and regrowth shrinks with the share of land in
   drought.
+
+**Playtest 11 changes** (economy):
+
+- **Sleep and the shield**: an agreement's deadline pauses at most 30
+  game days in all, whoever sleeps; an asleep walker isn't shielded (it
+  isn't walking); the pair of a completed mating stays shielded for two
+  game days on the way back. Agreement updates no longer go out when only
+  the paused deadline moved (nor on a repeated "Complete now").
+- **Income taper** counts renown held in offers and bids (escrow) with
+  the balance.
+- **Market walks**: a predator near the usual meeting point moves it only
+  as far as needed, either way along the line, in twentieths
+  (`OfferView::meet_note` says why); the requester's walk of 24 tiles or
+  more carries a `walk_warning`; an incoming offer to the lineage gives
+  the nearest adult's distance (`apart`); `lineage_candidates {request}`
+  lists the accepter's animals the server would take, and the picker
+  offers only those.
+- **Listing incentive**: a fixed listing's sale pays no market fee (offers
+  and auctions still do).
+- **Restore pasture**: quotes are per group and hold the food too: if the
+  plants fell more than a fifth since the preview, the purchase asks for
+  a new one (`quote_changed`).
 
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.

@@ -845,11 +845,11 @@ async function main() {
     const entry = (l, kind) => l.entries.find((e) => e.kind === kind && e.offer === bought.id);
     if (!entry(bobLedger, 'escrow') || entry(bobLedger, 'escrow').delta !== -fee) throw new Error(`no escrow entry: ${JSON.stringify(bobLedger.entries.slice(0, 5))}`);
     if (fin.status === 'completed') {
-      // The seller gets the fee less the 10% market fee (floored; economy::market_fee).
-      const net = fee - Math.floor((fee * 10 + 50) / 100); // the fee rounds to the nearest renown
+      // A fixed listing pays no market fee (playtest 11): the seller gets it all.
+      const net = fee;
       if (entry(annLedger, 'sale')?.delta !== net) throw new Error(`completed but ann not paid ${net}: ${JSON.stringify(annLedger.entries.slice(0, 5))}`);
       if (entry(bobLedger, 'refund')) throw new Error('completed and refunded');
-      step(`market mating completed (${fin.outcome?.conceived ? 'conceived' : 'not conceived'}): ann paid ${fee - Math.floor((fee * 10) / 100)} of ${fee} renown from escrow`);
+      step(`market mating completed (${fin.outcome?.conceived ? 'conceived' : 'not conceived'}): ann paid all ${fee} renown from escrow (listings pay no market fee)`);
     } else if (fin.status === 'cancelled') {
       // Bob (the buyer) cancelled an accepted purchase: he pays the hold fee
       // (25%, at least 5, at most the price; LAPSE_FEE_*) to ann, the rest

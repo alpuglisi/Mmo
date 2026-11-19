@@ -279,6 +279,9 @@ pub enum ClientMsg {
     NameAnimal { organism: OrgId, name: String },
     /// The names of your living animals. Data: `{names: {id: name}}`.
     AnimalNames,
+    /// The animals of yours that an open offer to your lineage would take
+    /// as the partner now. Data: `{request, candidates: [ids]}`.
+    LineageCandidates { request: u64 },
     /// A survey: rivals' groups and territories within 64 tiles of your
     /// main group, in 8-tile cells, now (30 renown plus 1 per 10 of your
     /// animals alive). Data: [`SurveyView`].
@@ -410,6 +413,7 @@ impl ClientMsg {
             ClientMsg::RestorePasture { .. } => "restore_pasture",
             ClientMsg::SubstituteMating { .. } => "substitute_mating",
             ClientMsg::Survey => "survey",
+            ClientMsg::LineageCandidates { .. } => "lineage_candidates",
             ClientMsg::NameAnimal { .. } => "name_animal",
             ClientMsg::AnimalNames => "animal_names",
             ClientMsg::SetNameplate { .. } => "set_nameplate",
@@ -466,6 +470,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "restore_pasture",
     "substitute_mating",
     "survey",
+    "lineage_candidates",
     "name_animal",
     "animal_names",
     "end_grace",
@@ -1143,6 +1148,12 @@ pub struct OfferView {
     /// steps; for an offer to the lineage, absent until accepted).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apart: Option<f32>,
+    /// Why an accepted agreement's meeting point isn't the usual one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meet_note: Option<String>,
+    /// A long lone walk for the requester's animal: what to watch for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub walk_warning: Option<String>,
     /// While `lost`: the sex a substitute must be (the partner's other).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub substitute_sex: Option<String>,

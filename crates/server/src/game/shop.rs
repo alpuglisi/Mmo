@@ -395,7 +395,9 @@ impl Game {
         // purchase seconds later cost more).
         let quote_ticks =
             crate::game::minutes_to_ticks(crate::game::RESTORE_QUOTE_SECONDS / 60.0, self.cfg.tick_ms).max(1);
-        let quoted = self.restore_quotes.get(&player).filter(|q| q.0 == group && tick <= q.2).map(|q| q.1);
+        // Quotes are per group (playtest 11: one quote per player).
+        let quote = self.restore_quotes.get(&(player, group)).copied().filter(|q| tick <= q.2);
+        let quoted = quote.map(|q| q.0);
         let now = economy::restore_price(size, self.restores_bought(player));
         // The shop's own quote (head count only) holds when no other player
         // grazes the circle.
@@ -432,7 +434,7 @@ impl Game {
         };
         if preview {
             if price > 0 {
-                self.restore_quotes.insert(player, (group, price, tick + quote_ticks));
+                self.restore_quotes.insert((player, group), (price, food, tick + quote_ticks));
             }
             view.shop = Some(self.shop_view(player));
             return Ok(view);
@@ -440,12 +442,25 @@ impl Game {
         if food < 1.0 {
             return Err(ErrorInfo::new("nothing_to_restore", NOTHING));
         }
+        // The quote holds the food too: if the plants fell by more than a
+        // fifth since, ask again instead of charging the quoted price for
+        // less (playtest 11).
+        if let Some((_, quoted_food, _)) = quote {
+            if food < quoted_food * 0.8 {
+                self.restore_quotes.remove(&(player, group));
+                return Err(ErrorInfo::new(
+                    "quote_changed",
+                    format!("the pasture changed since the quote: about {food:.0} food now, not {quoted_food:.0}; preview again"),
+                )
+                .with_detail(serde_json::json!({ "restored": food.round(), "quoted": quoted_food.round() })));
+            }
+        }
         self.spend(
             player,
             price,
             format!("Pasture restored within {r} tiles of group {group}: about {:.0} food", food),
         )?;
-        self.restore_quotes.remove(&player);
+        self.restore_quotes.remove(&(player, group));
         view.restored = self.world.restore_pasture(at, r, true).round();
         let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
         let days = self.economy.restore_days.entry(player).or_default();

@@ -157,6 +157,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const lineageExtinct = extinctNoticeEl('lineage-extinct', deps.onNewLineage);
   lineageExtinct.hidden = true;
 
+  /** Per incoming lineage offer: the animals the server would take as the partner (`lineage_candidates`). */
+  const lineageCandidates = new Map<number, { at: number; ids: number[] | null }>();
   const send = async (m: ClientMsg): Promise<ResultMsg> => {
     const r = await deps.send(m);
     if (!r.ok && r.error && LOCAL_CODES.has(r.error.code)) model.toast('error', commandError(m.type, r.error));
@@ -1891,7 +1893,18 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         const lineageOffer = e.offer.partner === 0 && e.offer.lineage !== undefined;
         pick.hidden = !lineageOffer;
         if (lineageOffer && document.activeElement !== pick) {
-          const adults = (s?.organisms ?? []).filter((o) => o.matured && !o.pregnant).slice(0, 200);
+          // Only the animals the server would take (playtest 11): asked once a few seconds per offer.
+          const id = e.offer.id;
+          const known = lineageCandidates.get(id);
+          if (!known || Date.now() - known.at > 5000) {
+            lineageCandidates.set(id, { at: Date.now(), ids: known?.ids ?? null });
+            void send({ type: 'lineage_candidates', request: id }).then((r) => {
+              const ids = r.ok ? (r.data as { candidates?: number[] } | undefined)?.candidates ?? [] : null;
+              lineageCandidates.set(id, { at: Date.now(), ids });
+            });
+          }
+          const allowed = lineageCandidates.get(id)?.ids;
+          const adults = (s?.organisms ?? []).filter((o) => o.matured && !o.pregnant && (!allowed || allowed.includes(o.id))).slice(0, 200);
           const key = adults.map((o) => o.id).join(',');
           if (pick.dataset.key !== key) {
             const keep = pick.value;
@@ -1929,10 +1942,13 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (note) {
         const mineId = e.offer.from_player === me ? e.offer.mine : e.offer.partner;
         const lost = e.offer.lost;
-        setText(note, lost && e.offer.from_player === me
+        // Why the meeting point moved, and the buyer's long walk (playtest 11).
+        const extra = [e.offer.meet_note ? `Meeting point ${e.offer.meet_note}.` : '',
+          e.offer.from_player === me && e.offer.walk_warning ? `${e.offer.walk_warning}.` : ''].filter(Boolean).join(' ');
+        setText(note, (lost && e.offer.from_player === me
           ? `Your #${e.offer.mine} ${lost}: send another adult before the deadline, or cancel.`
           : lost ? `Their #${e.offer.mine} ${lost}: they may send another before the deadline.`
-            : `Agreed${e.error ? ` (${friendlyError(e.error)})` : ''}: escort #${mineId} to the partner; it completes when they meet.`);
+            : `Agreed${e.error ? ` (${friendlyError(e.error)})` : ''}: escort #${mineId} to the partner; it completes when they meet.`) + (extra ? ` ${extra}` : ''));
       }
       const subPick = row.querySelector<HTMLSelectElement>('.sub-pick');
       const subSend = row.querySelector<HTMLElement>('.sub-send');
