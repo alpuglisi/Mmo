@@ -14,3 +14,23 @@ mod server;
 mod standings;
 mod worlds;
 mod ws_compression;
+
+/// The operator token the tests' servers take (`ServerConfig::admin_token`).
+pub const OPERATOR: &str = "test-operator-token";
+
+/// `GET path` with the operator token: `/api/metrics` counts players and
+/// their activity only for it (playtest 10).
+pub async fn operator_get(addr: std::net::SocketAddr, path: &str) -> serde_json::Value {
+    use http_body_util::{BodyExt, Full};
+    use hyper::body::Bytes;
+    let client =
+        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http::<Full<Bytes>>();
+    let req = hyper::Request::builder()
+        .uri(format!("http://{addr}{path}"))
+        .header("x-admin-token", OPERATOR)
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+    let res = client.request(req).await.expect("request");
+    assert_eq!(res.status(), hyper::StatusCode::OK);
+    serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap()
+}

@@ -828,7 +828,14 @@ mod tests {
         // "user2" are: digits don't make a name another one).
         const L: &[u8] = b"abcdefghjkpqstuxyz";
         let names: Vec<String> =
-            (0..30).map(|i| format!("user{}{}", L[i / L.len()] as char, L[i % L.len()] as char)).collect();
+            // A check letter: any two names differ in two letters (one apart
+            // is a look-alike).
+            (0..30)
+                .map(|i| {
+                    let (a, b) = (i / L.len(), i % L.len());
+                    format!("user{}{}{}", L[a] as char, L[b] as char, L[(a + b) % L.len()] as char)
+                })
+                .collect();
         let results = futures_util::future::join_all(names.iter().map(|n| acc.register(n, "a long password"))).await;
         let ok: Vec<PlayerId> = results.iter().filter_map(|r| r.as_ref().ok().map(|(_, s)| s.player)).collect();
         let busy = results.iter().filter(|r| matches!(r, Err(AuthError::Busy(_)))).count();

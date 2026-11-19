@@ -202,6 +202,9 @@ impl Game {
                 let (x, y) = map.tile_coords(o.pos);
                 seen.contains(&map.idx(x, y))
             })
+            // Only grazers the player can see: a route drawn anywhere,
+            // eight a second, mapped the crowds (playtest 10).
+            .filter(|o| o.owner == player || self.in_sight(player, o.pos))
             .count();
         let per_animal = need / members.max(1) as f32;
         // The group sets out hungry as it is: what it needs to fill up again

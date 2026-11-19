@@ -458,9 +458,51 @@ pub fn copies(text: &str, other: &str) -> bool {
     let decoration = |w: &String| DECORATIONS.iter().any(|d| fold(d) == *w);
     // Words of `text` run together to `other`'s ("MeadowVole II"), the rest
     // decorations.
-    (0..t.len()).any(|i| {
+    let run = (0..t.len()).any(|i| {
         (i + 1..=t.len())
             .any(|j| t[i..j].concat() == oc && t[..i].iter().all(decoration) && t[j..].iter().all(decoration))
+    });
+    // Both without their decorations, alike or a letter apart (at least 6
+    // letters): "Cinderfleece" for "Cinderfleece Drove", "Ironfangs" for
+    // "Ironfang Pack" (playtest 10).
+    let core = |w: &[String]| w.iter().filter(|x| !decoration(x)).cloned().collect::<String>();
+    let (tc, occ) = (core(&t), core(&o));
+    run || (occ.len() >= 4 && tc == occ) || (occ.len() >= 6 && within_one(&tc, &occ))
+}
+
+/// Whether `text` holds the distinctive part of `other` (a rival's lineage
+/// name, its decorations dropped, at least 6 letters) anywhere, a letter
+/// apart at most: a nameplate or an animal's name shows beside its owner's
+/// and reads as the rival's ("Ironfang chief" for "Ironfang Pack": playtest
+/// 10).
+pub fn holds_name(text: &str, other: &str) -> bool {
+    let decoration = |w: &String| DECORATIONS.iter().any(|d| fold(d) == *w);
+    let core: String = key_words(other).into_iter().filter(|x| !decoration(x)).collect();
+    let t: String = key_words(text).concat();
+    core.len() >= 6 && near_inside(&t, &core)
+}
+
+/// Whether `a` and `b` are at most one edit apart (a letter added, dropped
+/// or changed).
+pub fn within_one(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let (s, l) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    if l.len() - s.len() > 1 {
+        return false;
+    }
+    let p = s.iter().zip(l).take_while(|(x, y)| x == y).count();
+    if s.len() == l.len() {
+        return s[p..].len() <= 1 || s[p + 1..] == l[p + 1..];
+    }
+    s[p..] == l[p + 1..]
+}
+
+/// Whether some stretch of `text` is within one edit of `name`.
+fn near_inside(text: &str, name: &str) -> bool {
+    let n = name.len();
+    (n.saturating_sub(1)..=n + 1).filter(|&w| w > 0 && w <= text.len()).any(|w| {
+        (0..=text.len() - w)
+            .any(|i| text.is_char_boundary(i) && text.get(i..i + w).is_some_and(|x| within_one(x, name)))
     })
 }
 
@@ -521,8 +563,9 @@ pub fn fold(text: &str) -> String {
 /// (at least 5, digits dropped: "The Herdmaster9", "Herdmaster9 herd",
 /// "Real Herdmaster", "Herdmaster9fan": playtest 9), for every kind; for an
 /// account, also one held in the other with at most 2 letters fewer; for a
-/// title, containing one ("Herdmaster4 (alt)"). Names of fewer than 3
-/// folded characters only count when equal.
+/// title, containing one ("Herdmaster4 (alt)"); a letter apart from one of
+/// at least 6 letters, anywhere, for every kind (playtest 10). Names of
+/// fewer than 3 folded characters only count when equal.
 pub fn impersonates<'a>(text: &str, others: impl IntoIterator<Item = &'a str>, kind: Kind) -> bool {
     let f = fold(text);
     let fb = fold(&strip_digits(text));
@@ -537,6 +580,10 @@ pub fn impersonates<'a>(text: &str, others: impl IntoIterator<Item = &'a str>, k
                 || (ob.len() >= 4 && ob == fb)
                 || (ol.len() >= 4 && ol == fl)
                 || (ol.len() >= 5 && fl.contains(ol.as_str()))
+                // A letter added, dropped or changed in a name of at least
+                // 6 letters, anywhere in `text` ("Herdmastr10", "GeneBrokr",
+                // "Herdmaste": playtest 10).
+                || (ol.len() >= 6 && near_inside(&fl, &ol))
                 || (kind == Kind::Account
                     && short.len() >= 5
                     && long.len() - short.len() <= 2
@@ -850,7 +897,14 @@ mod tests {
             ("Steppe Antelope herd", "Steppe antelope", true),
             ("Red fox pack", "Red fox", true),
             ("Pack of the Red fox", "Red fox", true),
-            ("Sunbright", "Sunbright Drove", false),
+            // Playtest 10: the name without its decorations, or a letter off.
+            ("Cinderfleece", "Cinderfleece Drove", true),
+            ("Cinder fleece", "Cinderfleece Drove", true),
+            ("Ironfang", "Ironfang Pack", true),
+            ("Ironfangs", "Ironfang Pack", true),
+            ("Ironfng", "Ironfang Pack", true),
+            ("Ironwood", "Ironfang Pack", false),
+            ("Sunbright", "Sunbright Drove", true),
             ("Red foxglove", "Red fox", false),
             ("Grass snakes", "Grass", false),
             ("L2", "L1", false),
@@ -858,6 +912,25 @@ mod tests {
         for &(text, other, copy) in cases {
             assert_eq!(copies(text, other), copy, "{text:?} against {other:?}");
         }
+    }
+
+    #[test]
+    fn one_edit_apart() {
+        for (a, b, near) in [
+            ("herdmaster", "herdmastr", true),
+            ("herdmaster", "herdmaster", true),
+            ("herdmaster", "herdmasters", true),
+            ("herdmaster", "hxrdmaster", true),
+            ("herdmaster", "erdmaster", true),
+            ("herdmaster", "herdmast", false),
+            ("herdmaster", "hredmaster", false),
+        ] {
+            assert_eq!(within_one(a, b), near, "{a} {b}");
+        }
+        assert!(holds_name("Ironfang chief", "Ironfang Pack"));
+        assert!(holds_name("The Ironfangs", "Ironfang Pack"));
+        assert!(!holds_name("Iron chief", "Ironfang Pack"));
+        assert!(!holds_name("Red", "Red fox"), "too short");
     }
 
     #[test]
@@ -896,6 +969,20 @@ mod tests {
             ("TheHerdmaster9", "Herdmaster9", Kind::Account, true),
             ("Herdmaster9fan", "Herdmaster9", Kind::Account, true),
             ("Steppe grazers", "Bob", Kind::Lineage, false),
+            // Playtest 10: a letter dropped, added or changed, anywhere.
+            ("LateComr10", "LateComer10", Kind::Title, true),
+            ("Herdmastr10", "Herdmaster10", Kind::Species, true),
+            ("Hrdmaster10", "Herdmaster10", Kind::Title, true),
+            ("GeneBrokr", "GeneBroker10", Kind::Title, true),
+            ("GenBroker", "GeneBroker10", Kind::Title, true),
+            ("ApexHuntr", "ApexHunter10", Kind::Lineage, true),
+            ("PocketNomd", "PocketNomad10", Kind::Title, true),
+            ("Herdmaste", "Herdmaster10", Kind::Title, true),
+            ("erdmaster1", "Herdmaster10", Kind::Title, true),
+            ("Herdmastr's pet", "Herdmaster10", Kind::Species, true),
+            // Generic words from two names pass (playtest 10's "Nomad Hunter").
+            ("Nomad Hunter", "PocketNomad10", Kind::Title, false),
+            ("Nomad Hunter", "ApexHunter10", Kind::Title, false),
             ("Bobcats", "Bobby", Kind::Lineage, false),
         ];
         for &(text, other, kind, alike) in cases {

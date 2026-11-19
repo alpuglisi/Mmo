@@ -35,6 +35,7 @@ fn config() -> ServerConfig {
             lod: false,
             catastrophes: false,
         },
+        admin_token: Some(crate::OPERATOR.into()),
         ..Default::default()
     }
     .fast()
@@ -230,14 +231,8 @@ async fn password_hashing_is_bounded_and_a_burst_gets_busy() {
     }
     // A retry after the burst works (hash counts need a login: playtest 9).
     let token = register(addr, "after").await;
-    let metrics = |path: &'static str| {
-        let token = token.clone();
-        async move {
-            let (s, b) = req(addr, Method::GET, path, Some(&token), Vec::new()).await;
-            assert_eq!(s, StatusCode::OK);
-            serde_json::from_slice::<Value>(&b).unwrap()["hashing"].clone()
-        }
-    };
+    // (Hash counts are the operator's: playtest 10.)
+    let metrics = |path: &'static str| async move { crate::operator_get(addr, path).await["hashing"].clone() };
     let h = metrics("/api/metrics").await;
     assert_eq!((h["concurrency"].as_u64(), h["queue"].as_u64()), (Some(1), Some(1)), "{h}");
     assert_eq!(h["peak_in_flight"], 1, "{h}");
