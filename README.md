@@ -9762,6 +9762,42 @@ thrived.
   wild egg layers (newts, frogs) and estivators change its prey. Within
   the seeds' spread on 16 seeds, but not shown to be noise.
 
+### Playtest 8: predator packs (M12, a negative result)
+
+The coordinator's aim: a played pure-carnivore pack reaching ~300–500 in a
+full game without wiping out the herds (balance's replay: the best pack
+peaked at 190–240). `Balance::pack_prey` (snapshot version 77) makes the
+larder's prey per hunter a tunable: full from that many, gone at half
+(`World::refresh_pack_room`). The default is 40, the constants as before,
+so nothing changes in play.
+
+Measured with `predators --playtest4 --seeds 3 --days 540` (six players;
+the New arm, the pack on its own instinct; `BAL=` for each lever; 3-seed
+means of each player's final and peak head count):
+
+| Lever | Apex Stalkers peak / final | Herd (non-toxic starter) peak / final | Toxic herd final |
+| --- | --- | --- | --- |
+| Default (`pack_prey` 40) | 121 / 89 | 1,246 / 297 | 1,207 |
+| `pack_prey` 20 | 163 / 70 | 1,072 / 67 | 1,420 |
+| `pack_prey` 12 | 194 / 153 | 784 / 26 | 1,083 |
+| `carcass_keep` 0.95 (kills last through winter) | 128 / 82 | 956 / 25 | 1,287 |
+| `pack_hunt` 0.5 (pack-mates size prey up more) | 148 / 97 | 1,171 / 268 | 1,095 |
+| `pack_prey` 20 and `carcass_keep` 0.95 | 166 / 86 | 945 / 44 | 1,031 |
+
+- **None reaches the target.** The best peak is 194, at `pack_prey` 12.
+- **The pack's food is the one non-toxic herd.** It learns the toxic herd
+  is poisonous (lesson 0.99) and passes it up, so that herd holds
+  1,000–1,400 in every arm. Every lever that feeds the pack more hunts the
+  non-toxic Herd down to a few dozen by day 540.
+- **Starvation is what holds the pack**: 215–324 starvation deaths per
+  world in every arm, against 46–82 of old age.
+- **So the larder isn't the limit.** A pack of several hundred needs prey
+  it can eat at several times today's numbers. Levers that would get there
+  aren't larder settings: prey that doesn't learn-protect itself
+  (toxins), or wild prey species that recover faster under hunting.
+- `pack_prey` stays at 40. The other levers were measured with their
+  global tunables, which move the wild predators too; none is changed.
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
