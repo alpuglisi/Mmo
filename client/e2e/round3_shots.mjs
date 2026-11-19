@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stamp } from './names.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium, devices } = require('playwright');
@@ -78,7 +79,7 @@ try {
 
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, deviceScaleFactor: 2 });
   const page = await ctx.newPage();
-  await register(page, `r3_${Date.now().toString(36)}`);
+  await register(page, `r3_${stamp()}`);
   await clip(page, '#design-hybrid', 'builder-interbreeding.png');
   say(`builder: "${(await page.textContent('#design-hybrid .hybrid-headline'))?.trim()}" + "${(await page.textContent('#design-hybrid-confidence'))?.slice(0, 60)}…"`);
   await page.$eval('.design-body', (el) => { el.scrollTop = 0; });
@@ -152,7 +153,7 @@ try {
   // A second player on a phone: the top bar, and (if a drought comes) the drought notice.
   const ph = await browser.newContext(phoneDevice);
   const p2 = await ph.newPage();
-  await register(p2, `r3p_${Date.now().toString(36)}`);
+  await register(p2, `r3p_${stamp()}`);
   await p2.$eval('.design-body', (el) => { el.scrollTop = 0; }).catch(() => {});
   await found(p2);
   await p2.waitForTimeout(800);

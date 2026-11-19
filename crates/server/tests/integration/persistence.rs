@@ -750,9 +750,9 @@ async fn two_servers_share_accounts(a_cfg: ServerConfig, b_cfg: ServerConfig) {
     let mut calls = Vec::new();
     // (Letters, not digits: "east1" and "east2" are look-alikes.)
     const L: &[u8] = b"abcdefghjkpq";
-    for &l in L {
-        calls.push(tokio::spawn(register(&ca, format!("east{}", l as char))));
-        calls.push(tokio::spawn(register(&cb, format!("west{}", l as char))));
+    for &k in L {
+        calls.push(tokio::spawn(register(&ca, format!("east{}", k as char))));
+        calls.push(tokio::spawn(register(&cb, format!("west{}", k as char))));
     }
     let mut players = Vec::new();
     for c in calls {

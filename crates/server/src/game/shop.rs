@@ -100,14 +100,17 @@ pub const EGG_WARNING: &str = "Warm-blooded eggs need a parent's heat: left alon
 /// Drought share of the land from which the design check warns a design
 /// with no drought trait (`DesignCompatView::drought_warning`).
 pub const DROUGHT_DESIGN_WARN: f32 = 0.4;
-/// Estivation from which a design counts as drought-ready.
-pub const DROUGHT_TRAIT: f32 = 0.3;
+/// Estivation from which a design counts as drought-ready: above the gene's
+/// strategy threshold (`evo_sim::stats::STRATEGY_THRESHOLD`, below which it
+/// does nothing) with room for founder variation. Playtest 7: the advice
+/// said 0.3, and a design with 0.4 never estivated.
+pub const DROUGHT_TRAIT: f32 = evo_sim::stats::STRATEGY_THRESHOLD + 0.1;
 
 /// [`DesignCompatView::drought_warning`]'s text.
 pub fn drought_design_text(drought: f32) -> String {
     format!(
         "Drought: {:.0}% of the land is dry. Founders without a drought trait die of thirst within days, even \
-         inside their grace. Add estivation (0.3 or more) so they sleep \
+         inside their grace. Add estivation ({DROUGHT_TRAIT:.1} or more) so they sleep \
          through the dry spell, or wait for the drought to ease.",
         drought * 100.0
     )

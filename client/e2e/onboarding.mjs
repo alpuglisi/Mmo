@@ -20,6 +20,7 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cappedBrowser, chromiumDevice } from './frames.mjs';
+import { stamp } from './names.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium, devices } = require('playwright');
@@ -165,7 +166,7 @@ async function desktopChecks(browser, base, errors) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push(`desktop: ${e.message}`));
-  await register(page, base, `ob_desk_${Date.now().toString(36)}`);
+  await register(page, base, `ob_desk_${stamp()}`);
 
   // The tour opens by itself after founding, as a labelled non-modal dialog with focus on Next.
   const first = await waitFor('tour', () => tourState(page), 20000);
@@ -301,7 +302,7 @@ async function phoneChecks(browser, base, errors) {
   const context = await browser.newContext({ ...device('Pixel 7') });
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push(`phone: ${e.message}`));
-  await register(page, base, `ob_ph_${Date.now().toString(36)}`);
+  await register(page, base, `ob_ph_${stamp()}`);
 
   const steps = [];
   for (let k = 0; k < STEPS; k++) {

@@ -17,6 +17,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stamp } from './names.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -116,7 +117,7 @@ async function main() {
     // The app has its own dialogs: a browser alert/confirm/prompt is a bug (playtest 6).
     page.on('dialog', (d) => { errors.push(`native ${d.type()} dialog: ${d.message()}`); void d.dismiss(); });
     await page.goto(`${base}/?tour=off`);
-    await page.fill('#login-name', `panels_${Date.now().toString(36)}`);
+    await page.fill('#login-name', `panels_${stamp()}`);
     await page.fill('#login-password', 'a long password');
     await page.click('#register-submit');
     await page.waitForSelector('#design-name', { timeout: UI_MS });

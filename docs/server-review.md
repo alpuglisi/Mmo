@@ -187,3 +187,9 @@ From `docs/playtest-7.md` (M6, M8 and the Lows in `Rulebender7.md`). Each has a 
 | Fractional auction `days` gave `bad_message`. | Rounded up to whole days (1.5 → 2); 0 or less gives `bad_duration`. | `fractional_auction_days_round_up` |
 | `/api/map.png` needs a login while `/api/terrain` is public. | As intended (terrain has no animals); now in the README. | — |
 | Alert ticks seemed to change between reads. | Stored alerts never change; the watcher saw two alerts with the same text (the older later evicted from the capped feed). Alerts now carry a stable per-player `id` (kept over restarts) to tell them apart. | `alerts_have_stable_ids` |
+
+### Follow-up: random e2e account names
+
+| Finding | Fix | Test |
+|---|---|---|
+| e2e context-loss once failed at registration: base36 ids like `ctx_mi8k3gm2` read as ending in "gm" once all digits were dropped. | Digits now only hide a staff word that comes before the first digit of a word ("Claude2", "GM2", "Wild2", "Moder8or" stay refused). Dropping every digit, which merged random letters ("k3gm2x" → "kgmx"), is gone. The e2e scripts share `client/e2e/names.mjs`, whose `stamp()` gives letter-only suffixes from consonants that spell no word. | `staff_words_with_digits_or_run_together_are_refused_but_plain_names_pass` (random ids pass) |

@@ -1088,6 +1088,27 @@ fn a_stalled_migration_says_how_far_it_got_and_bare_alerts_dont_repeat() {
     assert_eq!(bare(&g), 1, "said once until it really recovers");
 }
 
+/// Playtest 7: nothing told the player of the drought provision. In a
+/// drought the found reply (and an alert) says the founders start watered
+/// and lose water more slowly; outside one it says nothing.
+#[test]
+fn a_drought_founding_says_its_founders_were_watered() {
+    let (mut g, _) = game();
+    tick(&mut g);
+    g.set_name(2, "bo");
+    g.world.map.drought = 0.5;
+    let ok = g.found(2, &design("B")).unwrap();
+    let text = ok.watered.expect("the provision applies");
+    assert!(text.starts_with("Drought provision: 50% of the land is dry"), "{text}");
+    assert!(text.contains("50% of the usual rate") && text.contains("lasts a drought"), "{text}");
+    g.connect(20, 2, "bo");
+    tick(&mut g);
+    assert!(g.alerts.get(&2).is_some_and(|l| l.iter().any(|a| a.text.starts_with("Drought provision: "))));
+    g.set_name(3, "cy");
+    g.world.map.drought = 0.1;
+    assert_eq!(g.found(3, &design("C")).unwrap().watered, None);
+}
+
 /// Alerts carry a stable id: two with the same tick and text are told
 /// apart, and reading the feed again (or after a restart) gives the same
 /// ids and ticks (playtest 7: a watcher keyed by tick and text saw

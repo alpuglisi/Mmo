@@ -1755,7 +1755,9 @@ pub struct LineageStats {
 /// toward the ranked season gradually.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct RampView {
-    /// The day the lineage was founded.
+    /// The day the lineage was founded, counted from 0 like every day in
+    /// the API (`World::day`); the client shows days from 1 (playtest 7:
+    /// "founded on day 57" on the Lineage tab for `founded_day` 56).
     pub founded_day: u64,
     /// Share of the legacy share counted now, 0..1.
     pub weight: f64,

@@ -1,8 +1,9 @@
 //! Founders alive 20 days after founding into a grown world, for three
-//! playtest designs, under four home searches: the old one, with
+//! playtest designs, under five home searches: the old one, with
 //! `Balance::founding_conditions` (playtest 3), with
-//! `Balance::founding_safety` too (playtest 4), and with
-//! `Balance::founding_drought` too (playtest 6). Founding days: spring
+//! `Balance::founding_safety` too (playtest 4), with
+//! `Balance::founding_drought` too (playtest 6), and with
+//! `Balance::founding_rivals` too (playtest 7). Founding days: spring
 //! (45), late autumn into winter (100), summer (160), the next autumn
 //! (220), late winter (230), each world's worst drought between days 120
 //! and 220 (a re-founding in a drought), and the first day from 120 on
@@ -15,8 +16,13 @@
 use evo_sim::design::{BirthType, FounderDesign, Thermo};
 use evo_sim::{presets, Gene, World, WorldConfig};
 
-const ARMS: [(&str, f32, f32, f32); 4] =
-    [("old", 0.0, 0.0, 0.0), ("pt3", 1.0, 0.0, 0.0), ("pt4", 1.0, 1.0, 0.0), ("pt6", 1.0, 1.0, 1.0)];
+const ARMS: [(&str, f32, f32, f32, f32); 5] = [
+    ("old", 0.0, 0.0, 0.0, 0.0),
+    ("pt3", 1.0, 0.0, 0.0, 0.0),
+    ("pt4", 1.0, 1.0, 0.0, 0.0),
+    ("pt6", 1.0, 1.0, 1.0, 0.0),
+    ("pt7", 1.0, 1.0, 1.0, 1.0),
+];
 
 fn main() {
     let only: Option<(u64, u64)> = std::env::args().nth(1).map(|a| {
@@ -43,7 +49,7 @@ fn main() {
     ];
     // Day 0 stands for the worst drought, day 1 for the first at 40–60%.
     let days = [45u64, 100, 160, 0, 220, 230, 1];
-    let mut tot: Vec<(u64, [usize; 4], usize)> = days.iter().map(|&d| (d, [0; 4], 0)).collect();
+    let mut tot: Vec<(u64, [usize; 5], usize)> = days.iter().map(|&d| (d, [0; 5], 0)).collect();
     for seed in 1..=8u64 {
         if only.is_some_and(|o| o.0 != seed) {
             continue;
@@ -94,11 +100,12 @@ fn main() {
             for (k, d) in designs.iter().enumerate() {
                 let mut line =
                     format!("seed {seed} day {:>3}{} {:<10}", at.day(), ["d", "40", " "][day.min(2) as usize], d.name);
-                for (a, &(arm, cond, safety, dry)) in ARMS.iter().enumerate() {
+                for (a, &(arm, cond, safety, dry, rivals)) in ARMS.iter().enumerate() {
                     let mut c = at.clone();
                     c.config.balance.founding_conditions = cond;
                     c.config.balance.founding_safety = safety;
                     c.config.balance.founding_drought = dry;
+                    c.config.balance.founding_rivals = rivals;
                     let ids = c.found_lineage_unchecked(50 + k as u32, d);
                     if c.days_until_winter() <= 30 {
                         c.provision_for_winter(&ids);
@@ -129,21 +136,24 @@ fn main() {
             }
         }
     }
-    let mut all = ([0usize; 4], 0usize);
+    let mut all = ([0usize; 5], 0usize);
     for (day, alive, n) in &tot {
         let name = match day {
             0 => "drought".to_string(),
             1 => "dry 40-60".to_string(),
             _ => format!("day {day}"),
         };
-        println!("{name:>9}: old {}/{n} pt3 {}/{n} pt4 {}/{n} pt6 {}/{n}", alive[0], alive[1], alive[2], alive[3]);
+        println!(
+            "{name:>9}: old {}/{n} pt3 {}/{n} pt4 {}/{n} pt6 {}/{n} pt7 {}/{n}",
+            alive[0], alive[1], alive[2], alive[3], alive[4]
+        );
         for (sum, n) in all.0.iter_mut().zip(alive) {
             *sum += n;
         }
         all.1 += n;
     }
     println!(
-        "TOTAL old {}/{} pt3 {}/{} pt4 {}/{} pt6 {}/{}",
-        all.0[0], all.1, all.0[1], all.1, all.0[2], all.1, all.0[3], all.1
+        "TOTAL old {}/{} pt3 {}/{} pt4 {}/{} pt6 {}/{} pt7 {}/{}",
+        all.0[0], all.1, all.0[1], all.1, all.0[2], all.1, all.0[3], all.1, all.0[4], all.1
     );
 }

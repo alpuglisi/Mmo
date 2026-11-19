@@ -13,6 +13,7 @@ import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stamp } from './names.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium, devices } = require('playwright');
@@ -61,7 +62,7 @@ try {
   // The builder on a phone: the interbreeding warning and the founding hint.
   const phone = await browser.newContext({ ...(({ defaultBrowserType: _d, ...d }) => d)(devices['iPhone 13']) });
   const pp = await phone.newPage();
-  await register(pp, `shots_p${Date.now().toString(36)}`);
+  await register(pp, `shots_p${stamp()}`);
   await pp.$eval('#design-hybrid', (el) => el.scrollIntoView({ block: 'end' }));
   await pp.screenshot({ path: path.join(shots, 'builder-hybrid-iphone13.png') });
   const tall = await pp.evaluate(() => ({ doc: document.documentElement.scrollHeight, vh: window.innerHeight, w: document.documentElement.scrollWidth, vw: window.innerWidth }));
@@ -71,7 +72,7 @@ try {
   // Desktop: design, found, then the game.
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, deviceScaleFactor: 2 });
   const page = await ctx.newPage();
-  await register(page, `shots_${Date.now().toString(36)}`);
+  await register(page, `shots_${stamp()}`);
   await page.$eval('#design-hybrid', (el) => el.scrollIntoView({ block: 'start' }));
   await page.locator('#design-hybrid').screenshot({ path: path.join(shots, 'builder-hybrid.png') });
   await page.$eval('#design-food', (el) => el.scrollIntoView({ block: 'center' }));
@@ -119,7 +120,7 @@ try {
   const cat2 = await until('a catastrophe (phone)', async () => (await get('/api/catastrophes')).active, 240000);
   const ph = await browser.newContext({ ...(({ defaultBrowserType: _d, ...d }) => d)(devices['iPhone 13']) });
   const p2 = await ph.newPage();
-  await register(p2, `shots_q${Date.now().toString(36)}`);
+  await register(p2, `shots_q${stamp()}`);
   await p2.$eval('.design-body', (el) => { el.scrollTop = 0; }).catch(() => {});
   await p2.click('#design-submit');
   await p2.waitForSelector('#world-canvas', { timeout: 45000 });

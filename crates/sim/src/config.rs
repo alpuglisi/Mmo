@@ -1313,16 +1313,34 @@ pub struct Balance {
     /// the cap). 0: the band rule.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v63"))]
     pub prey_larder: f32,
-    // Playtest 7 predators (version 67; *Playtest 7: predators and
-    // warnings* in the README). Off at 0, what snapshots before version 67
-    // read (`serde_util::before_v67`).
+    /// Playtest 7 founding (version 70; *Playtest 7: rivals
+    /// and drought sleepers* in the README; off at 0, what snapshots before
+    /// version 70 read, `serde_util::before_v70`). A player's founding
+    /// keeps out of other players' territories and away from their animals
+    /// (playtest 7: a late joiner landed inside a rival's territory with
+    /// four rivals within 35 tiles), and an estivator sleeps through a
+    /// drought in spring and autumn too, not only in summer (playtest 7: a
+    /// drought founding with estivation never slept and starved).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v70"))]
+    pub founding_rivals: f32,
+    // Playtest 7 predators (version 72; *Playtest 7: predators and
+    // warnings* in the README). Off at 0, what snapshots before version 72
+    // read (`serde_util::before_v72`).
     /// A founding-sized pack's first winter: within a year of its
     /// founding, in winter, a player with up to 60 animals has the full
     /// larder room (`player_packs`) whatever the prey there is
     /// (`World::first_winter_room`; playtest 7: a pure carnivore lost 60%
     /// in its first winter). 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v67"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v72"))]
     pub winter_larder: f32,
+    /// Prey a pack's larder counts (`prey_larder`) comes only from
+    /// lineages with at least this many living plant eaters
+    /// (`World::refresh_pack_room`; version 72, `serde_util::before_v72`):
+    /// a small population isn't counted, so it doesn't feed a bigger pack
+    /// that then hunts it out (round 7: the wild newts were lost on more
+    /// `predlong` seeds with the larder). 0: every plant eater counts.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v72"))]
+    pub prey_floor: f32,
 }
 
 impl Balance {
@@ -1621,13 +1639,15 @@ impl Default for Balance {
             speciation_credit: 1.0,
             clutch_cover: 2.1,
             prey_larder: 1.0,
+            founding_rivals: 1.0,
             winter_larder: 1.0,
+            prey_floor: 40.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 169;
+    pub const FIELD_COUNT: usize = 171;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1805,7 +1825,9 @@ impl Balance {
             ("speciation_credit", &mut self.speciation_credit),
             ("clutch_cover", &mut self.clutch_cover),
             ("prey_larder", &mut self.prey_larder),
+            ("founding_rivals", &mut self.founding_rivals),
             ("winter_larder", &mut self.winter_larder),
+            ("prey_floor", &mut self.prey_floor),
         ]
     }
 

@@ -239,14 +239,17 @@ fn words(text: &str) -> Vec<String> {
     out
 }
 
-/// A word folded, and again with the digits that `fold` leaves read as
-/// the letters they stand for (`8` "ate": "Moder8or") or dropped
-/// ("Claude2", "GM2", "Wild2"): digits beside letters don't hide a word.
+/// A word folded, and, when it has digits, its letters before the first
+/// digit too ("Claude2", "GM2", "Wild2", "Moder8or" read "claude", "gm",
+/// "wild", "moder"): a digit after a word doesn't hide it. Only the leading
+/// run: dropping every digit made a random id such as "mi8k3gm2" read as
+/// ending in "gm" (an e2e account refused at random, after playtest 7).
 fn digit_forms(w: &str) -> Vec<String> {
     let mut v = vec![fold(w)];
-    if w.chars().any(|c| c.is_ascii_digit()) && w.chars().any(|c| c.is_ascii_alphabetic()) {
-        v.push(fold(&w.replace('8', "ate")));
-        v.push(fold(&w.chars().filter(|c| !c.is_ascii_digit()).collect::<String>()));
+    if let Some(i) = w.find(|c: char| c.is_ascii_digit()) {
+        if i > 0 {
+            v.push(fold(&w[..i]));
+        }
     }
     v
 }
@@ -553,6 +556,10 @@ mod tests {
             assert!(check(ok, 40, Kind::Lineage).is_ok(), "{ok:?} refused");
         }
         assert!(benign.len() >= 50);
+        // Random ids with digits don't trip on a staff word inside them.
+        for id in ["ctx_mi8k3gm2", "push_k3gm2x", "spec_8mod2", "e2e_9root4", "x2wild"] {
+            assert!(check(id, 24, Kind::Account).is_ok(), "{id:?} refused");
+        }
     }
 
     #[test]
