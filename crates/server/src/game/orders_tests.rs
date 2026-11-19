@@ -926,11 +926,14 @@ fn survival_counts_in_the_season_the_catastrophe_fell_in() {
 }
 
 /// A survivor is the lineage alive when the catastrophe began, keeping at
-/// least a quarter of its size then (playtest 7, M15): one that lost ~99%
-/// isn't, nor is a lineage re-founded during it.
+/// least half its size then (playtest 7, M15; a quarter until playtest 8),
+/// through at least a quarter of a season of it: one that lost most isn't,
+/// nor is a lineage re-founded during it, nor one counted after a day.
 #[test]
-fn survivors_keep_a_quarter_of_the_lineage_they_started_with() {
+fn survivors_keep_half_the_lineage_they_started_with() {
     let (mut g, _) = game();
+    // A 4-day season: a quarter of it is a day.
+    g.cfg.season_days = 4;
     g.world.schedule_catastrophe(evo_sim::chronicle::CatastropheKind::SevereWinter, 1, Some(4));
     run_days(&mut g, 2);
     let c = g.world.chronicle.active_catastrophe().expect("under way").id;
@@ -938,7 +941,7 @@ fn survivors_keep_a_quarter_of_the_lineage_they_started_with() {
     assert_eq!(Some(l), g.lineage_of(1));
     assert!(start > 4, "{start}");
     assert!(g.survived(1, c));
-    // Down to under a quarter: not a survivor.
+    // Down to under half: not a survivor.
     let keep = (start as f64 * crate::game::SURVIVAL_KEEP).ceil() as usize - 1;
     for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1).skip(keep) {
         o.alive = false;

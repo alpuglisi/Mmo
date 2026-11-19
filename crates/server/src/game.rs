@@ -277,8 +277,12 @@ pub const DRIFT_FACTOR: f32 = 2.0;
 /// a warning.
 pub const ROUTE_WATER_TILES: usize = 3;
 /// The share of its size at a catastrophe's start a lineage must keep to
-/// have survived it (playtest 7: one that lost ~99% was a "Survivor").
-pub const SURVIVAL_KEEP: f64 = 0.25;
+/// have survived it (playtest 7: one that lost ~99% was a "Survivor";
+/// playtest 8: at a quarter, every player survived all three catastrophes).
+pub const SURVIVAL_KEEP: f64 = 0.5;
+/// The share of a ranked season a catastrophe must have lasted, the lineage
+/// holding on throughout, for its survival to count (playtest 8).
+pub const SURVIVAL_HELD: f64 = 0.25;
 /// A migration given while at least this share of the group is dormant
 /// draws a warning.
 pub const DORMANT_WARN_SHARE: f32 = 0.3;
@@ -2562,6 +2566,10 @@ impl Game {
                 let (fed, shop) = self.provision(player)?;
                 Ok(Some(serde_json::json!({ "fed": fed, "shop": shop })))
             }
+            ClientMsg::RestorePasture => {
+                let (restored, price, shop) = self.restore_pasture(player)?;
+                Ok(Some(serde_json::json!({ "restored": restored, "price": price, "shop": shop })))
+            }
             ClientMsg::SetNameplate { color, title } => {
                 let (plate, shop) = self.set_nameplate(player, &color, &title)?;
                 Ok(Some(serde_json::json!({ "nameplate": plate, "shop": shop })))
@@ -4708,13 +4716,22 @@ impl Game {
 
     /// Whether `player` survived `catastrophe` (playtest 7, M15): the lineage
     /// it had when the catastrophe began is still its lineage and holds at
-    /// least [`SURVIVAL_KEEP`] of its size then. A lineage re-founded during
+    /// least [`SURVIVAL_KEEP`] of its size then, through at least
+    /// [`SURVIVAL_HELD`] of a season of the catastrophe. A lineage re-founded during
     /// one, or one that lost nearly everything, didn't. A catastrophe begun
     /// before sizes were recorded (an older save) falls back to the founding
     /// day.
     fn survived(&self, player: PlayerId, catastrophe: u32) -> bool {
         let Some(&now) = self.lineage_of.get(&player) else { return false };
         let alive = self.world.population_counts().get(now as usize).map_or(0, |x| x.alive);
+        // Held through at least a quarter of a season of it (playtest 8).
+        let held = self.world.chronicle.catastrophes.iter().find(|c| c.id == catastrophe).is_none_or(|c| {
+            let last = if c.ended { c.end_day } else { self.world.day() };
+            last.saturating_sub(c.start_day) as f64 >= SURVIVAL_HELD * self.cfg.season_days.max(1) as f64
+        });
+        if !held {
+            return false;
+        }
         match self.survival_starts.get(&catastrophe) {
             Some(starts) => starts
                 .get(&player)
@@ -7861,6 +7878,36 @@ mod tests {
         assert_eq!(e, EggsView::default());
     }
 
+    /// Playtest 8: renown piled up (3,200–19,990 unspent). A pasture
+    /// restoration regrows the plants around the main group, for renown
+    /// that scales with the lineage and doubles with each in the window.
+    #[test]
+    fn pasture_restoration_is_a_growing_sink() {
+        let (mut g, _, _) = game();
+        let at = g.world.group_middle(1, 0).unwrap();
+        // Graze the land bare around the group.
+        let r = economy::RESTORE_RADIUS as i32;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let p = g.world.map.clamp(at + evo_sim::math::Vec2::new(dx as f32, dy as f32));
+                g.world.map.tile_at_mut(p).veg = 0.0;
+            }
+        }
+        g.economy.balances.insert(1, 10_000);
+        let shop = g.shop_view(1);
+        assert_eq!(shop.restore_price, economy::RESTORE_MIN);
+        let d = data(&g.command(10, 1, None, ClientMsg::RestorePasture));
+        assert!(d["restored"].as_f64().unwrap() > 0.0, "{d}");
+        assert_eq!(d["price"].as_u64(), Some(economy::RESTORE_MIN));
+        assert_eq!(g.balance(1), 10_000 - economy::RESTORE_MIN);
+        assert!(g.world.map.tile_at(at).veg > 0.0 || g.world.map.tile_at(at).water_depth > 0.0);
+        // The next one costs double.
+        assert_eq!(g.shop_view(1).restore_price, 2 * economy::RESTORE_MIN);
+        assert_eq!(g.shop_view(1).restores_bought, 1);
+        g.economy.balances.insert(1, 100);
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::RestorePasture)).0, false);
+    }
+
     /// Playtest 7: egg layers lost more eggs than hatched with no warning
     /// naming the cause. A day losing 6 or more eggs, more than were born,
     /// raises a lineage warning that names the main cause and what to do.
@@ -8799,6 +8846,9 @@ mod tests {
         world.config.scoring.species_interval_days = 1;
         let id = world.schedule_catastrophe(CatastropheKind::SevereWinter, 2, Some(2));
         let mut g = Game::new(world, GameConfig::default());
+        // A short season: the 2-day winter lasts a quarter of it (a survivor
+        // must hold through that much).
+        g.cfg.season_days = 8;
         g.set_name(1, "ann");
         g.found(1, &FounderDesign::new("A", Thermo::Cold, BirthType::Live, 2).with(Gene::BodySize, 0.5).founders(12))
             .unwrap();
