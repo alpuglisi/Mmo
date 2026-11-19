@@ -885,6 +885,24 @@ impl World {
                 || self.pair_shield.get(&b.id) == Some(&a.owner))
     }
 
+    /// Whether a graced hunter `a` holds off rival `b` because the attack
+    /// would be on instinct, not ordered (`Balance::instinct_grace`, with
+    /// `graced_hunting`; without it `grace_spares` already spares `b`).
+    /// Playtest 12: one unordered bite ended a pack's grace.
+    pub(crate) fn instinct_grace_spares(
+        &self,
+        a: &crate::organism::Organism,
+        b: &crate::organism::Organism,
+        ordered: bool,
+    ) -> bool {
+        self.config.balance.instinct_grace > 0.0
+            && !ordered
+            && a.owner != crate::WILD
+            && b.owner != crate::WILD
+            && a.owner != b.owner
+            && self.attack_grace_left(a).is_some()
+    }
+
     /// Whether raider `o` is kept off clutch `c` by the rules that keep it
     /// off the clutch's parents (`Balance::raid_rules`): founding grace as
     /// `World::grace_spares` has it (the clutch's lineage graced; the
@@ -897,7 +915,7 @@ impl World {
             && o.owner != c.owner
             && (self.lineage_grace_left(c.lineage).is_some()
                 || (c.owner != crate::WILD
-                    && self.config.balance.graced_hunting <= 0.0
+                    && (self.config.balance.graced_hunting <= 0.0 || self.config.balance.instinct_grace > 0.0)
                     && self.attack_grace_left(o).is_some())
                 || self.market_shield.contains(&c.mother)
                 || c.guardian.is_some_and(|g| self.market_shield.contains(&g)))

@@ -1569,8 +1569,17 @@ impl Game {
         let ended: Vec<PlayerId> = self.graced.difference(&now).copied().collect();
         self.graced = now;
         for p in ended {
-            let text = "Your newcomer grace has ended: other players' animals can now attack yours, and yours theirs."
-                .to_string();
+            // Ended by an attack (playtest 12: one bite ended a pack's grace
+            // with 76 days left, and the alert read as if it had run out).
+            let text = match self.world.take_grace_attack(p) {
+                Some(victim) => format!(
+                    "Your animals attacked {}'s animal, which ends your newcomer grace early: other players' animals \
+                     can now attack yours, and yours theirs.",
+                    self.name(victim)
+                ),
+                None => "Your newcomer grace has ended: other players' animals can now attack yours, and yours theirs."
+                    .to_string(),
+            };
             self.alert(p, AlertKind::Attack, text, None, out);
         }
     }
@@ -2618,8 +2627,20 @@ impl Game {
                     self.alert_attacked(player, organism, target, out);
                 }
                 let mut data = serde_json::json!({ "organism": organism, "target": target });
-                if let Some(w) = self.world.attack_warning(organism, target) {
-                    data["warning"] = w.into();
+                let mut warn: Vec<String> = self.world.attack_warning(organism, target).into_iter().collect();
+                // An ordered attack on a rival ends a graced player's grace
+                // (`Balance::graced_hunting`): said before it lands
+                // (playtest 12: a bite ended it with no word why).
+                let rival = self.world.organism(target).is_some_and(|t| t.owner != player && t.owner != WILD);
+                let left = self.lineage_of(player).and_then(|l| self.world.lineage_grace_left(l));
+                if let (true, Some(days), true) = (rival, left, self.world.config.balance.graced_hunting > 0.0) {
+                    warn.push(format!(
+                        "attacking another player's animal ends your newcomer grace ({days:.0} days left) as soon as it \
+                         strikes"
+                    ));
+                }
+                if !warn.is_empty() {
+                    data["warning"] = warn.join("; ").into();
                 }
                 Ok(Some(data))
             }
@@ -6578,6 +6599,11 @@ impl Game {
                     // and no alert said why.
                     let grace = if !graced {
                         ""
+                    } else if self.world.config.balance.graced_hunting > 0.0
+                        && self.world.config.balance.instinct_grace > 0.0
+                    {
+                        " Your newcomer grace is still on: on their own your hunters leave rivals' animals alone. An \
+                         attack order (possess a hunter) on one lets them hunt it, and that first attack ends your grace."
                     } else if self.world.config.balance.graced_hunting > 0.0 {
                         " Your newcomer grace is still on: your hunters may take rivals' unprotected animals, and the \
                          first such attack ends your grace (as End my grace now in the Lineage tab does)."

@@ -219,9 +219,19 @@ fn a_graced_hunter_may_hunt_and_its_first_attack_ends_its_grace() {
     let (aid, pid) = (w.organisms[a].id, w.organisms[prey].id);
     w.possess(HUNTER, aid).unwrap();
     assert_eq!(w.possess_attack(HUNTER, aid, pid), Ok(()));
+    // On instinct (no order) it holds off (`Balance::instinct_grace`;
+    // playtest 12: one unordered bite ended a pack's grace).
     let mut rng = rng_for(1, 0, 0, 0);
+    w.release(HUNTER, aid).unwrap();
+    assert!(w.instinct_grace_spares(&w.organisms[a], &w.organisms[prey], false));
+    w.attack(a, prey, &mut rng);
+    assert!(w.lineage_grace_left(l).is_some(), "an instinct bite kept the grace");
+    w.possess(HUNTER, aid).unwrap();
+    assert_eq!(w.possess_attack(HUNTER, aid, pid), Ok(()));
     w.attack(a, prey, &mut rng);
     assert_eq!(w.lineage_grace_left(l), None, "the first attack on a rival ended the grace");
+    assert_eq!(w.take_grace_attack(HUNTER), Some(PREY), "and says whose animal it was");
+    assert_eq!(w.take_grace_attack(HUNTER), None);
     // A graced rival is still spared.
     let mut w2 = flat_world(1500.0);
     w2.config.balance.attack_grace = 2.0;
