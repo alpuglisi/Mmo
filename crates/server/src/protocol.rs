@@ -202,7 +202,10 @@ pub enum ClientMsg {
         organism: OrgId,
         #[serde(deserialize_with = "price")]
         reserve: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Whole days; a fraction is rounded up (1.5 → 2), a negative or
+        /// zero number gives `bad_duration` (it was a generic `bad_message`:
+        /// playtest 7).
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_days")]
         days: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ticks: Option<u64>,
@@ -318,6 +321,15 @@ fn price_of(v: &serde_json::Value) -> Option<u64> {
 fn price<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
     let v = serde_json::Value::deserialize(d)?;
     price_of(&v).ok_or_else(|| serde::de::Error::custom("a price is a whole number of renown"))
+}
+
+fn whole_days<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    if v.is_null() {
+        return Ok(None);
+    }
+    let f = v.as_f64().filter(|f| f.is_finite()).ok_or_else(|| serde::de::Error::custom("days is a number"))?;
+    Ok(Some(f.max(0.0).ceil().min(u32::MAX as f64) as u32))
 }
 
 fn opt_price<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
@@ -836,6 +848,12 @@ impl NativeService {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AlertView {
+    /// Unique per player and stable (kept across restarts): what a client
+    /// should tell alerts apart by. Two alerts can share a tick and a text
+    /// (playtest 7's watcher took two same-text alerts for one whose tick
+    /// changed). 0 in alerts from before ids.
+    #[serde(default)]
+    pub id: u64,
     pub tick: u64,
     pub day: u64,
     pub kind: AlertKind,
@@ -2439,6 +2457,22 @@ mod tests {
     }
 
     #[test]
+    fn fractional_auction_days_round_up() {
+        let days = |j: &str| match serde_json::from_str::<ClientEnvelope>(j).unwrap().msg {
+            ClientMsg::CreateAuction { days, .. } => days,
+            m => panic!("{m:?}"),
+        };
+        assert_eq!(days(r#"{"type":"create_auction","organism":1,"reserve":5,"days":1.5}"#), Some(2));
+        assert_eq!(days(r#"{"type":"create_auction","organism":1,"reserve":5,"days":0.01}"#), Some(1));
+        assert_eq!(
+            days(r#"{"type":"create_auction","organism":1,"reserve":5,"days":-3}"#),
+            Some(0),
+            "bad_duration later"
+        );
+        assert_eq!(days(r#"{"type":"create_auction","organism":1,"reserve":5}"#), None);
+    }
+
+    #[test]
     fn huge_prices_reach_the_range_check() {
         let m: ClientEnvelope =
             serde_json::from_str(r#"{"type":"create_listing","organism":1,"fee":18446744073709552000}"#).unwrap();
@@ -2604,7 +2638,7 @@ mod tests {
             let kind = LedgerKind::parse(k).unwrap();
             assert_eq!(serde_json::to_value(kind).unwrap(), k);
         }
-        let alert = AlertView { tick: 1, day: 0, kind: AlertKind::Market, text: "sold".into(), organism: None };
+        let alert = AlertView { id: 1, tick: 1, day: 0, kind: AlertKind::Market, text: "sold".into(), organism: None };
         assert_eq!(serde_json::to_value(alert).unwrap()["kind"], "market");
     }
 
@@ -2640,11 +2674,12 @@ mod tests {
         assert_eq!(s["ok"], true);
         assert_eq!(s["id"], 1);
         // The shapes client/src/protocol.ts parses.
-        let alert = AlertView { tick: 96, day: 2, kind: AlertKind::DailySummary, text: "Day 3".into(), organism: None };
+        let alert =
+            AlertView { id: 2, tick: 96, day: 2, kind: AlertKind::DailySummary, text: "Day 3".into(), organism: None };
         let s = serde_json::to_value(ServerMsg::Alert { alert }).unwrap();
         assert_eq!(
             s,
-            serde_json::json!({"type": "alert", "alert": {"tick": 96, "day": 2, "kind": "daily_summary", "text": "Day 3"}})
+            serde_json::json!({"type": "alert", "alert": {"id": 2, "tick": 96, "day": 2, "kind": "daily_summary", "text": "Day 3"}})
         );
         let s = serde_json::to_value(ServerMsg::SessionEnded { reason: "expired".into() }).unwrap();
         assert_eq!(s, serde_json::json!({"type": "session_ended", "reason": "expired"}));

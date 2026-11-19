@@ -596,6 +596,8 @@ export interface PushPayload {
 }
 
 export interface AlertView {
+  /** Unique per player and stable: tell alerts apart by this (two can share a tick and text). Absent from older servers. */
+  id?: number;
   tick: number;
   day: number;
   kind: AlertKind;

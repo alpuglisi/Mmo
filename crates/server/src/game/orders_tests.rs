@@ -1048,3 +1048,22 @@ fn a_stalled_migration_says_how_far_it_got_and_bare_alerts_dont_repeat() {
     g.daily_group_checks(&record, &mut out);
     assert_eq!(bare(&g), 1, "said once until it really recovers");
 }
+
+/// Alerts carry a stable id: two with the same tick and text are told
+/// apart, and reading the feed again (or after a restart) gives the same
+/// ids and ticks (playtest 7: a watcher keyed by tick and text saw
+/// "duplicates").
+#[test]
+fn alerts_have_stable_ids() {
+    let (mut g, _) = game();
+    let mut out = Outbox::new();
+    g.alert(1, AlertKind::World, "same".into(), None, &mut out);
+    g.alert(1, AlertKind::World, "same".into(), None, &mut out);
+    let a = g.alerts(1);
+    let ids: Vec<u64> = a.iter().rev().take(2).map(|x| x.id).collect();
+    assert!(ids[0] != ids[1] && ids.iter().all(|&i| i > 0), "{a:?}");
+    tick(&mut g);
+    assert_eq!(g.alerts(1), a, "unchanged by later reads and ticks");
+    let r = Game::resume(g.world.clone(), GameConfig::default(), g.saved(), Vec::new());
+    assert_eq!(r.alerts(1), a, "kept over a restart");
+}

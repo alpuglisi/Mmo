@@ -477,7 +477,12 @@ impl Accounts {
 
     /// Whether the name has an account or a registration persisting.
     fn name_in_use(&self, name: &str) -> bool {
-        self.inner.lock().unwrap().taken(name)
+        let g = self.inner.lock().unwrap();
+        // Also a look-alike with other separators or digits ("LateComer_7",
+        // "LateComer8" or "LateComer" next to "LateComer7": playtest 7),
+        // compared like the other names (`names::impersonates`).
+        g.taken(name)
+            || crate::names::impersonates(name, g.by_name.keys().map(String::as_str), crate::names::Kind::Account)
     }
 
     /// Store a new account under a player id from the store (unique across
@@ -664,6 +669,19 @@ mod tests {
     use super::*;
     use crate::store::MemoryStore;
 
+    /// A rival's name with other separators or digits is taken (playtest 7:
+    /// "LateComer_7", "LateComer8", "LateComer" beside "LateComer7").
+    #[tokio::test]
+    async fn account_look_alikes_with_digits_or_separators_are_taken() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+        let acc = Accounts::new(store, vec![]);
+        acc.register("LateComer7", "whatever123").await.unwrap();
+        for alike in ["LateComer_7", "LateComer8", "LateComer", "Late-Comer7"] {
+            assert_eq!(acc.register(alike, "whatever123").await.unwrap_err(), AuthError::NameTaken, "{alike}");
+        }
+        assert!(acc.register("EarlyBird7", "whatever123").await.is_ok());
+    }
+
     #[tokio::test]
     async fn register_login_and_sessions() {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
@@ -806,7 +824,11 @@ mod tests {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
         let policy = HashPolicy { concurrency: 2, queue: 4 };
         let acc = Accounts::with_policies(store.clone(), vec![], SessionPolicy::default(), policy);
-        let names: Vec<String> = (0..30).map(|i| format!("user{i}")).collect();
+        // Distinct names that aren't look-alikes of each other ("user1" and
+        // "user2" are: digits don't make a name another one).
+        const L: &[u8] = b"abcdefghjkpqstuxyz";
+        let names: Vec<String> =
+            (0..30).map(|i| format!("user{}{}", L[i / L.len()] as char, L[i % L.len()] as char)).collect();
         let results = futures_util::future::join_all(names.iter().map(|n| acc.register(n, "a long password"))).await;
         let ok: Vec<PlayerId> = results.iter().filter_map(|r| r.as_ref().ok().map(|(_, s)| s.player)).collect();
         let busy = results.iter().filter(|r| matches!(r, Err(AuthError::Busy(_)))).count();
@@ -821,12 +843,12 @@ mod tests {
         let (_, s) = acc.register(&names[29], "a long password").await.unwrap();
         assert_eq!(s.player, 7);
         // Logins go through the same bound.
-        let logins = futures_util::future::join_all((0..20).map(|_| acc.login("user29", "a long password"))).await;
+        let logins = futures_util::future::join_all((0..20).map(|_| acc.login(&names[29], "a long password"))).await;
         assert_eq!(logins.iter().filter(|r| r.is_ok()).count(), 6);
         assert_eq!(logins.iter().filter(|r| matches!(r, Err(AuthError::Busy(_)))).count(), 14);
         assert_eq!(acc.hash_stats().peak_in_flight, 2);
         // Token checks don't hash.
-        let (token, _) = acc.login("user29", "a long password").await.unwrap();
+        let (token, _) = acc.login(&names[29], "a long password").await.unwrap();
         let hashes = acc.hash_stats().hashes;
         for _ in 0..100 {
             assert!(acc.session(&token).is_some() && acc.is_live(&token));
