@@ -1877,6 +1877,9 @@ pub struct CrowdingView {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ShopView {
     pub balance: u64,
+    /// Renown still owed on a re-founding fee, taken from the next income (absent: none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refound_debt: Option<u64>,
     /// Directed-mating slots left this weather season, bought ones included.
     pub slots_left: u32,
     /// Extra slots bought this weather season.
@@ -2057,10 +2060,17 @@ pub struct RefoundView {
     /// about how many wall-clock minutes until then.
     pub until_day: u64,
     pub minutes_left: u64,
-    /// Renown the re-founding costs now (after a retirement: doubling with
-    /// each re-founding in the window; at most the balance).
+    /// Renown the re-founding costs (after a retirement: doubling with each
+    /// re-founding in the window), in full.
     #[serde(default)]
     pub fee: u64,
+    /// The part of `fee` paid now (at most the balance); the rest is owed
+    /// and taken from the next renown (playtest 8: the fee showed as the
+    /// balance, the debt never).
+    #[serde(default)]
+    pub fee_now: u64,
+    #[serde(default)]
+    pub fee_owed: u64,
     pub reason: String,
 }
 

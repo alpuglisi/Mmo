@@ -655,3 +655,5 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .design-warning { margin: 6px 0; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); }
 .design-warning.warn-warn { border-color: #d29922; color: #e3b341; }
 .design-warning.warn-bad { border-color: #f85149; color: #ff7b72; }
+.possess-bar button[hidden] { display: none; }
+.tool.soft-disabled { opacity: 0.5; }

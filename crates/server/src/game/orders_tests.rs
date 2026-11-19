@@ -552,6 +552,15 @@ fn drownings_and_slow_die_offs_are_warned() {
         w.iter().any(|(k, t)| k == "decline" && t.contains("63 → 33 alive over the last 10 days, 30 of them")),
         "{w:?}"
     );
+    // The same deaths in a lineage that grows meanwhile: not a die-off (playtest 8: "954 → 1251").
+    {
+        let mut grown = g.history.clone();
+        let len = grown.len();
+        grown.back_mut().unwrap().lineages.iter_mut().find(|e| e.owner == 1).unwrap().alive = 90;
+        let saved = std::mem::replace(&mut g.history, grown);
+        assert!(!kinds(&g).iter().any(|(k, _)| k == "decline"), "{:?} ({len} days)", kinds(&g));
+        g.history = saved;
+    }
     // One day's drownings.
     g.history
         .back_mut()
@@ -856,7 +865,7 @@ fn far_claims_and_rallies_share_the_travel_warnings_and_migrate_checks_the_desti
     }
     let d = run(&mut g, ClientMsg::Migrate { x: far.x, y: far.y, group: None }).unwrap();
     assert!(d["destination"]["drinkable_tiles"].is_number(), "{d}");
-    assert!(d["warning"].as_str().unwrap().contains("At the destination: Little or no drinking water"), "{d}");
+    assert!(d["warning"].as_str().unwrap().contains("Destination: Little or no drinking water"), "{d}");
     // A half-tile nudge onto a tile's centre is no news.
     let p = g.world.map.clamp(home + Vec2::new(0.3, 0.2));
     let d = run(&mut g, ClientMsg::Migrate { x: p.x, y: p.y, group: None }).unwrap();
@@ -1034,7 +1043,7 @@ fn a_long_migration_warns_of_the_journey() {
     if j["days"].as_f64().unwrap() >= JOURNEY_WARN_DAYS as f64 {
         assert!(warning.contains("days on the way") && warning.contains("heavy losses"), "{d}");
     }
-    assert!(!warning.contains("At the destination: It is"), "no distance warning for the destination: {d}");
+    assert!(!warning.contains("Destination: It is"), "no distance warning for the destination: {d}");
 }
 
 #[test]

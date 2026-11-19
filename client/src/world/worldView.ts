@@ -432,9 +432,20 @@ export class WorldView {
     this.cam.y = y;
   }
 
+  /**
+   * The farthest out the camera goes: the whole map in view, filling its
+   * shorter side, not a small square in the dark (playtest 8: a 192-tile map
+   * at one pixel a tile), and never below `MIN_ZOOM`.
+   */
+  minZoom(): number {
+    const { width, height } = this.app.screen;
+    const fit = Math.min(width / Math.max(1, this.worldW), height / Math.max(1, this.worldH));
+    return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, fit));
+  }
+
   zoomBy(factor: number, sx = this.app.screen.width / 2, sy = this.app.screen.height / 2): void {
     const before = this.screenToWorld(sx, sy);
-    this.cam.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, this.cam.zoom * factor));
+    this.cam.zoom = Math.min(MAX_ZOOM, Math.max(this.minZoom(), this.cam.zoom * factor));
     const after = this.screenToWorld(sx, sy);
     this.cam.x += before.x - after.x;
     this.cam.y += before.y - after.y;

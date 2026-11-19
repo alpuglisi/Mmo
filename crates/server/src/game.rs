@@ -382,8 +382,9 @@ fn egg_loss_why(cause: &str, abandoned: bool, asleep: bool) -> &'static str {
         "chilled" if abandoned => "chilled: abandoned eggs lie exposed, by design",
         // Most of the lineage asleep (playtest 7: blamed straying while the
         // parents slept).
-        "chilled" if asleep => "chilled: no parent was brooding them (the parents were asleep)",
-        "chilled" => "chilled: no parent was brooding them (it strayed too far from the nest, or died)",
+        // No parentheses: the summary puts the causes in parentheses already (playtest 8).
+        "chilled" if asleep => "chilled: no parent was brooding them, the parents were asleep",
+        "chilled" => "chilled: no parent was brooding them, it strayed too far from the nest or died",
         "overheated" => "overheated",
         _ => "eaten by egg raiders",
     }
@@ -810,6 +811,11 @@ pub struct Game {
     progress: BTreeMap<PlayerId, Progress>,
     /// Organisms whose spell of need was alerted (the day it was), until it eases.
     need_alerted: BTreeMap<OrgId, u64>,
+    /// When each possessed animal was first seen possessed (not saved): its
+    /// need alert waits a moment, for the order that usually follows
+    /// (playtest 8: "foraging on its own until you give it an order" 0.3 s
+    /// before the order).
+    possessed_seen: BTreeMap<OrgId, u64>,
     /// The tick an alerted need eased below the threshold: the spell ends
     /// once it stays eased a game day (playtest 4: a hunter's hunger swung
     /// across the threshold with each small kill, and the alert came every
@@ -1189,6 +1195,7 @@ impl Game {
             watched: BTreeMap::new(),
             progress: BTreeMap::new(),
             need_alerted: BTreeMap::new(),
+            possessed_seen: BTreeMap::new(),
             need_eased: BTreeMap::new(),
             sleep_alerted: BTreeSet::new(),
             pending_deaths: BTreeMap::new(),
@@ -2222,7 +2229,8 @@ impl Game {
                 let members = self.world.groups(player).iter().find(|g| g.id == group).map_or(0, |g| g.members);
                 let mut dest = serde_json::json!({});
                 let there = self.circle_report_at(player, group, to, home_forage_radius(members), &mut dest, false);
-                warnings.extend(there.into_iter().map(|w| format!("At the destination: {w}")));
+                // "Destination:", not "At the destination: At this season's growth…" (playtest 8).
+                warnings.extend(there.into_iter().map(|w| format!("Destination: {w}")));
                 dest.as_object_mut().map(|o| o.remove("distance"));
                 data["destination"] = dest;
                 if let Some((_, way)) = self.routes.get(&(player, group)) {
@@ -4880,9 +4888,13 @@ impl Game {
         let (tick, tpd) = (self.world.tick(), self.world.config.ticks_per_day as u64);
         let mut needy = Vec::new();
         let mut sleepers = Vec::new();
+        // Ticks a fresh possession waits before its need alert (about 5 real seconds).
+        let settle = ((5000.0 / self.cfg.tick_ms.max(1.0)).ceil() as u64).max(2);
+        self.possessed_seen.retain(|id, _| self.world.organism(*id).is_some_and(|o| o.possessed_by.is_some()));
         for o in self.world.organisms.iter().filter(|o| o.alive && o.owner != WILD) {
             let Some(p) = o.possessed_by else { continue };
             self.watched.entry(o.id).or_insert((p, Watch::Possessed));
+            let seen = *self.possessed_seen.entry(o.id).or_insert(tick);
             // Bedded down with its kind (`Balance::possessed_sleep`): said
             // once per sleep.
             if o.dormancy.is_deep() {
@@ -4906,7 +4918,7 @@ impl Game {
                 }
             } else if self.need_alerted.contains_key(&o.id) {
                 self.need_eased.remove(&o.id);
-            } else if need >= NEED_ALERT {
+            } else if need >= NEED_ALERT && tick >= seen + settle {
                 // Already broken off to drink or eat (the sim's own rule:
                 // urgency, or water near with `Balance::drink_priority`).
                 let tending = matches!(o.action, evo_sim::organism::Action::Drink | evo_sim::organism::Action::Graze);
@@ -5524,7 +5536,8 @@ impl Game {
             lost += ["starved", "thirst", "cold"].iter().map(|c| e.deaths.get(*c).copied().unwrap_or(0)).sum::<u64>();
             now = e.alive as u64;
         }
-        (then >= 10 && lost as f64 >= DECLINE_SHARE * then as f64).then_some((lost, then, now))
+        // Only a lineage that is actually shrinking (playtest 8: "dying off slowly: 954 → 1251").
+        (then >= 10 && now < then && lost as f64 >= DECLINE_SHARE * then as f64).then_some((lost, then, now))
     }
 
     /// Say each lineage warning as an alert when it starts, and again every
@@ -5982,9 +5995,16 @@ impl Game {
                     let long = j.days >= JOURNEY_WARN_DAYS && (starve || j.days >= 2.0 * JOURNEY_WARN_DAYS);
                     if long || j.food_share < JOURNEY_BARE_SHARE {
                         let food = if starve {
+                            // Graded (playtest 8: "expect heavy losses" at 87–94% of the food).
+                            let expect = if j.food_share < 0.5 {
+                                "expect heavy losses"
+                            } else if j.food_share < 0.8 {
+                                "expect losses"
+                            } else {
+                                "expect some hunger"
+                            };
                             format!(
-                                "The land along the way holds about {:.0}% of the food the group needs for it; expect \
-                                 heavy losses. ",
+                                "The land along the way holds about {:.0}% of the food the group needs for it; {expect}. ",
                                 j.food_share * 100.0
                             )
                         } else {
@@ -6405,7 +6425,8 @@ impl Game {
                         .iter()
                         .map(|(c, n)| format!("{n} {}", egg_loss_why(c, abandoned, asleep)))
                         .collect();
-                    format!(" · {eggs_lost} egg{} lost ({})", if eggs_lost == 1 { "" } else { "s" }, why.join(", "))
+                    // ";" between causes: a cause's own text has commas.
+                    format!(" · {eggs_lost} egg{} lost ({})", if eggs_lost == 1 { "" } else { "s" }, why.join("; "))
                 } else {
                     String::new()
                 };
@@ -7904,7 +7925,7 @@ mod tests {
             .find(|x| x.kind == AlertKind::DailySummary)
             .expect("a day with lost eggs is summarised");
         assert!(
-            summary.text.contains("6 eggs lost (5 chilled: no parent was brooding them (it strayed too far from the nest, or died), 1 eaten by egg raiders)"),
+            summary.text.contains("6 eggs lost (5 chilled: no parent was brooding them, it strayed too far from the nest or died; 1 eaten by egg raiders)"),
             "{}",
             summary.text
         );
@@ -8561,11 +8582,29 @@ mod tests {
             o.needs.thirst = t;
             o.needs.hunger = 0.0;
         };
-        // Thirsty, but not yet severely: an alert, and it keeps walking.
+        // Right after possessing, the alert waits a moment for the order
+        // that usually follows (playtest 8): none on the first ticks.
         set_thirst(&mut g, 80.0);
         g.world.step();
         let out = g.after_tick();
-        let need = alerts_in(&out, 1).into_iter().find(|x| x.kind == AlertKind::Need).expect("need alert");
+        assert!(
+            alerts_in(&out, 1).iter().all(|x| x.kind != AlertKind::Need),
+            "no need alert straight after possessing"
+        );
+        // (As if possessed a while ago, without walking it further.)
+        g.possessed_seen.insert(id, 0);
+        // Thirsty, but not yet severely: an alert (on the next check), and it keeps walking.
+        let mut need = None;
+        for _ in 0..6 {
+            set_thirst(&mut g, 80.0);
+            g.world.step();
+            let out = g.after_tick();
+            need = alerts_in(&out, 1).into_iter().find(|x| x.kind == AlertKind::Need);
+            if need.is_some() {
+                break;
+            }
+        }
+        let need = need.expect("need alert");
         assert!(need.text.contains("parched") && need.text.contains("stops to drink"), "{}", need.text);
         let o = g.world.organism(id).unwrap();
         assert_eq!(o.action, evo_sim::organism::Action::Ordered);
@@ -9550,6 +9589,7 @@ mod tests {
         let ok = g.found(1, &design("A4").founders(10)).unwrap();
         assert_eq!((ok.refound_fee, g.balance(1)), (4 * REFOUND_FEE, 0), "what they have now");
         assert_eq!(g.economy.refound_debt.get(&1), Some(&(4 * REFOUND_FEE - 50)), "the rest owed");
+        assert_eq!(g.shop_view(1).refound_debt, Some(4 * REFOUND_FEE - 50), "the shop shows the debt");
         // Owed renown comes out of the next renown coming in.
         let _ = g.post(1, 400, LedgerKind::Income, "test".into(), None, None);
         assert_eq!((g.balance(1), g.economy.refound_debt.get(&1)), (50, None));

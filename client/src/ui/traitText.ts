@@ -10,7 +10,7 @@
 // returns the caption. They only describe: any combination is allowed.
 
 import {
-  adultMass, sizeWord, buoyancy, foodCostOf, GENE_DEFAULTS, DEGREES_PER_INSULATION, FANG_THRESHOLD, fangPlantLoss, flight, geneValue, iceSlip, scaleWarmthLoss,
+  adultMass, sizeWord, buoyancy, foodCostOf, DEGREES_PER_INSULATION, FANG_THRESHOLD, fangPlantLoss, flight, geneValue, iceSlip, scaleWarmthLoss,
 } from '../bodyMath';
 import type { Morphology } from '../morphology';
 import type { DesignSpec } from '../protocol';
@@ -18,6 +18,13 @@ import { traitNameLower } from './traitNames';
 
 /** A design, with its body plan when the editor has one (eye count, leg count, shapes). */
 export type CaptionDesign = DesignSpec & { morphology?: Morphology };
+
+/**
+ * The starting design's body size (designMorph `STARTER_TRAITS`): the
+ * slider's default, so it shows no upkeep there (playtest 8: "+78% vs. the
+ * default size" at the default, measured from the gene's 0.3).
+ */
+const STARTER_BODY_SIZE = 0.5;
 
 /** The world's size class of an adult this heavy (appearance.rs: tiny < 1 kg, small < 8, medium < 40, else large). */
 export function sizeClass(mass: number): string {
@@ -103,7 +110,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     mid: 'medium: middling strength, defense, speed and lifespan',
     high: 'large: strong, tough, long-lived; slow, hungry, easy to spot',
     // The leading word is the weight class (`sizeWord`), as the inspector names the animal.
-    context: (d, _l, base) => `${base.replace(/^\w+/, sizeWord(adultMass(d)))} (adult ≈ ${kg(adultMass(d))})${foodNote(foodCostOf(d, 'body_size', GENE_DEFAULTS.body_size), 'vs. the default size')}`,
+    context: (d, _l, base) => `${base.replace(/^\w+/, sizeWord(adultMass(d)))} (adult ≈ ${kg(adultMass(d))})${foodNote(foodCostOf(d, 'body_size', STARTER_BODY_SIZE), 'vs. the starting size')}`,
   },
   muscle: {
     what: 'Strength and speed, paid for in food.',
