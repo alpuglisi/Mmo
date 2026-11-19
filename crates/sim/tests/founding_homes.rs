@@ -69,6 +69,8 @@ fn homes_hash() -> u64 {
         (config.balance.wild_refuge, config.balance.world_crowding, config.balance.wild_barrier) = (0.0, 0.0, 0.0);
         // Playtest 9 (version 85): homes clear of rival animals, pack cohesion.
         (config.balance.rival_clear, config.balance.pack_cohesion) = (0.0, 0.0);
+        // Playtest 10 (version 90): landings kept clear and together.
+        (config.balance.reinforce_clear, config.balance.founding_together) = (0.0, 0.0);
         // Playtest 6 balance (version 62): toxin upkeep, hungry hunters,
         // toxin source, speciation credit and clutch cover change how the
         // world grows before the sample players found.

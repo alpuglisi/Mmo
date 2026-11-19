@@ -823,7 +823,7 @@ impl Game {
             return Err(ErrorInfo::new("insufficient_funds", format!("{price} renown needed, you have {balance}"))
                 .with_detail(serde_json::json!({ "balance": balance, "needed": price })));
         }
-        let ids = self.world.reinforce_lineage(lineage, economy::REINFORCE_SIZE);
+        let (ids, moved) = self.world.reinforce_lineage_report(lineage, economy::REINFORCE_SIZE);
         if ids.is_empty() {
             return Err(ErrorInfo::new("lineage_full", "no room for reinforcements"));
         }
@@ -840,7 +840,15 @@ impl Game {
             .filter(|o| o.pos.dist(at) < evo_sim::World::REINFORCE_CLUSTER)
             .count();
         let group = ids.first().and_then(|&id| self.world.organism(id)).map_or(0, |o| o.group);
-        let site = ReinforceSite { at: [at.x, at.y], nearby_count: nearby, group };
+        // Landed away from a group standing in a rival's territory: say so
+        // (playtest 10: no hint the rule was relaxed).
+        let note = moved.map(|(_, d)| {
+            format!(
+                "your group stands in or beside another player's territory, so they landed on the nearest clear \
+                 ground, {d:.0} tiles from it"
+            )
+        });
+        let site = ReinforceSite { at: [at.x, at.y], nearby_count: nearby, group, note };
         self.spend(
             player,
             price,
@@ -1155,11 +1163,13 @@ impl Game {
 /// Where a purchase's reinforcements landed: their centre, how many of the
 /// lineage's animals stand within `World::REINFORCE_CLUSTER` tiles of it,
 /// and the group they joined (playtest 6: the reply's `group` was the count).
-#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub(super) struct ReinforceSite {
     pub at: [f32; 2],
     pub nearby_count: usize,
     pub group: u8,
+    /// Why they landed away from the group, if they did.
+    pub note: Option<String>,
 }
 
 /// Real seconds a shop price quoted to a player holds (`Game::quote_shop`):

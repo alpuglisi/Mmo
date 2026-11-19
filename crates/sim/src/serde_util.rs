@@ -3420,3 +3420,52 @@ pub mod before_v89 {
         }
     }
 }
+
+/// `#[serde(with = "crate::serde_util::before_v90")]` on the playtest 10
+/// placement tunables (`Balance::reinforce_clear`, `founding_together`).
+/// On a thread holding a [`before_v90::Guard`] (reading or hashing a
+/// snapshot of version 89 or before) they are neither written nor read:
+/// they read as 0 (off).
+pub mod before_v90 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The tunable before version 90: off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+}
