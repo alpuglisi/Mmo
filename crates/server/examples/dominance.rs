@@ -40,8 +40,8 @@
 //! - **Loophole** founds Rulebender5's small egg-incubating cold flier as a
 //!   half-size re-found (22 founders) on `--loophole-day` (default 334).
 //!
-//! Two arms on the same seeds. **Playtest 9 rules**: the version 83
-//! tunables off (`wild_barrier`, `world_crowding`, `wild_refuge`), or with `--baseline playtest2`
+//! Two arms on the same seeds. **Playtest 10 rules**: the version 89
+//! tunables off (`nest_raids`, `share_litters`, `refuge_ramp`), or with `--baseline playtest2`
 //! playtest 2's (the balance rules since version 43 off, the old soft cap),
 //! each founded at any price. **New rules**:
 //! today's defaults, each design fitted to today's prices by dropping
@@ -393,12 +393,13 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         }
     }
     if !new_rules {
-        // Default: playtest 9's rules (the version 83 tunables off: player
-        // × wild litters full size, crowding by the soft cap alone, player
-        // hunters taking a wild species to its last animals).
+        // Default: playtest 10's rules (the version 89 tunables off: no
+        // nest raids, crowding by share makes animals hungrier too, the
+        // wild refuge from day 0).
         let b = &mut g.world.config.balance;
-        (b.wild_barrier, b.world_crowding, b.wild_refuge) = (0.0, 0.0, 0.0);
+        (b.nest_raids, b.share_litters, b.refuge_ramp) = (0.0, 0.0, 0.0);
         if a.playtest2_baseline {
+            (b.wild_barrier, b.world_crowding, b.wild_refuge) = (0.0, 0.0, 0.0);
             (b.honest_signals, b.wild_isolation) = (0.0, 0.0);
             (b.toxin_upkeep, b.hungry_hunters, b.toxin_source, b.speciation_credit, b.clutch_cover) =
                 (0.0, 0.0, 0.0, 0.0, 0.0);
@@ -610,7 +611,7 @@ fn main() {
         }
     });
     let results = results.into_inner().unwrap();
-    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 9 rules" };
+    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 10 rules" };
     for (new, title) in [(false, old_title), (true, "New rules")] {
         if a.new_only && !new {
             continue;
