@@ -300,13 +300,21 @@ impl Game {
     }
 
     /// `survey`: rivals' groups and territories near the player's main
-    /// group, coarsely, for renown scaled by their lineage's size.
+    /// group (or its biggest group when the main one is empty), coarsely, for renown scaled by their lineage's size.
     pub(super) fn survey(&mut self, player: PlayerId) -> Result<crate::protocol::SurveyView, ErrorInfo> {
         if self.lineage_of(player).is_none() || self.is_extinct(player) {
             return Err(ErrorInfo::new("no_lineage", "you have no living lineage to survey from"));
         }
-        let Some(from) = self.world.group_middle(player, 0) else {
-            return Err(ErrorInfo::new("no_lineage", "your main group has no animals to survey from"));
+        // From the main group, else the biggest group with animals
+        // (playtest 8: refused with 88 alive because the main group was
+        // empty).
+        let from = self.world.group_middle(player, 0).or_else(|| {
+            let groups = self.world.groups(player);
+            let big = groups.iter().filter(|g| g.members > 0).max_by_key(|g| (g.members, std::cmp::Reverse(g.id)))?;
+            self.world.group_middle(player, big.id)
+        });
+        let Some(from) = from else {
+            return Err(ErrorInfo::new("no_lineage", "none of your groups has animals to survey from"));
         };
         let price = economy::survey_price(self.owner_population(player));
         let coarse = |v: f32| (v / 8.0).floor() * 8.0 + 4.0;

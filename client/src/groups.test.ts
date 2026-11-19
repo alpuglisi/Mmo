@@ -127,6 +127,9 @@ describe('View group', () => {
     const s = at([[0, 0, 0], [0, 2, 4], [1, 10, 10]]);
     expect(groupCenter(s, 0)).toEqual({ x: 1, y: 2, n: 2 });
     expect(groupCenter(s, 2)).toBeNull();
+    // Scattered on two sides of a lake: on the bigger part, not between.
+    const split = at([[0, 0, 0], [0, 2, 0], [0, 1, 2], [0, 100, 100], [0, 102, 100]]);
+    expect(groupCenter(split, 0)).toEqual({ x: 1, y: 2 / 3, n: 3 });
     expect(nextViewGroup(s, null)).toBe(0);
     expect(nextViewGroup(s, 0)).toBe(1);
     expect(nextViewGroup(s, 1)).toBeNull();

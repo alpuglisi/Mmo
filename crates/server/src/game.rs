@@ -949,6 +949,12 @@ pub struct Game {
     old_age_told: BTreeSet<u32>,
     /// Players whose next death alert says that once (`announce_deaths`).
     old_age_note: BTreeSet<PlayerId>,
+    /// Each player's group's hunger and thirst deaths of the day ending,
+    /// counted from the bodies just before the world clears them
+    /// (`after_tick`), for the group alerts (playtest 8: a 6-animal group
+    /// was told "46 starved", the whole lineage's). `None` until a day has
+    /// been counted (after a restart). Not saved.
+    group_deaths: Option<BTreeMap<(PlayerId, u8), (u64, u64)>>,
     /// How each group's last order ended on its own (arrived, stalled,
     /// claimed on arrival), shown on its card until its next order: alerts
     /// scroll away (playtest 4: a migration "silently did nothing"). Not
@@ -1241,6 +1247,7 @@ impl Game {
             poison_known: None,
             old_age_told: BTreeSet::new(),
             old_age_note: BTreeSet::new(),
+            group_deaths: None,
             outcomes: BTreeMap::new(),
             hosts,
             pending_out,
@@ -2245,6 +2252,22 @@ impl Game {
                 }
                 put_warnings(&mut data, warnings);
                 self.brood_report(player, group, &mut data);
+                // The territory is kept while away, not replaced (playtest 8:
+                // the reply said it was).
+                let mut before = before;
+                if let Some(t) = self.world.territory_away(player, group) {
+                    before.retain(|&o| o != "territory");
+                    data["territory_kept"] = serde_json::to_value(TerritoryView::from(t)).unwrap_or_default();
+                    let text = format!(
+                        "the group keeps its territory at ({:.0}, {:.0}) while away: no rival may claim over it, it is \
+                         held again if you clear the order, and given up when the group claims elsewhere",
+                        t.center.x, t.center.y
+                    );
+                    data["note"] = match data["note"].as_str() {
+                        Some(n) => format!("{n}; {text}").into(),
+                        None => text.into(),
+                    };
+                }
                 note_replaced(&mut data, &before, "migration");
                 Ok(Some(data))
             }
@@ -4598,6 +4621,19 @@ impl Game {
         if self.world.tick().is_multiple_of(self.world.config.ticks_per_hour()) {
             self.sync_focus();
         }
+        // The next tick clears the day's bodies: count them by group now.
+        if self.world.tick().is_multiple_of(self.world.config.ticks_per_day.max(1) as u64) {
+            let mut tally: BTreeMap<(PlayerId, u8), (u64, u64)> = BTreeMap::new();
+            for o in self.world.organisms.iter().filter(|o| !o.alive && o.owner != evo_sim::WILD) {
+                let e = tally.entry((o.owner, o.group)).or_default();
+                match o.death {
+                    Some(DeathCause::Starvation) => e.0 += 1,
+                    Some(DeathCause::Thirst) => e.1 += 1,
+                    _ => {}
+                }
+            }
+            self.group_deaths = Some(tally);
+        }
         let legacy_day = self.world.latest_legacy().map(|l| l.day);
         if legacy_day != self.last_legacy_day {
             self.last_legacy_day = legacy_day;
@@ -5502,11 +5538,19 @@ impl Game {
         }
         if starving >= STARVING_MIN as usize && starving as f64 >= TERRITORY_STARVING_SHARE * inside as f64 {
             let names: Vec<String> = groups.iter().map(|&g| group_name(g)).collect();
+            // A loosened hold already forages past the edge (playtest 8:
+            // "obey the claim and stay inside" for such groups).
+            let loose = groups.iter().all(|&g| w.hold_loosened(player, g));
+            let how = if loose {
+                "they already forage past the claim's edge, and it isn't enough. Move them to better ground, or abandon \
+                 the claim"
+            } else {
+                "they obey the claim and stay inside while the ground runs out. Move them, or abandon the claim"
+            };
             out.push(LineageWarning {
                 kind: "territory_starving".into(),
                 text: format!(
-                    "{starving} of the {inside} animals holding territories ({}) are starving or parched: they obey the claim \
-                     and stay inside while the ground runs out. Move them, or abandon the claim.",
+                    "{starving} of the {inside} animals holding territories ({}) are starving or parched: {how}.",
                     names.join(", ")
                 ),
             });
@@ -6069,10 +6113,16 @@ impl Game {
         for (p, lineage) in players {
             let deaths = record.lineages.iter().find(|e| e.lineage == lineage).map(|e| e.deaths.clone());
             let died = |cause: &str| deaths.as_ref().and_then(|d| d.get(cause)).copied().unwrap_or(0);
-            let (thirst, starved) = (died("thirst"), died("starved"));
+            let (lineage_thirst, lineage_starved) = (died("thirst"), died("starved"));
             let groups = self.world.groups(p);
             for g in &groups {
                 let key = (p, g.id);
+                // This group's own deaths when counted, else the lineage's
+                // (only right for a single group).
+                let (starved, thirst) = match &self.group_deaths {
+                    Some(t) => t.get(&key).copied().unwrap_or((0, 0)),
+                    None => (lineage_starved, lineage_thirst),
+                };
                 let name = group_name(g.id);
                 let mut texts = Vec::new();
                 // The ground the group holds: its territory, else the home its
@@ -6108,7 +6158,7 @@ impl Game {
                         let dry = drink == 0;
                         if self.condition_begins((p, g.id, 0), dry, drink >= LOW_WATER_TILES) {
                             let tail = if thirst > 0 {
-                                format!(" {thirst} of your animals died of thirst yesterday.")
+                                format!(" {thirst} of the group died of thirst yesterday.")
                             } else {
                                 String::new()
                             };
@@ -6124,7 +6174,7 @@ impl Game {
                         if self.condition_begins((p, g.id, 1), bare, regrown) {
                             let days = days_text(food.map_or(0.0, |f| f.standing_days));
                             let tail = if starved > 0 {
-                                format!(" {starved} of your animals starved yesterday.")
+                                format!(" {starved} of the group starved yesterday.")
                             } else {
                                 String::new()
                             };
@@ -6140,7 +6190,7 @@ impl Game {
                             // days (playtest 7: one alert, then weeks of deaths).
                             self.bare_repeated.insert(key, record.day);
                             texts.push(format!(
-                                "{name}'s {what} at ({x:.0}, {y:.0}) is still grazed bare: {starved} of your animals \
+                                "{name}'s {what} at ({x:.0}, {y:.0}) is still grazed bare: {starved} of the group \
                                  starved yesterday. {}.",
                                 capitalized(fix)
                             ));

@@ -351,6 +351,8 @@ export interface GroupView {
   /** How the group's last order ended on its own ("reached (40, 46)", "migration to (60, 4) ended: never got going"…), until its next order. */
   last_outcome?: string;
   territory?: TerritoryView;
+  /** The territory the group left on its migration and still holds (no rival may claim over it; held again if the order is cleared). */
+  territory_kept?: TerritoryView;
   rally?: RallyView;
   /** Largest territory radius the group could claim now. */
   max_radius: number;

@@ -228,6 +228,11 @@ fn an_attack_order_alerts_the_targets_owner() {
     // A plant eater doesn't hunt (playtest 6: a possessed grazer one-shot a fox).
     assert_eq!(run(&mut g, msg.clone()), Err("not_a_hunter".into()));
     hunters(&mut g, 1);
+    // Not in its deep sleep (playtest 8: accepted for a hibernating animal).
+    let k = g.world.organisms.iter().position(|o| o.id == a[0]).unwrap();
+    g.world.organisms[k].dormancy = evo_sim::organism::Dormancy::Winter;
+    assert_eq!(run(&mut g, msg.clone()), Err("asleep".into()));
+    g.world.organisms[k].dormancy = evo_sim::organism::Dormancy::Awake;
     // A newcomer's grace, with the days left.
     g.world.config.balance.attack_grace = 1e6;
     // Shown: bo's lineage is listed as protected, and bo's stats give the days left.
@@ -729,7 +734,21 @@ fn the_daily_check_alerts_a_dry_territory_and_a_drifted_herd_once() {
     let texts = alerts(&g, AlertKind::Group);
     let dry_alerts: Vec<&String> = texts.iter().filter(|t| t.contains("no drinking water left")).collect();
     assert_eq!(dry_alerts.len(), 1, "once: {texts:?}");
-    assert!(dry_alerts[0].contains("7 of your animals died of thirst"), "{}", dry_alerts[0]);
+    assert!(dry_alerts[0].contains("7 of the group died of thirst"), "{}", dry_alerts[0]);
+    // Counted by group (playtest 8: a 6-animal group was told the whole
+    // lineage's deaths): the group's own, not the lineage's 7.
+    {
+        let (mut g, _) = game();
+        let home = g.world.group_middle(1, 0).unwrap();
+        run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 4.0 }).unwrap();
+        dry(&mut g);
+        g.group_deaths = Some([((1, 0), (0, 2))].into_iter().collect());
+        let mut out = Outbox::new();
+        g.daily_group_checks(&record, &mut out);
+        let texts = alerts(&g, AlertKind::Group);
+        let t = texts.iter().find(|t| t.contains("no drinking water left")).expect("dry alert");
+        assert!(t.contains("2 of the group died of thirst"), "{t}");
+    }
     // A herd that drifted from the home its migration gave it.
     run(&mut g, ClientMsg::AbandonTerritory { group: 0 }).unwrap();
     let target = land_away(&g, home, 10.0);

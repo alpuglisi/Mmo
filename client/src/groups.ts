@@ -133,7 +133,10 @@ export function groupOrders(g: GroupView): string {
     const t = g.territory;
     return `holding a territory (radius ${t.radius.toFixed(1)}) at ${t.x.toFixed(0)}, ${t.y.toFixed(0)}`;
   }
-  if (g.migration) return `migrating toward ${g.migration[0].toFixed(0)}, ${g.migration[1].toFixed(0)}`;
+  if (g.migration) {
+    const kept = g.territory_kept ? `, keeping its territory at ${g.territory_kept.x.toFixed(0)}, ${g.territory_kept.y.toFixed(0)}` : '';
+    return `migrating toward ${g.migration[0].toFixed(0)}, ${g.migration[1].toFixed(0)}${kept}`;
+  }
   if (g.home) return `at home near ${g.home.x.toFixed(0)}, ${g.home.y.toFixed(0)}, where its migration arrived`;
   return 'roaming freely';
 }
@@ -198,14 +201,42 @@ export function memberCounts(s: StateView): Map<number, number> {
   return m;
 }
 
-/** The middle of a group's agents (`organisms` lists agents only), or null with none in the list. */
+/** Side in tiles of the cells `groupCenter` counts members in. */
+export const CLUSTER_CELL = 12;
+
+/**
+ * Where a group's agents are thickest (`organisms` lists agents only), or
+ * null with none in the list: the middle of the members in and around the
+ * fullest cell (`CLUSTER_CELL`). For a scattered group the plain mean can
+ * fall between its parts (playtest 8: View group pinned the view on a lake);
+ * `n` counts the members in that cluster.
+ */
 export function groupCenter(s: StateView | null, id: number): { x: number; y: number; n: number } | null {
+  const mine = (s?.organisms ?? []).filter((o) => (o.group ?? 0) === id);
+  if (mine.length === 0) return null;
+  const cell = (v: number) => Math.floor(v / CLUSTER_CELL);
+  const counts = new Map<string, number>();
+  for (const o of mine) {
+    const k = `${cell(o.x)},${cell(o.y)}`;
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  const around = (cx: number, cy: number) => {
+    let n = 0;
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) n += counts.get(`${cx + dx},${cy + dy}`) ?? 0;
+    return n;
+  };
+  let best = { cx: 0, cy: 0, n: -1 };
+  for (const o of mine) {
+    const cx = cell(o.x), cy = cell(o.y);
+    const n = around(cx, cy);
+    if (n > best.n) best = { cx, cy, n };
+  }
   let x = 0, y = 0, n = 0;
-  for (const o of s?.organisms ?? []) {
-    if ((o.group ?? 0) !== id) continue;
+  for (const o of mine) {
+    if (Math.abs(cell(o.x) - best.cx) > 1 || Math.abs(cell(o.y) - best.cy) > 1) continue;
     x += o.x; y += o.y; n++;
   }
-  return n > 0 ? { x: x / n, y: y / n, n } : null;
+  return { x: x / n, y: y / n, n };
 }
 
 /**

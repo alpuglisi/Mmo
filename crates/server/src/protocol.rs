@@ -931,6 +931,7 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             BadRadius => "bad_radius",
             OwnTarget(_) => "own_target",
             NotAHunter(_) => "not_a_hunter",
+            Asleep(_) => "asleep",
             OutOfSight(_) => "target_out_of_sight",
             TooBig { .. } => "too_big",
             Sheltered(_) => "sheltered",
@@ -1326,6 +1327,12 @@ pub struct GroupView {
     pub last_outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub territory: Option<TerritoryView>,
+    /// The territory the group left on its migration and still holds: no
+    /// rival may claim over it, it is held again if the order is cleared,
+    /// and given up when the group claims elsewhere (playtest 8: not shown
+    /// to its owner). Absent: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub territory_kept: Option<TerritoryView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rally: Option<RallyView>,
     /// Largest territory radius the group could claim now.
@@ -1367,6 +1374,7 @@ impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
             home: g.settle.map(|s| HomeView { x: s.center.x, y: s.center.y, radius: s.radius }),
             last_outcome: None,
             territory: g.territory.map(TerritoryView::from),
+            territory_kept: g.territory_away.map(TerritoryView::from),
             rally: g.rally.map(RallyView::from),
             max_radius: g.max_radius,
             claim_ready_tick: g.claim_ready_tick,
