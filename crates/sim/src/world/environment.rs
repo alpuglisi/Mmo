@@ -18,7 +18,7 @@ const NEST_CROWD_RADIUS: usize = 2;
 const EGG_ATTEND_RANGE: f32 = 12.0;
 const CHILL_RATE: f32 = 0.006;
 /// Eggs a sitting parent covers fully (`Balance::clutch_cover`).
-const CLUTCH_COVERED: usize = 3;
+const CLUTCH_COVERED: usize = 4;
 /// Most °C a sitting parent can cool her eggs by shading them.
 pub(crate) const BROOD_SHADE: f32 = 3.0;
 /// The egg temperature a sitting warm-blooded parent aims for.

@@ -1291,10 +1291,15 @@ pub struct Balance {
     /// cluster. 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v62"))]
     pub speciation_credit: f32,
-    /// A sitting parent covers 3 eggs fully: a bigger clutch's brooded
-    /// temperature is `site + (brooded − site) × (3 / eggs)^clutch_cover`
-    /// (a clutch of 6 at 1: halfway to the nest's own temperature), so a
-    /// big incubated clutch chills on cool nights. 0: off.
+    /// A sitting parent covers 4 eggs fully: a bigger clutch's brooded
+    /// temperature is `site + (brooded − site) × (4 / eggs)^clutch_cover`
+    /// (a clutch of 6 at 2.1: 42% of the way to the brooded temperature),
+    /// so a big incubated clutch chills on cool nights. Tuned in the
+    /// dominance replay with 3 eggs covered (1.25 there gave the same 42%
+    /// for 6 eggs, and Herdmaster6's herd 13 of 40 titles); 4 are covered so
+    /// the wild burrowing omnivores' four-egg clutches are spared (with 3,
+    /// two wild prey species died out on single seeds in `predlong`).
+    /// 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v62"))]
     pub clutch_cover: f32,
 }
@@ -1593,7 +1598,7 @@ impl Default for Balance {
             hungry_hunters: 1.0,
             toxin_source: 1.0,
             speciation_credit: 1.0,
-            clutch_cover: 1.25,
+            clutch_cover: 2.1,
         }
     }
 }
