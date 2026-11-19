@@ -854,6 +854,11 @@ pub struct World {
     /// (`Balance::animal_clear`), for the founding's reply. Not saved.
     #[cfg_attr(feature = "serde", serde(skip))]
     founding_crowded: BTreeMap<u32, u32>,
+    /// Players whose grace an attack (or raid) on another player's animals
+    /// just ended (`Balance::graced_hunting`), with that player, for the
+    /// alert saying why (`World::take_grace_attack`). Not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    grace_attacks: BTreeMap<PlayerId, PlayerId>,
 }
 
 /// Steps from water a founder's tile needs (`Balance::dry_sites`).
@@ -966,6 +971,7 @@ impl World {
             pack_room: BTreeMap::new(),
             pack_homes: BTreeMap::new(),
             founding_crowded: BTreeMap::new(),
+            grace_attacks: BTreeMap::new(),
             clutch_at: IdMap::default(),
             path_scratch: PathScratch::default(),
             season_offset: Map::seasonal_offset(0, config.days_per_year),
@@ -1151,6 +1157,13 @@ impl World {
     /// (`Balance::animal_clear`); 0 otherwise.
     pub fn founding_crowded(&self, l: u32) -> u32 {
         self.founding_crowded.get(&l).copied().unwrap_or(0)
+    }
+
+    /// Whose animal `player`'s attack or raid was when it ended their
+    /// newcomer grace (`Balance::graced_hunting`), once: taken by the
+    /// alert that says so.
+    pub fn take_grace_attack(&mut self, player: PlayerId) -> Option<PlayerId> {
+        self.grace_attacks.remove(&player)
     }
 
     /// Where a player's group's pack hunters are thickest

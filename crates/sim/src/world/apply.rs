@@ -851,8 +851,11 @@ impl World {
         if !b.alive || a.pos.dist(b.pos) > self.config.balance.attack_reach || self.tick < a.strike_ready_tick {
             return;
         }
-        // A newcomer's founding grace keeps other players' animals off it.
-        if self.grace_spares(a, b) {
+        // A newcomer's founding grace keeps other players' animals off it;
+        // a graced hunter attacks rivals only on an order
+        // (`Balance::instinct_grace`).
+        let ordered = self.attack_orders.get(&a.id) == Some(&b.id) || self.attack_of(a) == Some(j);
+        if self.grace_spares(a, b) || self.instinct_grace_spares(a, b, ordered) {
             return;
         }
         // A graced hunter's first attack on a rival's animal ends its
@@ -862,8 +865,9 @@ impl World {
             && b.owner != a.owner
             && self.attack_grace_left(a).is_some()
         {
-            let owner = a.owner;
+            let (owner, victim) = (a.owner, b.owner);
             self.grace_waived.insert(owner, self.tick);
+            self.grace_attacks.insert(owner, victim);
         }
         let (a, b) = (&self.organisms[i], &self.organisms[j]);
         let escape = self.escape_chance(a, b);
@@ -1178,8 +1182,9 @@ impl World {
             && c.owner != crate::WILD
             && self.attack_grace_left(o).is_some()
         {
-            let owner = o.owner;
+            let (owner, victim) = (o.owner, c.owner);
             self.grace_waived.insert(owner, self.tick);
+            self.grace_attacks.insert(owner, victim);
         }
         let (o, c) = (&self.organisms[i], &self.clutches[k]);
         let n = c.eggs.len().min(3);
@@ -1319,7 +1324,10 @@ impl World {
         // carry a hungry member (`Balance::player_packs`, by the meat gut).
         // (A founding-sized pack's first winter has the full room:
         // `World::first_winter_room`, `Balance::winter_larder`.)
-        let diet = diet * (1.0 - player_pack_larder(&bal, o, self.pack_room(o.owner)));
+        // A pregnant pack female is fed first (`Balance::pack_nursing`).
+        let room = self.pack_room(o.owner);
+        let room = if o.pregnancy.is_some() { room.max(bal.pack_nursing.clamp(0.0, 1.0)) } else { room };
+        let diet = diet * (1.0 - player_pack_larder(&bal, o, room));
         // Crowding: competition with many kin, felt by group-intolerant organisms.
         let crowd = 1.0 + bal.crowding * (o.kin_nearby as f32 - 8.0).max(0.0) * (1.0 - o.pheno[Gene::GroupTolerance]);
         // Competition in a lineage crowded past its soft cap

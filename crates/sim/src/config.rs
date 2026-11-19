@@ -1535,6 +1535,23 @@ pub struct Balance {
     /// rival herd, "0 tiles away"). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v93"))]
     pub animal_clear: f32,
+    // Playtest 12 packs (version 95; *Playtest 12: packs* in the README).
+    // Off at 0, what snapshots before version 95 read
+    // (`serde_util::before_v95`).
+    /// A player's pack feeds its pregnant females first: a pregnant pack
+    /// hunter has at least this much of the larder room
+    /// (`apply::player_pack_larder`), whatever the prey per hunter
+    /// (playtest 12: 31 of 89 adults female for hundreds of days; females
+    /// starved more, carrying their litters). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v95"))]
+    pub pack_nursing: f32,
+    /// A graced player's animals don't attack other players' animals (or
+    /// raid their clutches) on instinct, only on an attack order, so a
+    /// stray bite doesn't end the grace (playtest 12: one unordered bite
+    /// ended a pack's grace with 76 days left). With `graced_hunting` an
+    /// ordered attack still may, and ends it. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v95"))]
+    pub instinct_grace: f32,
 }
 
 impl Balance {
@@ -1858,12 +1875,14 @@ impl Default for Balance {
             wild_rebound: 1.0,
             raid_rules: 1.0,
             animal_clear: 1.0,
+            pack_nursing: 1.0,
+            instinct_grace: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 193;
+    pub const FIELD_COUNT: usize = 195;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -2066,6 +2085,8 @@ impl Balance {
             ("wild_rebound", &mut self.wild_rebound),
             ("raid_rules", &mut self.raid_rules),
             ("animal_clear", &mut self.animal_clear),
+            ("pack_nursing", &mut self.pack_nursing),
+            ("instinct_grace", &mut self.instinct_grace),
         ]
     }
 

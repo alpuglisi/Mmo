@@ -991,9 +991,9 @@ impl World {
             && o.possessed_by.is_none()
             && self.rendezvous_of(o.id).is_none()
             && !self.migrate_orders.contains_key(&key)
-            && !self.rallies.contains_key(&key)
-            && !self.territories.contains_key(&key)
-            && self.settle_circle(o.owner, o.group).is_none();
+            && !self.rallies.contains_key(&key);
+        // (A home circle or territory doesn't stop it: playtest 12's pack
+        // scattered over the map from a home, cohesion 0.3 and all.)
         let pack_pull = (cfg.balance.pack_cohesion > 0.0 && player_pack(&cfg.balance, o) && free)
             .then(|| self.pack_home(o.owner, o.group))
             .flatten()
@@ -1433,7 +1433,13 @@ impl World {
                 let reachable = || {
                     matches!(self.map.traverse_at(&o.traits.body, q.pos, false), Traverse::Passable { .. }) && wades()
                 };
-                if v.hunter && q.mass() < v.prey_cap && !q.sheltered && !self.grace_spares(o, q) && reachable() {
+                if v.hunter
+                    && q.mass() < v.prey_cap
+                    && !q.sheltered
+                    && !self.grace_spares(o, q)
+                    && !self.instinct_grace_spares(o, q, false)
+                    && reachable()
+                {
                     // Avoidance of bright and known-toxic prey, lowered by
                     // hunger (`World::hunter_avoidance`).
                     let avoid = self.hunter_avoidance(o, q);
