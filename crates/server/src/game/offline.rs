@@ -160,10 +160,13 @@ impl Game {
             }
             v.last_outcome = self.outcomes.get(&(player, v.id)).cloned();
         }
-        let left = self.protection_left(player, self.world.tick());
-        let minutes = (left as f64 * self.cfg.tick_ms / 60_000.0).floor() as u32;
+        let real = |t: u64| (t as f64 * self.cfg.tick_ms / 60_000.0).floor() as u32;
+        let left = real(self.protection_left(player, self.world.tick()));
+        let (budget, window) = (real(self.protection_budget()), real(self.protection_window()));
         for v in views.iter_mut().filter(|v| v.home_range) {
-            v.protection_left_min = Some(minutes);
+            v.protection_left_min = Some(left);
+            v.protection_budget_min = Some(budget);
+            v.protection_window_min = Some(window);
         }
         views
     }

@@ -737,6 +737,9 @@ impl Game {
                     reason: t.reason,
                 }
             }),
+            // With the founders that would land (a re-founding gives fewer).
+            grace_note: self
+                .grace_preview(player, self.refound_terms(player).map_or(design.founders, |t| t.founders(design))),
             name_warning: if self.impersonates(player, &design.name, names::Kind::Lineage) {
                 Some("that lineage name looks like another player's name: founding would refuse it".to_string())
             } else if self.wild_name(&design.name) {
