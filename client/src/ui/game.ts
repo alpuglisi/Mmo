@@ -1998,8 +1998,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       // Outgoing pending offers say how far the walk would be too (playtest 12), and an old animal its age.
       const away = e.offer.status === 'pending' && e.offer.apart !== undefined && e.offer.from_player === me
         ? `About ${e.offer.apart} tiles from ${e.offer.lineage !== undefined ? 'their nearest suitable animal' : 'the partner'}.` : null;
-      const age = e.offer.mine_age && e.offer.mine_age[0] >= 0.8 * e.offer.mine_age[1]
-        ? `#${e.offer.mine} is ${e.offer.mine_age[0]} of about ${e.offer.mine_age[1]} days old.` : null;
+      const age = e.offer.mine_age && e.offer.mine_age.age_days >= 0.8 * e.offer.mine_age.lifespan_days
+        ? `#${e.offer.mine} is ${Math.round(e.offer.mine_age.age_days)} of about ${Math.round(e.offer.mine_age.lifespan_days)} days old.` : null;
       setText(row.querySelector('.offer-time')!, [offerTime(e.offer), meetText(e.offer, model.player), away, age].filter(Boolean).join(' '));
       const note = row.querySelector<HTMLElement>('.offer-note');
       if (note) {

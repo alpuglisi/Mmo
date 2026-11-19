@@ -1164,10 +1164,6 @@ pub struct OfferView {
     /// Why an accepted agreement's meeting point isn't the usual one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meet_note: Option<String>,
-    /// The requester's animal's age and lifespan in days (an old animal may
-    /// die before the two meet).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mine_age: Option<[f32; 2]>,
     /// A long lone walk for the requester's animal: what to watch for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub walk_warning: Option<String>,

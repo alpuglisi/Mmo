@@ -170,6 +170,10 @@ impl std::fmt::Debug for TerrainBlob {
     }
 }
 
+/// A pasture-restoration preview: (price, food, honoured until tick, the
+/// circle's centre x, y).
+type RestoreQuote = (u64, f32, u64, f32, f32);
+
 #[derive(Clone, Debug)]
 pub struct GameConfig {
     /// Half-side of the default view window, in tiles.
@@ -1028,7 +1032,7 @@ pub struct Game {
     post_shield: BTreeMap<OrgId, u64>,
     /// Pasture-restoration previews by (player, group): (price, food,
     /// honoured until tick, the circle's centre x, y). Not saved.
-    restore_quotes: BTreeMap<(PlayerId, u8), (u64, f32, u64, f32, f32)>,
+    restore_quotes: BTreeMap<(PlayerId, u8), RestoreQuote>,
     /// Hunters of the watched deaths not yet announced, in words, per
     /// player (`announce_deaths`). Not saved.
     pending_killers: BTreeMap<PlayerId, BTreeMap<OrgId, String>>,
@@ -5158,10 +5162,6 @@ impl Game {
                 })
                 .flatten(),
             meet_note: o.meet_note.clone().filter(|_| o.status == OfferStatus::Accepted),
-            mine_age: self
-                .world
-                .organism(o.mine)
-                .map(|a| [a.age_days(self.world.config.ticks_per_day).round(), a.traits.lifespan_days.round()]),
             walk_warning: (o.status == OfferStatus::Accepted).then(|| self.walk_warning(o)).flatten(),
             substitute_sex: o.lost.as_ref().filter(|_| o.status == OfferStatus::Accepted).and_then(|_| {
                 self.world.organism(o.partner).map(|p| if p.sex == Sex::Female { "male" } else { "female" }.to_string())

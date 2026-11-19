@@ -215,8 +215,6 @@ export interface OfferView {
   partner_age?: AnimalAge;
   /** Why an accepted agreement's meeting point isn't the usual one. */
   meet_note?: string;
-  /** The requester's animal's age and lifespan in days. */
-  mine_age?: [number, number];
   /** A long lone walk for the requester's animal: what to watch for. */
   walk_warning?: string;
   /** While `lost`: the sex a substitute must be. */
