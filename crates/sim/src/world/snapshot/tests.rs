@@ -595,6 +595,14 @@ fn playtest9_off(b: &mut crate::Balance) {
 fn placement_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v85::OLD_VALUE;
     (b.rival_clear, b.pack_cohesion) = (old, old);
+    landing_off(b);
+}
+
+/// The playtest 10 placement tunables as snapshots before version 90 read
+/// them.
+fn landing_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v90::OLD_VALUE;
+    (b.reinforce_clear, b.founding_together) = (old, old);
 }
 
 /// Version 82 snapshots (before the playtest 9 balance rules) restore with
@@ -2131,4 +2139,24 @@ fn version_83_snapshots_restore_without_rival_clear() {
     let w = fixture_world();
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!((r.config.balance.rival_clear, r.config.balance.pack_cohesion), (1.0, 0.0));
+}
+
+/// Version 85 snapshots (before the playtest 10 placement rules) restore
+/// with them off, and are otherwise the same world.
+#[test]
+fn version_85_snapshots_restore_without_reinforce_clear() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v85();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 85);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.reinforce_clear, r.config.balance.founding_together), (0.0, 0.0));
+    assert!(r.snapshot_v85() == old);
+    landing_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.reinforce_clear, r.config.balance.founding_together), (1.0, 1.0));
 }

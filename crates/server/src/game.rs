@@ -2883,9 +2883,11 @@ impl Game {
             ClientMsg::BuyMatingSlot => Ok(Some(serde_json::to_value(self.buy_mating_slot(player)?).unwrap())),
             ClientMsg::Reinforce => {
                 let (ids, shop, site) = self.reinforce(player)?;
-                Ok(Some(
-                    serde_json::json!({ "added": ids, "shop": shop, "at": site.at, "nearby_count": site.nearby_count, "group": site.group }),
-                ))
+                let mut data = serde_json::json!({ "added": ids, "shop": shop, "at": site.at, "nearby_count": site.nearby_count, "group": site.group });
+                if let Some(note) = site.note {
+                    data["note"] = note.into();
+                }
+                Ok(Some(data))
             }
             ClientMsg::Compatibility => Ok(Some(serde_json::to_value(self.compatibility(player)).unwrap())),
             ClientMsg::Provision => {
