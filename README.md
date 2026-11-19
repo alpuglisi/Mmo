@@ -201,8 +201,10 @@ score).
   a stuck order alive. A migrate, far claim or rally given while 30% or
   more of the group is dormant warns in its reply, migrate and far claims
   warn of open water on the route (not for fliers), and migrate checks the
-  destination like a claim, rated for the ground a group its size spreads
-  over there (the rally circle, not the small home circle) and without the
+  destination like a claim, rated for the ground the group forages there
+  (twice its home circle, `World::forage_bound`, the circle the daily home
+  check rates too: playtest 7 rated the rally circle and then alerted
+  "grazed bare" for the smaller home circle four days in) and without the
   "far from the group" warning (`destination`: water, food, drought;
   warnings start "At the destination:"). Migrate and far claims also
   estimate the **journey** (`journey`: tiles, days, food share;
@@ -211,10 +213,18 @@ score).
   to the playtests: about 10 for a few dozen, 6 for 300, 3 for 1,000, since
   big herds stop to eat and drink and wait on each other), and the plants
   standing within 3 tiles of the route against the group's need for those
-  days. A walk of 7 days or more whose land can't feed the group, or of 14
-  days or more, warns ("About N days on the way ... expect heavy losses.
-  Split the group or migrate in stages"): playtest 6 sent 1,000 animals 75
-  tiles, and the walk at 2–3 tiles a day killed 60% of them. A target moved by
+  days. A walk of 7 days or more whose land can't feed the group, of 14
+  days or more, or of any length whose land holds under 30% of the food it
+  needs (`JOURNEY_BARE_SHARE`; playtest 7: 6.2 days at 18% went unflagged)
+  warns ("About N days on the way ... The land along the way holds about
+  N% ... expect heavy losses. Split the group or migrate in stages"):
+  playtest 6 sent 1,000 animals 75 tiles, and the walk at 2–3 tiles a day
+  killed 60% of them. A migration keeps the territory the group held
+  (`HeldPlans::away`, snapshot version 66): still its ground, public and
+  closed to rival claims, until the group arrives or claims anew; clearing
+  the order holds it again, and a migration that times out with the group
+  still on it does too (playtest 7: a probe migrate cost the territory, and
+  the claim cooldown locked it out). Abandoning gives it up. A target moved by
   under a tile (onto a tile's centre) carries no `moved` note. Migrate, claim and
   rally replies say which standing orders they replace (`replaced`, and
   the `note`). `World::reroute_migration`
@@ -308,10 +318,23 @@ score).
   water no member can get to no longer counts), `food_supports` and `standing_days`
   (`World::food_check`: what the circle feeds at this season's regrowth,
   by the terrain's own logistic rule at today's plants, warmth, snow cover
-  and dryness, plus the plants standing now spread over 30 days, against
-  the group's daily need with a 1.3 margin; playtest 4 found the old peak-
-  regrowth measure 2–3× too hopeful), `prey_nearby` for meat-eaters
-  (`World::prey_check`: other lineages' animals within 8 tiles of the
+  and dryness, plus the plants standing now (only what the group's bodies
+  reach) spread over 30 days, against the group's daily need with a 1.15
+  margin; playtest 4 found the old peak-regrowth measure 2–3× too hopeful.
+  The need is each member's hunger in a typical day where it stands
+  (`World::steady_hunger_per_day`: crowding by kin and by the lineage's
+  size past its soft cap, warm-body upkeep and cold, pregnancy, toxin
+  upkeep, body size, a mean activity of 1.1), and other plant eaters in
+  the circle (wild herds, rivals, the player's other groups; `others`)
+  take their share of the food. Playtest 7's claims were still 2–5× too
+  hopeful in play ("supports 1,044 for 65.7 days", 232 of 576 starving
+  four days later): the bare hunger rate left out crowding, and a
+  640-animal herd held among wild grazers ate about twice the need
+  counted. Measured now (`a_big_held_herd_eats_what_the_food_check_says`):
+  the circle's grazers eat 0.92× the need counted, and the 8.6 days of
+  standing food the claim predicted (with its regrowth) ran out on day 14
+  (the regrowth of a grazed circle rises), so the estimate errs short),
+  `prey_nearby` for meat-eaters (`World::prey_check`: other lineages' animals within 8 tiles of the
   circle), `dryness` and `distance` from the group, with `warning`s (and a
   `warnings` list) when there are fewer than 3 drinkable tiles (in a
   drought, fewer than one per 8 animals), a quarter of it is water, its
@@ -323,14 +346,23 @@ score).
   `migrating_to`, and the territory is claimed when the group arrives
   (snapshot version 48 keeps it waiting; a timeout drops it): a far claim
   used to become a territory, and the home range, with nobody in it. A
-  circle overlapping another player's territory is refused (`overlaps`,
-  not saying whose), checked at the radius the claim would get (cut to the
-  group's limit first: a typed radius of 300 found any rival territory on
-  the map). A refused claim costs a short wait, a quarter of the cooldown,
+  far claim is rated, and its reply says, at the radius it will get (cut
+  to the group's limit; playtest 7: "radius 300, food_supports 6,211" for
+  31 animals). A circle overlapping another player's territory is refused
+  (`overlaps`, not saying whose), checked at the radius the claim would get
+  (cut to the group's limit first: a typed radius of 300 found any rival
+  territory on the map), unless that territory is a squat: held by at most
+  12 animals (`SQUAT_MEMBERS`) against a claiming group ten times their
+  number (`SQUAT_RATIO`), whose claim takes the ground (the squatter is
+  told; playtest 7: a 2-animal splinter could deny a key water spot to
+  every rival for good). A far claim's arrival checks again: if a rival
+  claimed there on the way, the group arrives without claiming and is told. A refused claim costs a short wait, a quarter of the cooldown,
   and an accepted far claim starts the cooldown at once. Other players'
   territories are public: the state carries those reaching into the view
-  window (`territories`: outlines, no owner) and the map draws them as grey
-  circles, so a refusal tells nobody anything new,
+  window or within 48 tiles of any of the player's groups
+  (`OUTLINES_NEAR_GROUP`; playtest 7: split groups away from the view
+  claimed blind) (`territories`: outlines, no owner) and the map draws them
+  as grey circles, so a refusal tells nobody anything new,
   and a radius that isn't a positive number (`bad_radius`): a negative one
   used to commit a 3-tile territory and its cooldown. A radius raised to the minimum or cut to the group's limit
   says so (`note`). Every day the server checks each group's held ground
@@ -342,6 +374,16 @@ score).
   playtest 5's herd was claimed at 475 and held 1,941); and, for hunters,
   when prey around it is fewer than half the pack. The drift alert is only
   given while no rally, territory or migration holds the group elsewhere.
+  Every hour the sim counts a territory's starving and parched holders
+  (hunger or thirst at 80): at 15% (`HOLD_LOOSEN_SHARE`) the hold loosens
+  and the whole group forages up to its radius (at least 10 tiles) past the
+  edge, until fewer than 5% are (`HeldPlans::loosened`, snapshot version
+  66); the owner is told both ways. A claim made before a drought or a lean
+  season no longer holds a starving herd on bare ground (playtest 7: a held
+  herd fell from 1,144 to 449 and recovered only once abandoned). Split and
+  merge replies list every group's members and adults as the state counts
+  them, and the lineage's `population`, with a note when animals far from
+  every player live out in aggregate outside any group.
 - **Rally** (`rally_group`, `cancel_rally`): gather a group at a point.
   The circle it gathers in has radius `2 + √members`, about π tiles of
   ground per member, up to 24 tiles (the largest territory's cap, reached

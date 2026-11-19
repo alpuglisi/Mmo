@@ -1020,3 +1020,77 @@ fn a_stalled_migration_says_how_far_it_got_and_bare_alerts_dont_repeat() {
     g.daily_group_checks(&record, &mut out);
     assert_eq!(bare(&g), 1, "said once until it really recovers");
 }
+
+/// Playtest 7: a short trip over bare land warns too, and the sentence
+/// starts with a capital.
+#[test]
+fn a_short_trip_over_bare_land_warns() {
+    let (mut g, _) = game();
+    let home = g.world.group_middle(1, 0).unwrap();
+    let near = land_away(&g, home, 14.0);
+    for t in &mut g.world.map.tiles {
+        t.veg = 0.0;
+    }
+    let d = run(&mut g, ClientMsg::Migrate { x: near.x, y: near.y, group: None }).unwrap();
+    let days = d["journey"]["days"].as_f64().unwrap();
+    assert!(days < JOURNEY_WARN_DAYS as f64, "{d}");
+    assert!(d["journey"]["food_share"].as_f64().unwrap() < JOURNEY_BARE_SHARE as f64, "{d}");
+    let warning = d["warning"].as_str().unwrap_or("");
+    assert!(warning.contains("days on the way") && warning.contains("The land along the way holds about"), "{d}");
+}
+
+/// Playtest 7: a split group far from the view still sees its rivals'
+/// territories (the refusal says they show on the map), and a split's
+/// reply counts every group as the state does.
+#[test]
+fn rival_outlines_follow_each_group_and_splits_count_like_the_state() {
+    let world = build_world(&WorldSettings { seed: 7, width: 128, height: 128, wild: false, ..Default::default() });
+    let mut g = Game::new(world, GameConfig::default());
+    let a = g.found(1, &design("A")).unwrap().founders;
+    g.found(2, &design("B")).unwrap();
+    g.connect(10, 1, "ann");
+    let mine = g.world.group_middle(1, 0).unwrap();
+    // Half of ann's founders walk far off and split.
+    let far = land_away(&g, mine, g.cfg.default_view_radius + 40.0);
+    let half: Vec<OrgId> = a[..3].to_vec();
+    for o in g.world.organisms.iter_mut().filter(|o| half.contains(&o.id)) {
+        o.pos = far;
+    }
+    let d = run(&mut g, ClientMsg::SplitGroup { group: 0, organisms: Some(half) }).unwrap();
+    let groups = d["groups"].as_array().unwrap();
+    let total: u64 = groups.iter().map(|x| x["members"].as_u64().unwrap()).sum();
+    assert_eq!(total, d["population"].as_u64().unwrap(), "{d}");
+    let state_total: usize = g.state_for(10).unwrap().groups.iter().map(|x| x.members).sum();
+    assert_eq!(total as usize, state_total);
+    // Bob claims beside the far group, out of ann's view.
+    let by = g.world.map.clamp(far + Vec2::new(6.0, 0.0));
+    g.world.claim_territory(2, 0, by, 3.0).unwrap();
+    let s = g.state_for(10).unwrap();
+    assert!((s.view.x - by.x).abs() > s.view.radius + 3.0 || (s.view.y - by.y).abs() > s.view.radius + 3.0);
+    assert!(s.territories.iter().any(|t| (t.x - by.x).abs() < 0.01), "{:?}", s.territories);
+}
+
+/// Playtest 7: a far claim's reply rates the circle it will get, and a
+/// starving territory's hold loosens with an alert.
+#[test]
+fn far_claims_rate_the_clamped_circle_and_a_starving_hold_loosens() {
+    let (mut g, _) = game();
+    let home = g.world.group_middle(1, 0).unwrap();
+    let far = land_away(&g, home, evo_sim::world::groups::FAR_CLAIM_TILES + 4.0);
+    let limit = World::territory_radius_limit(g.world.groups(1)[0].adults);
+    let d = run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: far.x, y: far.y, radius: 300.0 }).unwrap();
+    assert_eq!(d["pending"], true, "{d}");
+    assert!((d["radius"].as_f64().unwrap() - limit as f64).abs() < 1e-3, "{d}");
+    assert!(d["note"].as_str().unwrap().contains("radius cut to the group's limit"), "{d}");
+    // A territory at home whose holders all starve.
+    let (mut g, _) = game();
+    g.world.claim_territory(1, 0, home, 4.0).unwrap();
+    for _ in 0..3 * g.world.config.ticks_per_hour().max(1) {
+        for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+            o.needs.hunger = o.needs.hunger.max(90.0);
+        }
+        tick(&mut g);
+    }
+    let texts = alerts(&g, AlertKind::Group);
+    assert!(texts.iter().any(|t| t.contains("the hold is loosened")), "{texts:?}");
+}
