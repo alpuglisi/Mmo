@@ -131,14 +131,15 @@ export function graceText(daysLeft: number | undefined, ticksPerDay: number, spa
   const left = realSecondsLeft !== undefined
     ? `${daysLeft < 10 ? daysLeft.toFixed(1) : Math.round(daysLeft)} days (${realTime(realSecondsLeft * 1000)})`
     : span(daysLeft * ticksPerDay);
-  return `${left} left: other players can't order attacks on your animals, and yours can't be ordered to attack theirs. Other players' animals leave yours alone even when hunting on their own; wild predators still hunt them.`;
+  return `${left} left: other players can't order attacks on your animals, and their animals leave yours alone even when hunting on their own; wild predators still hunt them. Yours may hunt rivals' unprotected animals, but the first such attack ends your grace.`;
 }
 
 /** The founding ramp in words: how much of the share counts toward the ranked season now. */
 export function rampText(ramp: { founded_day: number; weight: number; days: number } | undefined): string | null {
   if (!ramp) return null;
   if (ramp.weight >= 1) return `full: founded on day ${ramp.founded_day + 1}, more than ${ramp.days} days ago`;
-  return `${Math.round(ramp.weight * 100)}% of your share counts toward the ranked season now; it rises to 100% over the ${ramp.days} days after founding (day ${ramp.founded_day + 1})`;
+  // The end day, said as one (playtest 12: "(day 15)" read as the end but was the founding day).
+  return `${Math.round(ramp.weight * 100)}% of your share counts toward the ranked season now; it rises to 100% by day ${ramp.founded_day + ramp.days + 1} (${ramp.days} days after founding on day ${ramp.founded_day + 1})`;
 }
 
 /** What the two leaderboard columns mean (Lineage and Ranks tabs). */

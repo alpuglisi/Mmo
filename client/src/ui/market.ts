@@ -404,7 +404,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     ledgerEl.replaceChildren(
       h('p', { class: 'muted small' }, ledger.totals
         // Every entry since the day counting began (playtest 8: the recent entries alone said "spent in the shop 0").
-        ? `Since day ${ledger.totals.since_day + 1}: earned ${ledger.totals.earned} (royalties ${ledger.totals.royalties}), paid into escrow ${ledger.totals.escrow}, sales ${ledger.totals.sales}, refunds ${ledger.totals.refunds}, spent in the shop ${ledger.totals.shop}.`
+        ? `Since day ${ledger.totals.since_day + 1}: earned ${ledger.totals.earned} (royalties ${ledger.totals.royalties}), paid into escrow ${ledger.totals.escrow}${ledger.totals.escrow_paid ? ` (${ledger.totals.escrow_paid} of it paid out to sellers)` : ''}, sales ${ledger.totals.sales}, refunds ${ledger.totals.refunds}, spent in the shop ${ledger.totals.shop}.`
         : `Recent: earned ${t.earned} (royalties ${t.royalties}), paid into escrow ${t.spent}, sales ${t.sold}, refunds ${t.refunded}, spent in the shop ${t.shop}.`),
       rows.length === 0 ? h('p', { class: 'muted small' }, 'No entries yet.')
         : h('table', { class: 'board ledger' },
@@ -475,6 +475,14 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   // A provision (a sink for small lineages): feeds and waters the neediest adults.
   const provBtn = h('button', { id: 'shop-provision', class: 'secondary' }) as HTMLButtonElement;
   const provNote = h('span', { class: 'muted small' });
+  // A blocked purchase says why when tapped, before its own handler runs.
+  for (const b of [reinBtn, provBtn]) {
+    b.addEventListener('click', (e) => {
+      if (!b.dataset.why) return;
+      e.stopImmediatePropagation();
+      model.toast('info', `${b.id === 'shop-reinforce' ? 'Reinforcements' : 'Provision'}: not now: ${b.dataset.why.replace(/\.$/, '')}.`);
+    }, true);
+  }
   provBtn.addEventListener('click', async () => {
     // Quote from a fresh shop: the lineage may have grown since it was shown (playtest 6: quoted 120, fed 140).
     const fresh = await deps.send({ type: 'renown_shop' });
@@ -596,7 +604,11 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     setText(slotBtn, s.slot_price === undefined ? 'Slot limit reached' : `Extra mating slot: ${s.slot_price} renown`);
     setText(slotNote, `${s.slots_bought} bought this season; the price doubles with each.`);
     const blocked = s.reinforce_blocked;
-    reinBtn.disabled = blocked !== undefined || s.balance < s.reinforce_price;
+    // Blocked: not disabled, so a tap says why (playtest 12: the reason was only in a tooltip, unseen on phones).
+    reinBtn.disabled = blocked === undefined && s.balance < s.reinforce_price;
+    reinBtn.classList.toggle('soft-disabled', blocked !== undefined);
+    reinBtn.setAttribute('aria-disabled', String(blocked !== undefined));
+    reinBtn.dataset.why = blocked ?? '';
     reinBtn.title = blocked ?? `${s.reinforce_size} adults copied from your own join your lineage`;
     // Blocked, the next price would mislead (playtest 7: "600" while the real one was 150).
     setText(reinBtn, blocked ? `Reinforcements (${s.reinforce_size} adults): not now` : `Reinforcements (${s.reinforce_size} adults): ${s.reinforce_price} renown`);
@@ -618,7 +630,10 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     }
     provRow.hidden = s.provision_price === undefined;
     if (s.provision_price !== undefined) {
-      provBtn.disabled = s.provision_blocked !== undefined || s.balance < s.provision_price;
+      provBtn.disabled = s.provision_blocked === undefined && s.balance < s.provision_price;
+      provBtn.classList.toggle('soft-disabled', s.provision_blocked !== undefined);
+      provBtn.setAttribute('aria-disabled', String(s.provision_blocked !== undefined));
+      provBtn.dataset.why = s.provision_blocked ?? '';
       const n = s.provision_size ?? 20;
       provBtn.title = s.provision_blocked ?? `The ${n} neediest adults get 50 off hunger and thirst`;
       setText(provBtn, s.provision_blocked ? 'Provision: not now' : `Provision (${n} adults fed): ${s.provision_price} renown`);
@@ -662,7 +677,10 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
         ...fertile.map((r) => h('li', { 'data-lineage': r.lineage, class: 'good' }, compatRowText(r), r.owner !== 0 ? offerBtn(r) : '')),
         ...sterile.slice(0, 6).map((r) => h('li', { 'data-lineage': r.lineage, class: 'muted' }, compatRowText(r)))),
       h('p', { class: 'muted small compat-confidence', id: 'market-compat-note' }, COMPAT_CONFIDENCE),
-      ...(fertile.length === 0 ? [h('p', { class: 'small' }, 'None of the sampled pairs can breed with yours right now (animals vary, so a rare pair may still conceive).')] : []));
+      // "Mostly sterile" rows still have pairs that conceive (playtest 12: "40% of pairs can conceive" above "None of the sampled pairs can breed").
+      ...(fertile.length === 0 ? [h('p', { class: 'small', id: 'market-compat-none' }, sterile.some((r) => (r.fertile_share ?? 0) > 0)
+        ? 'No lineage is fertile with yours on the whole, but some pairs of the "mostly sterile" ones above can conceive: a mating preview gives a pair\'s exact odds.'
+        : 'None of the sampled pairs can breed with yours right now (animals vary, so a rare pair may still conceive).')] : []));
   }
 
   function render(): void {

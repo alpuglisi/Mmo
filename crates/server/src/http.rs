@@ -642,6 +642,8 @@ async fn metrics(State(app): State<AppState>, World(w): World, headers: HeaderMa
         // Command and save timings too (playtest 11: they rose with a
         // rival's activity and its lineage's size).
         m.apply_ms = Default::default();
+        // State encoding time grows with the connections (playtest 12).
+        m.state_encode_ns = 0;
         (m.save_capture_ms, m.save_encode_ms, m.save_write_ms, m.save_bytes) = (0.0, 0.0, 0.0, 0);
         m.hashing = crate::metrics::HashStats {
             concurrency: m.hashing.concurrency,

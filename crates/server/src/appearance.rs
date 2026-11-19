@@ -289,13 +289,7 @@ impl Appearance {
         } else {
             3
         };
-        let diet = if t.carnivory < 0.34 {
-            Diet::Herbivore
-        } else if t.carnivory < 0.67 {
-            Diet::Omnivore
-        } else {
-            Diet::Carnivore
-        };
+        let diet = diet_of(t.carnivory);
         let locomotion = if t.body.can_fly {
             Locomotion::Fly
         } else if t.body.can_glide {
@@ -415,12 +409,42 @@ impl Appearance {
     }
 }
 
+/// The diet class of a carnivory (below 0.34 herbivore, below 0.67
+/// omnivore): the sprites' and the species list's one rule.
+fn diet_of(carnivory: f32) -> Diet {
+    if carnivory < 0.34 {
+        Diet::Herbivore
+    } else if carnivory < 0.67 {
+        Diet::Omnivore
+    } else {
+        Diet::Carnivore
+    }
+}
+
+/// [`diet_of`] in words, for a species' label.
+pub fn diet_band(carnivory: f32) -> &'static str {
+    match diet_of(carnivory) {
+        Diet::Herbivore => "herbivore",
+        Diet::Omnivore => "omnivore",
+        Diet::Carnivore => "carnivore",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use evo_sim::genome::Genome;
     use evo_sim::math::Vec2;
     use evo_sim::organism::Sex;
+
+    /// Playtest 12: a species of mean carnivory 0.34 (coarsened to 0.25 in
+    /// the list) read "herbivore"; its band comes from the exact mean.
+    #[test]
+    fn the_diet_band_follows_the_exact_mean() {
+        assert_eq!(diet_band(0.33), "herbivore");
+        assert_eq!(diet_band(0.341), "omnivore");
+        assert_eq!(diet_band(0.7), "carnivore");
+    }
 
     fn org(set: &[(Gene, f32)]) -> Organism {
         let mut v = [0.2; Gene::COUNT];

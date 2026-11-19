@@ -210,6 +210,9 @@ export interface OfferView {
   lost?: string;
   /** A pending offer: about how far apart the two animals are (8-tile steps). */
   apart?: number;
+  /** The two animals' ages while the offer is open (the partner's absent for an offer to the lineage). */
+  mine_age?: AnimalAge;
+  partner_age?: AnimalAge;
   /** Why an accepted agreement's meeting point isn't the usual one. */
   meet_note?: string;
   /** A long lone walk for the requester's animal: what to watch for. */
@@ -391,7 +394,7 @@ export interface NearbyOrganism {
   matured: boolean;
   /** Visible body plan, for the sprite (absent from older servers). */
   look?: Appearance;
-  /** Its lineage is a newcomer under its grace: no other player's animal may attack it, nor it theirs. */
+  /** Its lineage is a newcomer under its grace: no other player's animal may attack it (its own may hunt rivals' unprotected animals; the first such attack ends the grace). */
   protected?: true;
   /** Down in its burrow: attack orders are refused and hunters mostly can't reach it. */
   burrowed?: true;
@@ -489,7 +492,7 @@ export interface StateView {
   balance?: number;
   /** Renown of yours held in escrow on open agreements. */
   escrow?: number;
-  /** Your lineage's newcomer grace while it lasts (absent once over): other players can't attack it, and it can't attack theirs. */
+  /** Your lineage's newcomer grace while it lasts (absent once over): other players can't attack it; its own first attack on a rival's animal ends it (graced hunting). */
   grace?: GraceView | null;
   /** Lineages your animals have learned are poisonous: theirs "look poisonous to you". */
   poisonous?: number[];
@@ -526,6 +529,14 @@ export interface ResultMsg {
   ok: boolean;
   error?: ErrorInfo;
   data?: unknown;
+}
+
+/** An offered animal's age against its lifespan. */
+export interface AnimalAge {
+  age_days: number;
+  lifespan_days: number;
+  /** Past 90% of its lifespan: it may die of old age before they meet. */
+  aging?: boolean;
 }
 
 export interface MatingRequestMsg {
@@ -666,6 +677,8 @@ export interface LedgerTotals {
   earned: number;
   royalties: number;
   escrow: number;
+  /** Of that, paid out to sellers. */
+  escrow_paid?: number;
   sales: number;
   refunds: number;
   shop: number;
@@ -1414,6 +1427,8 @@ export interface SpeciesView {
   extinct_day?: number;
   /** Gone because its owner retired its main lineage (that day), not extinct. */
   retired_day?: number;
+  /** Diet band from the exact mean carnivory ('herbivore' | 'omnivore' | 'carnivore'); `carnivory` is coarse for a player's species. */
+  diet?: string;
   merged_into?: number;
   /** The name of the species it merged into. */
   merged_into_name?: string;
@@ -1502,7 +1517,20 @@ export interface SpeciesList {
   samples: number;
   alive: number;
   species: SpeciesView[];
+  /** Species gone with the player lineages that made them (retired or died out), left out of `species`. */
+  ended?: EndedSpecies[];
   founded: FoundedCount[];
+}
+
+export interface EndedSpecies {
+  id: number;
+  name: string;
+  owner: PlayerId;
+  owner_name: string;
+  founded_day: number;
+  extinct_day: number;
+  /** Its main lineage was retired that day (rather than dying out). */
+  retired_day?: number;
 }
 
 export interface EraRow {

@@ -150,6 +150,29 @@ async function main() {
       return s && s.lineage !== null && s.population > 0 ? s : null;
     });
     step(`founded lineage #${first.lineage} with ${first.population} organisms`);
+    // Where the founders landed: toasted on the map exactly once (playtest 11: 2–3 times; playtest 12: none).
+    const landing = await page.evaluate(() => new Promise((res) => {
+      let seen = 0, most = 0, inModel = 0;
+      const t0 = Date.now();
+      const tick = () => {
+        const n = [...document.querySelectorAll('#toasts .toast')].filter((x) => /landed around/.test(x.textContent)).length;
+        if (n > 0) seen += 1;
+        most = Math.max(most, n);
+        inModel = Math.max(inModel, window.evo.model.toasts.filter((x) => /landed around/.test(x.text)).length);
+        if (Date.now() - t0 < 6000) setTimeout(tick, 150);
+        else res({ seen, most, inModel });
+      };
+      tick();
+    }));
+    check(landing.seen > 0 && landing.most === 1 && landing.inModel === 1, 'the landing text should be toasted on the map exactly once', landing);
+    step('the landing text is toasted on the map exactly once');
+    // Nothing of the died-out notices hides in the page while the lineage lives (playtests 11 and 12).
+    const leftover = await page.evaluate(() => {
+      const text = document.body.textContent ?? '';
+      return ['Start a new lineage', 'has died out', 'died out: start'].filter((w) => text.includes(w));
+    });
+    check(leftover.length === 0, 'no hidden died-out notice text in the page while the lineage lives', leftover);
+    step('no hidden died-out notice text in the page while the lineage lives');
 
     // A second lineage while this one lives: refused.
     const again = await api(page, 'POST', '/api/lineage', { name: 'Too soon', thermo: 'warm', birth: 'live', litter_size: 2, traits: {} });
