@@ -156,7 +156,8 @@ async fn worlds_are_listed_and_chosen_per_request() {
     assert_eq!(worlds.iter().map(|w| w["id"].as_str().unwrap()).collect::<Vec<_>>(), ["main", "isle"]);
     assert_eq!(worlds[1]["name"], "The Isle");
     assert_eq!((worlds[0]["width"].as_u64(), worlds[1]["width"].as_u64()), (Some(64), Some(48)));
-    assert_eq!(worlds[1]["players_online"], 0);
+    // Players online only for a logged-in caller (playtest 9).
+    assert!(worlds[1].get("players_online").is_none(), "{list}");
 
     // No world named: the default; each world answers for itself.
     assert_eq!(get(srv.addr, "/api/world").await["width"], 64);
@@ -190,7 +191,8 @@ async fn worlds_are_listed_and_chosen_per_request() {
         (Some("isle"), Some(1), Some(1))
     );
     assert_eq!((main["world"].as_str(), main["conns"].as_u64()), (Some("main"), Some(0)));
-    assert_eq!(get(srv.addr, "/api/worlds").await["worlds"][1]["players_online"], 1);
+    let listed = json_req(srv.addr, Method::GET, "/api/worlds", Some(&token), None).await.1;
+    assert_eq!(listed["worlds"][1]["players_online"], 1);
     drop(sock);
     srv.shutdown().await;
 }

@@ -1199,12 +1199,14 @@ fn market_key(sort: MarketSort, l: &Listing, preview: Option<&MatingPreviewView>
     (key, newest)
 }
 
-/// Tiles in the cells listings report positions in ([`coarse`]).
-const LISTING_CELL: f32 = 16.0;
+/// Tiles in the regions listings report positions in, and to which the
+/// distance to an unseen listed partner is rounded ([`coarse_in`]): open to
+/// every player, a 16-tile cell found a listed herd (playtest 9).
+const LISTING_REGION: f32 = 32.0;
 
-/// A coordinate as the center of its [`LISTING_CELL`] cell.
-fn coarse(v: f32) -> f32 {
-    (v / LISTING_CELL).floor() * LISTING_CELL + LISTING_CELL / 2.0
+/// A coordinate as the center of its `cell`-tile cell.
+fn coarse_in(v: f32, cell: f32) -> f32 {
+    (v / cell).floor() * cell + cell / 2.0
 }
 
 fn finite(v: &[f32]) -> Result<(), ErrorInfo> {
@@ -2395,7 +2397,14 @@ impl Game {
                             if let Some(d) = f.destination {
                                 data["journey"]["destination_food_share"] = r2(d).into();
                             }
-                            data["journey"]["others_on_the_way"] = f.others.into();
+                            // A band, not a count: a route drawn anywhere
+                            // counted the animals along it (playtest 9).
+                            let band = match f.others {
+                                0..20 => "few",
+                                20..100 => "some",
+                                _ => "many",
+                            };
+                            data["journey"]["others_on_the_way"] = band.into();
                         }
                     }
                 }
@@ -3111,7 +3120,7 @@ impl Game {
             }
         }
         if a.sex == b.sex {
-            return Err(e(CommandError::SameSex));
+            return Err(self.same_sex(player, partner));
         }
         if a.sex == Sex::Female && a.pregnancy.is_some() {
             return Err(e(CommandError::AlreadyPregnant));
@@ -3587,10 +3596,10 @@ impl Game {
             offspring_raised: o.offspring_raised,
             age_days: o.age_days(tpd),
             health: o.health,
-            // The region (16 tiles) it is in, not its live position: a
+            // The region (32 tiles) it is in, not its live position: a
             // predator player could otherwise hunt listed animals down.
-            x: coarse(o.pos.x),
-            y: coarse(o.pos.y),
+            x: coarse_in(o.pos.x, LISTING_REGION),
+            y: coarse_in(o.pos.y, LISTING_REGION),
             traits: LISTING_TRAITS.iter().map(|&g| TraitView { gene: gene_key(g), value: o.pheno[g] }).collect(),
             preview,
             compatible: None,
@@ -4032,6 +4041,20 @@ impl Game {
         .with_detail(serde_json::json!({ "organism": partner })))
     }
 
+    /// A same-sex pair's refusal: `same_sex` where the partner's sex is
+    /// already shown to the player (theirs, in their view, or on the
+    /// market), else the generic `partner_unavailable` (playtest 9: naming
+    /// a rival's animal beyond the view, within the naming margin, told its
+    /// sex).
+    fn same_sex(&self, player: PlayerId, partner: OrgId) -> ErrorInfo {
+        let shown = self.world.organism(partner).is_some_and(|b| b.owner == player || self.in_sight(player, b.pos))
+            || self.economy.listings.values().any(|l| l.organism == partner);
+        if shown {
+            return ErrorInfo::from(&CommandError::SameSex);
+        }
+        ErrorInfo::new("partner_unavailable", format!("#{partner} can't mate with that animal now"))
+    }
+
     /// What a request for `mine` × `partner` would give; see
     /// [`ClientMsg::PreviewMating`].
     fn preview_mating(&self, player: PlayerId, mine: OrgId, partner: OrgId) -> Result<MatingPreviewView, ErrorInfo> {
@@ -4049,7 +4072,10 @@ impl Game {
                 return Err(e(CommandError::NotMature(id)));
             }
         }
-        let p = self.world.mating_preview(mine, partner).map_err(e)?;
+        let p = self.world.mating_preview(mine, partner).map_err(|err| match err {
+            CommandError::SameSex => self.same_sex(player, partner),
+            err => e(err),
+        })?;
         // Exact numbers only for one's own pair: with a few of one's own
         // animals (whose genes the Genes tab shows) the exact gaps and
         // fertilities against one rival animal solved its body plan
@@ -4069,7 +4095,7 @@ impl Game {
             failure_chance: r(p.failure_chance),
             // Exact only for a partner the player can see: distances to
             // hidden organisms would locate them (rounded up to 16 tiles).
-            distance: if partner_seen { p.distance } else { (p.distance / LISTING_CELL).ceil() * LISTING_CELL },
+            distance: if partner_seen { p.distance } else { (p.distance / LISTING_REGION).ceil() * LISTING_REGION },
             meeting_distance: MEETING_DISTANCE,
             problem: incompatibility(&p),
         })
@@ -12198,6 +12224,32 @@ mod tests {
         assert!(!g.state_for(10).unwrap().view.pinned, "found unpins");
     }
 
+    /// Playtest 9: a same-sex pair with a rival's animal beyond the view
+    /// (named within the naming margin) doesn't tell its sex.
+    #[test]
+    fn same_sex_is_told_only_where_the_sex_is_shown() {
+        let (mut g, a, b) = game();
+        let here = Vec2::new(12.0, 32.0);
+        let reach =
+            (g.world.organisms.iter()).filter(|o| o.alive && o.owner == 1).map(|o| g.sight(o)).fold(0.0f32, f32::max)
+                + VIEW_MARGIN;
+        for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+            (o.pos, o.matured) = (here, true);
+        }
+        let mine = a[0];
+        let sex = g.world.organism(mine).unwrap().sex;
+        let rival = *b.iter().find(|&&id| g.world.organism(id).unwrap().sex == sex).expect("a rival of the same sex");
+        let i = g.world.organism_index(rival).unwrap();
+        g.world.organisms[i].matured = true;
+        // Beyond the view, within the naming margin: no sex told.
+        g.world.organisms[i].pos = here + Vec2::new(reach + 4.0, 0.0);
+        assert!(!g.in_sight(1, g.world.organisms[i].pos));
+        assert_eq!(g.preview_mating(1, mine, rival).unwrap_err().code, "partner_unavailable");
+        // In view, where its sex is shown anyway: `same_sex`.
+        g.world.organisms[i].pos = here + Vec2::new(2.0, 0.0);
+        assert_eq!(g.preview_mating(1, mine, rival).unwrap_err().code, "same_sex");
+    }
+
     /// Playtest 9: a pinned view follows sight every tick (dropped once the
     /// animals have left), and the default view centres on the largest group,
     /// not the mean of two groups far apart.
@@ -12289,21 +12341,21 @@ mod tests {
         let edge = g.command(10, 1, Some(2), ClientMsg::SetView { x: 4.5 + 30.0, y: 4.5, radius: 32.0 });
         assert_eq!(result(&edge).1, Some("out_of_sight".into()));
         assert!(!g.in_sight(1, Vec2::new(4.5 + sight + VIEW_MARGIN + 1.0, 4.5)));
-        // A listing gives the 16-tile region, not the live position.
+        // A listing gives the 32-tile region, not the live position.
         let dam = female(&g, &a);
         let i = g.world.organism_index(dam).unwrap();
         g.world.organisms[i].pos = Vec2::new(3.3, 13.7);
         let out = g.command(10, 1, Some(3), ClientMsg::CreateListing { organism: dam, fee: 5, expires_days: None });
         let l = &reply_data(&out)["listing"];
-        assert_eq!((l["x"].as_f64(), l["y"].as_f64()), (Some(8.0), Some(8.0)));
+        assert_eq!((l["x"].as_f64(), l["y"].as_f64()), (Some(16.0), Some(16.0)));
         // A preview needs the partner in sight, on the market or in an
-        // offer; the distance to one out of sight is rounded up to 16 tiles.
+        // offer; the distance to one out of sight is rounded up to 32 tiles.
         let stud = male(&g, &b);
         assert_eq!(g.preview_mating(1, dam, stud).unwrap_err().code, "out_of_sight");
         let out = g.command(20, 2, Some(9), ClientMsg::CreateListing { organism: stud, fee: 5, expires_days: None });
         assert!(result(&out).0, "{out:?}");
         let p = g.preview_mating(1, dam, stud).unwrap();
-        assert_eq!(p.distance % 16.0, 0.0, "{}", p.distance);
+        assert_eq!(p.distance % 32.0, 0.0, "{}", p.distance);
         let tenths = |x: f32| ((x * 10.0).round() - x * 10.0).abs() < 1e-4;
         assert!(p.body_plan_gaps.iter().all(|g| tenths(g.gap)), "{:?}", p.body_plan_gaps);
         assert!([p.fertility, p.mismatch, p.failure_chance, p.distance_fertility].iter().all(|&x| tenths(x)), "{p:?}");

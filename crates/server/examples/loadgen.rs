@@ -245,13 +245,25 @@ fn parse_args() -> Result<Args, String> {
 struct Http {
     base: String,
     client: Client<HttpConnector, Full<Bytes>>,
+    /// A player's token for `GET` reads: `/api/metrics` counts connections,
+    /// commands and pushes only for a logged-in caller (playtest 9).
+    reader: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl Http {
     fn new(base: &str) -> Self {
         let mut conn = HttpConnector::new();
         conn.set_nodelay(true);
-        Self { base: base.to_string(), client: Client::builder(TokioExecutor::new()).build(conn) }
+        Self {
+            base: base.to_string(),
+            client: Client::builder(TokioExecutor::new()).build(conn),
+            reader: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    /// Reads from now on as this player, unless one already does.
+    fn read_as(&self, token: &str) {
+        self.reader.lock().unwrap().get_or_insert_with(|| token.to_string());
     }
 
     async fn call(
@@ -279,7 +291,8 @@ impl Http {
     }
 
     async fn get<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Option<T> {
-        let (s, v) = self.call(Method::GET, path, None, None).await.ok()?;
+        let token = self.reader.lock().unwrap().clone();
+        let (s, v) = self.call(Method::GET, path, token.as_deref(), None).await.ok()?;
         (s == 200).then(|| serde_json::from_value(v).ok()).flatten()
     }
 }
@@ -958,6 +971,7 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
         st.setup_failed.fetch_add(1, Ordering::Relaxed);
         return;
     };
+    ctx.http.read_as(&token);
     let found = in_world("/api/lineage", world);
     match ctx.http.call(Method::POST, &found, Some(&token), Some(design(i, ctx.args.founders, &mut rng))).await {
         Ok((201, _)) | Ok((409, _)) => {

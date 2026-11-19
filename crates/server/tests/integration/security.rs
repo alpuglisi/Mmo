@@ -228,20 +228,24 @@ async fn password_hashing_is_bounded_and_a_burst_gets_busy() {
         assert!(body["retry_after_ms"].as_u64().is_some_and(|ms| (250..=5000).contains(&ms)), "{body}");
         assert!(retry.is_some(), "Retry-After header");
     }
-    let metrics = |path: &'static str| async move {
-        let (s, b) = req(addr, Method::GET, path, None, Vec::new()).await;
-        assert_eq!(s, StatusCode::OK);
-        serde_json::from_slice::<Value>(&b).unwrap()["hashing"].clone()
+    // A retry after the burst works (hash counts need a login: playtest 9).
+    let token = register(addr, "after").await;
+    let metrics = |path: &'static str| {
+        let token = token.clone();
+        async move {
+            let (s, b) = req(addr, Method::GET, path, Some(&token), Vec::new()).await;
+            assert_eq!(s, StatusCode::OK);
+            serde_json::from_slice::<Value>(&b).unwrap()["hashing"].clone()
+        }
     };
     let h = metrics("/api/metrics").await;
     assert_eq!((h["concurrency"].as_u64(), h["queue"].as_u64()), (Some(1), Some(1)), "{h}");
     assert_eq!(h["peak_in_flight"], 1, "{h}");
     assert_eq!(h["rejected"].as_u64(), Some(busy.len() as u64), "{h}");
-    assert_eq!(h["hashes"].as_u64(), Some(created as u64), "{h}");
+    assert_eq!(h["hashes"].as_u64(), Some(created as u64 + 1), "{h}");
     assert_eq!((h["in_flight"].as_u64(), h["waiting"].as_u64()), (Some(0), Some(0)), "{h}");
 
-    // A retry after the burst works, and the token then never hashes.
-    let token = register(addr, "after").await;
+    // The token then never hashes.
     let hashes = metrics("/api/metrics").await["hashes"].as_u64().unwrap();
     let (s, _) = req(addr, Method::GET, "/api/lineage/stats", Some(&token), Vec::new()).await;
     assert_ne!(s, StatusCode::UNAUTHORIZED);

@@ -52,8 +52,10 @@ export function pickWorld(list: WorldList, wanted: string | null): string {
 
 /** One line about a world for the picker. */
 export function describeWorld(w: WorldListing): string {
+  const base = `${w.width}×${w.height}, day ${w.day} (${w.season}), ${w.population.toLocaleString('en')} organisms`;
+  if (w.players_online === undefined) return base;
   const online = w.players_online === 1 ? '1 player online' : `${w.players_online} players online`;
-  return `${w.width}×${w.height}, day ${w.day} (${w.season}), ${w.population.toLocaleString('en')} organisms, ${online}`;
+  return `${base}, ${online}`;
 }
 
 export function loadMemory(): WorldMemory {

@@ -213,3 +213,17 @@ The staff-word check now works per word instead of on substrings:
 | Account look-alikes with a prefix or suffix ("8Rulebender", "Herdmaster8x"). | Names that match once every digit is dropped are look-alikes, for any kind of name. A new account that holds another account's letters with at most 2 more (at least 5 letters) is also a look-alike. | `titles_naming_another_player_are_look_alikes` |
 
 A random id with digits around a staff word ("8mod2") is now refused, the same as "2claude2". The e2e names have been letter-only since the previous follow-up.
+
+## Round 10 (playtest 9)
+
+| Finding | Fix | Test |
+|---|---|---|
+| High 5: a pinned view kept watching after the animals left or died (`set_view` was checked only when pinned). The default view centred on the mean of all animals, which could fall between groups. | `Game::recheck_views` runs every tick (`after_tick`). A pinned view narrows to what the player can still see, and is dropped once none of their animals (nor their largest group) sees its centre. The lineage centre (the default view and its 8-tile sight margin) is now the largest group's: the mean of the animals in the 3×3 block of 16-tile cells holding the most of them. | `a_pinned_view_is_dropped_once_the_animals_leave`; `rival_outlines_follow_each_group…` now moves 2 of 6 founders away (3 of 6 tied the two groups) |
+| Medium 8: lineage, species and nameplate names holding a player's name ("Herdmaster9x", "The Herdmaster9", "Herdmaster9 herd", "Herdmaster9 II", "Real Herdmaster"). Accounts "TheHerdmaster9" and "Herdmaster9fan". | `names::impersonates` refuses, for every kind, a name holding another player's account letters (at least 5, digits dropped). | look-alike table in `titles_naming_another_player_are_look_alikes` |
+| Near copies of rival and wild names ("Ironjaws", "Emberwool Drovers", "Steppe Antelope herd", "Red fox pack"). | `names::copies` adds group words (herd, pack, drove, flock, …, of) to the decorations, and reads an agent "-er" as the word ("drovers" → "drove"). | `copies_with_decorations_are_copies` |
+| Name checks ran before "already founded": a free probe of rivals' and wild names. | `found` answers `already_founded` first. | `wild_species_names_are_refused` |
+| Medium 14: `/api/metrics` showed anonymous callers connections opened and closed, login hash counts and world-wide `applied`. | Without a login, every count of players or their activity reads 0: sockets, commands, pushes, messages, bytes and hashes. Timings and saves stay public. loadgen reads metrics as one of its players. | integration `server.rs`, `security.rs` |
+| `/api/worlds` showed players online without a login. | `players_online` is left out for anonymous callers (optional in the protocol; the world picker omits it). `/api/assign` is unchanged, for the lobby. | integration `worlds.rs`, `push.rs`; vitest `worldChoice` |
+| `same_sex` told a rival animal's sex when it was named beyond the view, within the naming margin. | `same_sex` only where the partner's sex is already shown (own, in sight, or listed); otherwise `partner_unavailable`. Ownership and visibility are still checked first. | `same_sex_is_told_only_where_the_sex_is_shown` |
+| Listings showed a herd's position to a 16-tile cell. | 32-tile regions. The distance to an unseen listed partner is rounded to 32 tiles. Offers between the two parties keep their 8-tile cells. | info-leak test |
+| The migrate reply's `others_on_the_way` worked as a radar. | A band: "few" (< 20), "some" (< 100), "many". | — |

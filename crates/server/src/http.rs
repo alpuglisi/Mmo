@@ -617,8 +617,19 @@ async fn metrics(State(app): State<AppState>, World(w): World, headers: HeaderMa
     // Logged out: no connection or player counts and no per-command counts
     // (playtest 7: a hunter watched rivals log off here). Timings, saves and
     // traffic stay public.
+    // Nor, since playtest 9, anything else that counts players or their
+    // activity: sockets opened and closed, password hashes (logins), commands
+    // applied, state pushes and messages (one per connection).
     if authed(&app, &headers).is_err() {
-        (m.conns, m.players_online) = (0, 0);
+        (m.conns, m.players_online, m.delta_conns, m.dropped_conns) = (0, 0, 0, 0);
+        (m.ws_opened, m.ws_closed, m.applied) = (0, 0, 0);
+        (m.state_pushes, m.states_out, m.keyframes_out, m.msgs_out) = (0, 0, 0, 0);
+        (m.bytes_out, m.state_bytes) = (0, 0);
+        m.hashing = crate::metrics::HashStats {
+            concurrency: m.hashing.concurrency,
+            queue: m.hashing.queue,
+            ..Default::default()
+        };
     }
     // World-wide per-command counts only for an operator (`EVO_ADMIN_TOKEN`
     // in the `x-admin-token` header): a rival watched them to see a hunt
@@ -636,9 +647,11 @@ fn is_admin(headers: &HeaderMap) -> bool {
     !want.is_empty() && headers.get("x-admin-token").and_then(|v| v.to_str().ok()) == Some(want.as_str())
 }
 
-/// `GET /api/worlds`: every hosted world with its clock, population and
-/// players online (no login needed: the start screen picks from it).
-async fn world_list(State(app): State<AppState>) -> Json<WorldList> {
+/// `GET /api/worlds`: every hosted world with its clock and population
+/// (no login needed: the start screen picks from it), and players online
+/// for a logged-in caller.
+async fn world_list(State(app): State<AppState>, headers: HeaderMap) -> Json<WorldList> {
+    let logged_in = authed(&app, &headers).is_ok();
     let worlds = app
         .worlds
         .iter()
@@ -654,7 +667,7 @@ async fn world_list(State(app): State<AppState>) -> Json<WorldList> {
                 season: s.clock.season,
                 population: s.organisms,
                 lineages: s.lineages,
-                players_online: w.metrics.lock().unwrap().players,
+                players_online: logged_in.then(|| w.metrics.lock().unwrap().players),
             }
         })
         .collect();

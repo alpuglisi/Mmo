@@ -383,6 +383,11 @@ async fn metrics_count_ticks_connections_and_traffic() {
     // Connection counts need a login (playtest 7); timings are public.
     let (_, anon) = json_req(addr, Method::GET, "/api/metrics", None, None).await;
     assert_eq!((anon["conns"].as_u64(), anon["players_online"].as_u64()), (Some(0), Some(0)), "{anon}");
+    // Nor sockets, commands or pushes (playtest 9).
+    for k in ["ws_opened", "applied", "state_pushes", "msgs_out"] {
+        assert_eq!(anon[k], 0, "{k}: {anon}");
+    }
+    assert_eq!(anon["hashing"]["hashes"], 0, "{anon}");
     let (s, m) = json_req(addr, Method::GET, "/api/metrics", Some(&token), None).await;
     assert_eq!(s, StatusCode::OK, "{m}");
     assert_eq!(m["ticks"], 3);
@@ -609,7 +614,7 @@ async fn delta_states_match_json_states_and_resync() {
     assert!(moved);
     assert!(kinds.contains(&DELTA), "{kinds:?}");
     assert_eq!(kinds.iter().filter(|&&k| k == KEYFRAME).count(), 1, "one keyframe, after the resync: {kinds:?}");
-    let (_, m) = json_req(addr, Method::GET, "/api/metrics", None, None).await;
+    let (_, m) = json_req(addr, Method::GET, "/api/metrics", Some(token), None).await;
     assert_eq!(m["resyncs"], 1, "{m}");
     assert_eq!(m["delta_conns"], 1, "{m}");
     assert!(m["keyframes_out"].as_u64().unwrap() >= 2, "{m}");
