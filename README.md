@@ -2027,8 +2027,11 @@ minutes, every purchase failed when the buyer's animal died):
 - `preview_mating`'s `cost` and listings' `body_plan_fertility` are
   rounded to tenths for others' animals.
 - `/api/metrics` per-command counts only for an operator
-  (`EVO_ADMIN_TOKEN` in `x-admin-token`); `/api/assign?name=` tells
-  neither whether the account exists nor that a lineage was found.
+  (`EVO_ADMIN_TOKEN` in `x-admin-token`); `/api/assign?name=` tells an
+  anonymous caller neither whether the account exists nor that a lineage
+  was found (a logged-in caller, or `evo-lobby` holding the same token,
+  is told, so the lobby still routes a player to their lineage's server;
+  its own public answer says no more).
 
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.

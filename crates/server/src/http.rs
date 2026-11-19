@@ -695,7 +695,11 @@ async fn assign(
     };
     let w = &app.worlds[i];
     // By name, the reason doesn't say a lineage was found either.
-    let reason = if bearer(&headers).is_none() && reason == crate::worlds::AssignReason::Lineage {
+    // A logged-in caller, or a lobby holding the operator token
+    // (`EVO_ADMIN_TOKEN`), learns whether the account and a lineage exist;
+    // anyone else doesn't (playtest 8: account enumeration by `?name=`).
+    let trusted = bearer(&headers).is_some() || is_admin(&headers);
+    let reason = if !trusted && reason == crate::worlds::AssignReason::Lineage {
         crate::worlds::AssignReason::Fill
     } else {
         reason
@@ -708,7 +712,7 @@ async fn assign(
         capacity: loads[i].capacity,
         // Only a logged-in caller learns it (playtest 8: `?name=` told anyone
         // whether an account existed).
-        has_account: player.is_some() && bearer(&headers).is_some(),
+        has_account: player.is_some() && trusted,
     }))
 }
 
