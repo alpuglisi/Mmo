@@ -219,6 +219,29 @@ impl Game {
         }
     }
 
+    /// The shop as `player` sees it, remembering its prices that move with
+    /// the head count (survey, restore pasture) so a purchase within
+    /// [`QUOTE_SECONDS`] pays no more than quoted (playtest 9: quoted 1,169,
+    /// charged 1,147, or the other way).
+    pub(super) fn quote_shop(&mut self, player: PlayerId) -> ShopView {
+        let view = self.shop_view(player);
+        self.shop_quotes.insert(
+            player,
+            ShopQuote { tick: self.world.tick(), survey: view.survey_price, restore: view.restore_price },
+        );
+        view
+    }
+
+    /// `now`, or the quoted price if lower and quoted within
+    /// [`QUOTE_SECONDS`].
+    fn quoted(&self, player: PlayerId, now: u64, which: impl Fn(&ShopQuote) -> u64) -> u64 {
+        let ticks = (QUOTE_SECONDS * 1000.0 / self.cfg.tick_ms.max(1.0)).ceil() as u64;
+        self.shop_quotes
+            .get(&player)
+            .filter(|q| self.world.tick().saturating_sub(q.tick) <= ticks)
+            .map_or(now, |q| now.min(which(q)))
+    }
+
     /// Purchases in `days` within the last ranked season's length.
     fn recent_count(&self, days: Option<&Vec<u64>>) -> u32 {
         let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
@@ -333,7 +356,8 @@ impl Game {
         let Some(at) = self.world.group_middle(player, 0) else {
             return Err(ErrorInfo::new("no_lineage", "your main group has no animals"));
         };
-        let price = economy::restore_price(self.owner_population(player), self.restores_bought(player));
+        let now = economy::restore_price(self.owner_population(player), self.restores_bought(player));
+        let price = self.quoted(player, now, |q| q.restore);
         self.spend(
             player,
             price,
@@ -364,7 +388,7 @@ impl Game {
         let Some(from) = from else {
             return Err(ErrorInfo::new("no_lineage", "none of your groups has animals to survey from"));
         };
-        let price = economy::survey_price(self.owner_population(player));
+        let price = self.quoted(player, economy::survey_price(self.owner_population(player)), |q| q.survey);
         let coarse = |v: f32| (v / 8.0).floor() * 8.0 + 4.0;
         let mut groups = Vec::new();
         let rivals: Vec<PlayerId> = self.names.keys().copied().filter(|&p| p != player && p != WILD).collect();
@@ -624,13 +648,19 @@ impl Game {
         if bought >= economy::MAX_REINFORCEMENTS_PER_SEASON {
             return Err(ErrorInfo::new(
                 "limit_reached",
+                // The wait, not a day number (playtest 9: "day 549" beside
+                // `reinforce_next_day` 548 read as off by one); and the size
+                // limit that also applies.
                 format!(
-                    "at most {} reinforcements within a ranked season's length ({} days; retired lineages count){}",
+                    "at most {} reinforcements within a ranked season's length ({} days; retired lineages count), and \
+                     only for lineages of at most {} animals{}",
                     economy::MAX_REINFORCEMENTS_PER_SEASON,
                     self.cfg.season_days,
+                    self.reinforce_max_alive(),
                     self.reinforce_next(player).map_or(String::new(), |(d, m)| format!(
-                        ": the next is possible on day {} (about {m} real minutes)",
-                        d + 1
+                        ": the next is possible in {} game day{} (about {m} real minutes)",
+                        d.saturating_sub(self.world.day()),
+                        if d.saturating_sub(self.world.day()) == 1 { "" } else { "s" }
                     ))
                 ),
             ));
@@ -1013,4 +1043,15 @@ pub(super) struct ReinforceSite {
     pub at: [f32; 2],
     pub nearby_count: usize,
     pub group: u8,
+}
+
+/// Real seconds a shop price quoted to a player holds (`Game::quote_shop`).
+pub const QUOTE_SECONDS: f64 = 10.0;
+
+/// The head-count prices last shown to a player (`Game::quote_shop`).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ShopQuote {
+    pub tick: u64,
+    pub survey: u64,
+    pub restore: u64,
 }

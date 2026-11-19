@@ -156,7 +156,7 @@ export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, 
             h('tbody', {}, ...e.rows.slice(0, 8).map((r) => h('tr', { class: r.player === me ? 'me' : '' },
               h('td', {}, r.player === 0 ? '—' : String(e.rows.filter((x) => x.player !== 0).indexOf(r) + 1)), h('td', {}, swatch(r.player, me), h('span', { class: 'who', title: r.name }, r.name)),
               byMean(e) ? h('td', {}, pct(r.mean_share ?? 0)) : null, h('td', {}, pct(r.share)), h('td', {}, pct(r.weighted_share)))))),
-          e.niches.length > 0 && h('p', { class: 'muted small' }, 'Niche leaders: ',
+          e.niches.length > 0 && h('p', { class: 'muted small' }, 'Niche prizes (25% or more of a niche): ',
             e.niches.map((n) => `${nicheLabel(n.niche)} ${n.name} ${pct(n.share, 0)}`).join(' · ')));
       })),
     h('h3', {}, `Species (${species.alive} living)`),
