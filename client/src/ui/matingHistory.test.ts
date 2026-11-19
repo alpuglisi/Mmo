@@ -43,6 +43,8 @@ describe('escort and lineage offers', () => {
     expect(meetText({ from_player: 1, meet: { ...meet, asleep: true } }, 1)).toContain('One of them is asleep');
     expect(meetText({ from_player: 1, meet: { ...meet, meet_x: 32, meet_y: 4, possessed: true } }, 1))
       .toContain('meet near 32, 4 (E of yours). One is possessed');
+    // The meeting point on the seller's animal: "at your animal", not a direction (atan2(0, 0)).
+    expect(meetText({ from_player: 1, meet: { ...meet, meet_x: 60, meet_y: 4 } }, 2)).toContain('meet near 60, 4 (at your animal)');
     expect(meetText({ from_player: 1 }, 1)).toBeNull();
   });
   it("names an offer to a lineage as the owner's pick, never #0", () => {

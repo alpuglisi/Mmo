@@ -845,7 +845,7 @@ impl World {
         }
     }
 
-    fn attack(&mut self, i: usize, j: usize, rng: &mut SimRng) {
+    pub(super) fn attack(&mut self, i: usize, j: usize, rng: &mut SimRng) {
         let (a, b) = (&self.organisms[i], &self.organisms[j]);
         // A hunter whose last prey broke free is still recovering.
         if !b.alive || a.pos.dist(b.pos) > self.config.balance.attack_reach || self.tick < a.strike_ready_tick {
@@ -855,6 +855,17 @@ impl World {
         if self.grace_spares(a, b) {
             return;
         }
+        // A graced hunter's first attack on a rival's animal ends its
+        // owner's grace (`Balance::graced_hunting`).
+        if self.config.balance.graced_hunting > 0.0
+            && b.owner != crate::WILD
+            && b.owner != a.owner
+            && self.attack_grace_left(a).is_some()
+        {
+            let owner = a.owner;
+            self.grace_waived.insert(owner, self.tick);
+        }
+        let (a, b) = (&self.organisms[i], &self.organisms[j]);
         let escape = self.escape_chance(a, b);
         // Pack-mates striking beside it (`Balance::pack_hunt`), the more so
         // in a hunt a player leads (`decide::led_pack`).
@@ -1521,7 +1532,9 @@ impl World {
             * self.breeding_suppression(i)
             * litter_condition(&self.config.balance, mother)
             // The soft lineage cap (`Balance::lineage_crowding`).
-            * self.lineage_crowding(mother.lineage)[0];
+            * self.lineage_crowding(mother.lineage)[0]
+            // A wild species under its refuge recovers (`Balance::wild_rebound`).
+            * self.wild_rebound(mother.lineage);
         let mut count = expected.floor() as usize + usize::from(rng.gen::<f32>() < expected.fract());
         if !traits.birth.lays_eggs() {
             count = count.min(self.cap_room(mother.lineage));

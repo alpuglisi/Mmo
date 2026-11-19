@@ -29,6 +29,13 @@ pub struct LegacySnapshot {
     /// adulthood, so junk genes earn nothing.
     pub weighted_total: f64,
     pub weighted: BTreeMap<PlayerId, f64>,
+    /// The running mean of the world's total of alleles
+    /// (`Balance::share_memory`, `World::smooth_legacy`): `total_alleles`
+    /// is at least this, so shares count against the world as big as it
+    /// has been lately. 0 with the rule off, and in snapshots before
+    /// version 92.
+    #[cfg_attr(feature = "serde", serde(default, with = "crate::serde_util::before_v92::wide"))]
+    pub world_alleles: f64,
 }
 
 impl LegacySnapshot {

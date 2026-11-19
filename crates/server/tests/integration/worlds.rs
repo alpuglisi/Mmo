@@ -192,7 +192,11 @@ async fn worlds_are_listed_and_chosen_per_request() {
         (Some("isle"), Some(1), Some(1))
     );
     assert_eq!((main["world"].as_str(), main["conns"].as_u64()), (Some("main"), Some(0)));
-    let listed = json_req(srv.addr, Method::GET, "/api/worlds", Some(&token), None).await.1;
+    // Players online for the operator only, not a logged-in player
+    // (playtest 11).
+    let own = json_req(srv.addr, Method::GET, "/api/worlds", Some(&token), None).await.1;
+    assert!(own["worlds"][1].get("players_online").is_none(), "{own}");
+    let listed = crate::operator_get(srv.addr, "/api/worlds").await;
     assert_eq!(listed["worlds"][1]["players_online"], 1);
     drop(sock);
     srv.shutdown().await;

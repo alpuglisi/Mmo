@@ -99,6 +99,8 @@ export function speciesTree(list: SpeciesView[]): SpeciesRow[] {
 
 function speciesStatus(s: SpeciesView, byId: Map<number, SpeciesView>): string {
   if (s.merged_into !== undefined) return `merged into ${byId.get(s.merged_into)?.name ?? s.merged_into_name ?? 'another species'}`;
+  // A retired lineage's species: the retire day, not "extinct" from its last detection (playtest 11).
+  if (s.retired_day !== undefined) return `retired day ${s.retired_day + 1}`;
   if (s.extinct_day !== undefined) return `extinct day ${s.extinct_day + 1}`;
   return `~${Math.round(s.adults)} adults`;
 }
@@ -180,7 +182,8 @@ export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, 
         swatch(s.dominant, me),
         h('strong', {}, s.name),
         h('span', { class: 'muted small' }, ` · ${dietLabel(s.carnivory)} · ${r.status} · ${s.dominant_name} ${pct(s.dominant_share, 0)} of alleles`
-          + `${s.founder_name ? ` · founded by ${s.founder_name}` : ''} · detected on day ${s.founded_day + 1}`),
+          // A trailing space before the button (playtest 11: "detected on day 26Name it…" in the text).
+          + `${s.founder_name ? ` · founded by ${s.founder_name}` : ''} · detected on day ${s.founded_day + 1} `),
         onName && r.alive && s.namer === me && !s.named
           ? h('button', { class: 'link small name-species', 'data-action': 'name-species', title: 'It is called after a lineage for now: give it a name of its own (costs renown, once)', onclick: () => onName(s) }, 'Name it…')
           : null);

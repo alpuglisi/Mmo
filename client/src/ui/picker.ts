@@ -131,6 +131,8 @@ export function createPicker(opts: { id: string; label: string; placeholder?: st
       paintChips();
       // On a phone the keyboard would cover the list: focus the search only with a mouse.
       if (!window.matchMedia?.('(pointer: coarse)').matches) search.focus({ preventScroll: true });
+      // Bring the opened list into view (playtest 11: on phones it opened below the sheet's fold).
+      requestAnimationFrame(() => { if (!panel.hidden) panel.scrollIntoView?.({ block: 'nearest' }); });
     }
   }
   button.addEventListener('click', () => setOpen(panel.hidden));

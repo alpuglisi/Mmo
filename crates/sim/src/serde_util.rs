@@ -3470,12 +3470,13 @@ pub mod before_v90 {
     }
 }
 
-/// `#[serde(with = "crate::serde_util::before_v91")]` on the playtest 11
-/// raid and placement tunables (`Balance::raid_rules`, `animal_clear`).
-/// On a thread holding a [`before_v91::Guard`] (reading or hashing a
-/// snapshot of version 90 or before) they are neither written nor read:
-/// they read as 0 (off).
-pub mod before_v91 {
+/// `#[serde(with = "crate::serde_util::before_v92")]` on the playtest 11
+/// balance tunables (`Balance::graced_hunting`, `share_memory`,
+/// `wild_rebound`), and (`before_v92::wide`) on
+/// `LegacySnapshot::world_alleles`. On a thread holding a
+/// [`before_v92::Guard`] (reading or hashing a snapshot of version 91 or
+/// before) they are neither written nor read: they read as 0 (off).
+pub mod before_v92 {
     use std::cell::Cell;
 
     use super::*;
@@ -3484,7 +3485,78 @@ pub mod before_v91 {
         static OLD: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// The tunable before version 91: off.
+    /// The tunable before version 92: off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+
+    /// The same layout rule for an `f64` (`LegacySnapshot::world_alleles`),
+    /// under the same guard.
+    pub mod wide {
+        use super::*;
+
+        pub fn serialize<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+            if OLD.with(Cell::get) {
+                s.serialize_unit()
+            } else {
+                v.serialize(s)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+            if OLD.with(Cell::get) {
+                Ok(0.0)
+            } else {
+                f64::deserialize(d)
+            }
+        }
+    }
+}
+
+/// `#[serde(with = "crate::serde_util::before_v93")]` on the playtest 11
+/// raid and placement tunables (`Balance::raid_rules`, `animal_clear`).
+/// On a thread holding a [`before_v93::Guard`] (reading or hashing a
+/// snapshot of version 92 or before) they are neither written nor read:
+/// they read as 0 (off).
+pub mod before_v93 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The tunable before version 93: off.
     pub const OLD_VALUE: f32 = 0.0;
 
     /// The old layout on this thread while this guard lives.

@@ -82,6 +82,7 @@ export type ClientMsg =
    * member (at least 200), doubled for each restoration within a ranked season's length. Data: `{restored, price, shop}`. */
   | { type: 'restore_pasture'; group?: number; preview?: boolean }
   | { type: 'survey' }
+  | { type: 'lineage_candidates'; request: number }
   | { type: 'name_animal'; organism: OrgId; name: string }
   | { type: 'animal_names' }
   | { type: 'substitute_mating'; request: number; mine: OrgId }
@@ -209,6 +210,10 @@ export interface OfferView {
   lost?: string;
   /** A pending offer: about how far apart the two animals are (8-tile steps). */
   apart?: number;
+  /** Why an accepted agreement's meeting point isn't the usual one. */
+  meet_note?: string;
+  /** A long lone walk for the requester's animal: what to watch for. */
+  walk_warning?: string;
   /** While `lost`: the sex a substitute must be. */
   substitute_sex?: Sex;
 }
@@ -1154,7 +1159,7 @@ export interface ShopView {
   /** Renown owed, taken from what comes in next. */
   owed?: number;
   /** What re-founding after a retirement would cost now. */
-  next_refound_fee?: number;
+  next_refound_fee?: number | null;
   provisions_bought?: number;
   provisions_max?: number;
   provision_blocked?: string;
@@ -1407,6 +1412,8 @@ export interface SpeciesView {
   parent?: number;
   founded_day: number;
   extinct_day?: number;
+  /** Gone because its owner retired its main lineage (that day), not extinct. */
+  retired_day?: number;
   merged_into?: number;
   /** The name of the species it merged into. */
   merged_into_name?: string;

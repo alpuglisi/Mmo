@@ -615,8 +615,10 @@ impl World {
         if let Some(days_left) = self.attack_grace_left(q) {
             return Err(CommandError::NewcomerGrace { days_left });
         }
-        // Two-sided: a shielded newcomer doesn't attack other players.
-        if q.owner != crate::WILD {
+        // Two-sided: a shielded newcomer doesn't attack other players
+        // (with `Balance::graced_hunting` it may: its first attack ends its
+        // grace).
+        if q.owner != crate::WILD && self.config.balance.graced_hunting <= 0.0 {
             if let Some(days_left) = self.attack_grace_left(o) {
                 return Err(CommandError::OwnGrace { days_left });
             }
@@ -866,11 +868,19 @@ impl World {
     /// Whether hunter `a` is kept off prey `b` by founding grace
     /// (`World::attack_grace_left`): `a` is another player's, and either
     /// `b`'s lineage is graced or (two-sided) `a`'s is and `b` isn't wild.
+    ///
+    /// With `Balance::graced_hunting` a graced hunter's own grace doesn't
+    /// spare its prey: it may hunt rivals' unprotected animals, and its
+    /// first attack on one ends its owner's grace (`World::attack`).
+    /// Playtest 11: a graced pack starved (24 → 16) beside 170 rival
+    /// animals whose grace had ended.
     pub(crate) fn grace_spares(&self, a: &crate::organism::Organism, b: &crate::organism::Organism) -> bool {
         a.owner != crate::WILD
             && a.owner != b.owner
             && (self.attack_grace_left(b).is_some()
-                || (b.owner != crate::WILD && self.attack_grace_left(a).is_some())
+                || (b.owner != crate::WILD
+                    && self.config.balance.graced_hunting <= 0.0
+                    && self.attack_grace_left(a).is_some())
                 || self.market_shield.contains(&b.id))
     }
 

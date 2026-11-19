@@ -24,7 +24,8 @@ fn game_with(cfg: GameConfig) -> (Game, Vec<OrgId>) {
 }
 
 fn game() -> (Game, Vec<OrgId>) {
-    game_with(GameConfig::default())
+    // Orders in quick succession (the cooldown has its own test).
+    game_with(GameConfig { order_cooldown_ms: 0.0, ..GameConfig::default() })
 }
 
 /// The command's result: `Ok(data)` or `Err(code)`.
@@ -305,6 +306,8 @@ fn the_newcomer_grace_is_in_the_state_and_lasts_real_minutes() {
     // lasts the configured 30 minutes instead, but at most 60 game days.
     let (mut g, a) = game_with(GameConfig { tick_ms: 100.0, ..Default::default() });
     g.world.config.balance.attack_grace = 20.0;
+    // The two-sided grace (`graced_hunting` off; its own test is in the sim).
+    g.world.config.balance.graced_hunting = 0.0;
     assert_eq!(g.grace_view(1), None, "founded at tick 0: no grace");
     for _ in 0..3 {
         tick(&mut g);
@@ -564,7 +567,7 @@ fn drownings_and_slow_die_offs_are_warned() {
     assert!(
         w.iter().any(|(k, t)| k == "decline"
             && t.contains("Your lineage is crashing: 63 → 33 alive over the last 10 days")
-            && t.contains("30 died of hunger")),
+            && t.contains("30 died (30 of hunger")),
         "{w:?}"
     );
     // The same deaths in a lineage that grows meanwhile: not a die-off (playtest 8: "954 → 1251").
@@ -698,7 +701,8 @@ fn a_migration_of_a_dormant_group_warns_and_says_why_it_ended() {
 
 #[test]
 fn claims_say_what_changed_and_warn_when_far_or_short_of_food() {
-    let (mut g, _) = game_with(GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let (mut g, _) =
+        game_with(GameConfig { claim_cooldown_min_minutes: 0.0, order_cooldown_ms: 0.0, ..Default::default() });
     let home = g.world.group_middle(1, 0).unwrap();
     // A radius below the minimum is raised, and says so.
     let d = run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 0.5 }).unwrap();
@@ -815,7 +819,8 @@ fn the_daily_check_alerts_a_dry_territory_and_a_drifted_herd_once() {
 /// refused, and orders say what they replace.
 #[test]
 fn far_claims_migrate_first_and_claims_say_what_they_replace() {
-    let (mut g, _) = game_with(GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let (mut g, _) =
+        game_with(GameConfig { claim_cooldown_min_minutes: 0.0, order_cooldown_ms: 0.0, ..Default::default() });
     let home = g.world.group_middle(1, 0).unwrap();
     assert_eq!(
         run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: -2.0 }),
@@ -894,7 +899,8 @@ fn group_alerts_outlive_daily_summaries() {
 
 #[test]
 fn far_claims_and_rallies_share_the_travel_warnings_and_migrate_checks_the_destination() {
-    let (mut g, _) = game_with(GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let (mut g, _) =
+        game_with(GameConfig { claim_cooldown_min_minutes: 0.0, order_cooldown_ms: 0.0, ..Default::default() });
     let home = g.world.group_middle(1, 0).unwrap();
     for o in g.world.organisms.iter_mut().filter(|o| o.owner == 1) {
         o.dormancy = evo_sim::organism::Dormancy::Winter;
@@ -1062,6 +1068,9 @@ fn founding_says_whether_grace_applies_and_why() {
         tick(&mut g);
     }
     let lineage = g.lineage_of(2).unwrap();
+    // While it lives, the preview calls it the living lineage, not an earlier one (playtest 11).
+    let alive = g.grace_preview(2, 20).unwrap();
+    assert!(alive.contains("the grace of your living lineage"), "{alive}");
     g.command(20, 2, Some(1), ClientMsg::RetireLineage { lineage });
     // The designer says so before founding (playtest 7: it promised the winter rule).
     let preview = g.grace_preview(2, 20).unwrap();
@@ -1378,7 +1387,8 @@ fn the_survey_shows_territories_held_away_and_works_without_a_main_group() {
 #[test]
 fn migrate_warns_of_sleep_rival_ground_and_drying_water() {
     let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
-    let mut g = Game::new(world, GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let mut g =
+        Game::new(world, GameConfig { claim_cooldown_min_minutes: 0.0, order_cooldown_ms: 0.0, ..Default::default() });
     g.set_name(1, "ann");
     g.set_name(2, "bob");
     g.found(1, &design("A")).unwrap();
@@ -1509,7 +1519,8 @@ fn a_merged_or_retired_group_does_not_die_out() {
 /// after doesn't repeat it).
 #[test]
 fn a_dwindling_group_and_a_starving_claim_say_so() {
-    let (mut g, _) = game_with(GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let (mut g, _) =
+        game_with(GameConfig { claim_cooldown_min_minutes: 0.0, order_cooldown_ms: 0.0, ..Default::default() });
     let d = run(&mut g, ClientMsg::SplitGroup { group: 0, organisms: None }).unwrap();
     let b = d["group"].as_u64().unwrap() as u8;
     let record = g.daily_record();
@@ -1642,4 +1653,79 @@ fn a_rally_into_a_rival_territory_warns() {
     let d = run(&mut g, ClientMsg::Rally { group: 0, x: t.center.x, y: t.center.y }).unwrap();
     let warnings: Vec<String> = serde_json::from_value(d["warnings"].clone()).unwrap_or_default();
     assert!(warnings.iter().any(|w| w.contains("inside bo's territory")), "{d}");
+}
+
+/// A warning's cool-down holds through a quiet day, the sleeping fold's
+/// own key included (playtest 11: the fold's key dropped every day, so the
+/// "3 days at most" line came 15 of 18 days).
+#[test]
+fn a_warnings_cool_down_holds_through_a_quiet_day() {
+    let (mut g, _) = game();
+    g.warned.insert((1, "dormant".to_string()), 10);
+    g.warned.insert((1, "hunted".to_string()), 10);
+    let mut out = Outbox::new();
+    g.warning_alerts(11, &mut out);
+    assert!(g.warned.contains_key(&(1, "dormant".to_string())));
+    assert!(g.warned.contains_key(&(1, "hunted".to_string())));
+    g.warning_alerts(10 + WARNING_REPEAT_DAYS, &mut out);
+    assert!(!g.warned.contains_key(&(1, "dormant".to_string())), "forgotten once the cool-down is over");
+}
+
+/// A split starts both groups' peaks afresh (playtest 11: "Group B has
+/// fallen from 751 to 311 adults" right after a split).
+#[test]
+fn a_split_doesnt_read_as_a_fall() {
+    let (mut g, _) = game();
+    let record = g.daily_record();
+    let mut out = Outbox::new();
+    // A stale peak under the id the split will take.
+    for id in 1..8 {
+        g.group_peak.insert((1, id), 751);
+    }
+    let d = run(&mut g, ClientMsg::SplitGroup { group: 0, organisms: None }).unwrap();
+    let b = d["group"].as_u64().unwrap() as u8;
+    assert!(!g.group_peak.contains_key(&(1, b)));
+    g.group_peak.retain(|&(_, id), _| id == b);
+    g.daily_group_checks(&record, &mut out);
+    let fell = alerts(&g, AlertKind::Group).into_iter().filter(|t| t.contains("has fallen from")).count();
+    assert_eq!(fell, 0, "{:?}", alerts(&g, AlertKind::Group));
+}
+
+/// Cancelling a rally gives back the territory it replaced (playtest 11:
+/// rallying to read the warnings, then cancelling, cost the claim).
+#[test]
+fn cancelling_a_rally_gives_the_territory_back() {
+    let (mut g, _) = game_with(GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let home = g.world.group_middle(1, 0).unwrap();
+    run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 5.0 }).unwrap();
+    let t = g.world.territory(1, 0).expect("claimed");
+    let to = land_away(&g, home, 10.0);
+    run(&mut g, ClientMsg::Rally { group: 0, x: to.x, y: to.y }).unwrap();
+    assert_eq!(g.world.territory(1, 0), None, "the rally replaces it");
+    let d = run(&mut g, ClientMsg::CancelRally { group: 0 }).unwrap();
+    assert_eq!(g.world.territory(1, 0), Some(t), "{d}");
+}
+
+/// Toxin and predation deaths count toward the slow-decline warning, named
+/// by cause (playtest 11: −28% to toxin brought no decline alert).
+#[test]
+fn toxin_deaths_count_toward_a_decline() {
+    let (mut g, _) = game();
+    let lineage = g.lineage_of(1).unwrap();
+    let base = g.daily_record();
+    g.history.clear();
+    for k in 0..=DECLINE_DAYS {
+        let mut r = base.clone();
+        r.day = 100 + k;
+        let e = r.lineages.iter_mut().find(|e| e.lineage == lineage).unwrap();
+        e.alive = (100 - 3 * k) as usize;
+        e.deaths.clear();
+        if k > 0 {
+            e.deaths.insert("toxin".into(), 3);
+        }
+        g.history.push_back(r);
+    }
+    let w = g.lineage_warnings(1);
+    let d = w.iter().find(|w| w.kind == "decline").expect("a decline warning");
+    assert!(d.text.contains("of toxins") && d.text.contains("poisonous prey"), "{}", d.text);
 }
