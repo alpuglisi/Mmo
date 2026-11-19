@@ -83,6 +83,26 @@ fn candidates() -> Vec<(&'static str, FounderDesign)> {
             starter("small+toxic+bright").with(BodySize, 0.35).with(Toxins, 0.5).with(Coloration, 0.6),
         ),
         ("bright+burrow", starter("bright+burrow").with(Toxins, 0.5).with(Coloration, 0.6).with(Burrowing, 0.4)),
+        ("bright+5eggs", {
+            let mut d = starter("bright+5eggs").with(Toxins, 0.5).with(Coloration, 0.6);
+            d.litter_size = 5;
+            d
+        }),
+        ("bright+30f", starter("bright+30f").with(Toxins, 0.5).with(Coloration, 0.6).founders(30)),
+        (
+            "bright+forage",
+            starter("bright+forage")
+                .with(Toxins, 0.5)
+                .with(Coloration, 0.6)
+                .with(ForagingRange, 0.6)
+                .with(GroupTolerance, 0.95),
+        ),
+        ("herd-lite", {
+            let mut d = herd();
+            d.name = "herd-lite".into();
+            d.litter_size = 4;
+            d.founders(20)
+        }),
         // The ceilings: the strong designs themselves, founded as the newcomer.
         ("as-herd", herd()),
         ("as-sleepers", sleepers()),
