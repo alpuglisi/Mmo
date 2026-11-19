@@ -704,9 +704,20 @@ fn the_pack_larder_follows_the_prey_there_is() {
         w.refresh_pack_room();
         w.pack_room(HUNTER)
     };
+    // Each placed prey founds its own lineage: count them all for now.
+    w.config.balance.prey_floor = 0.0;
     // 2 hunters: 30 prey is 15 each (none), 60 is 30 (half), 80 is 40 (full).
     assert_eq!(room(&mut w, 30), 0.0);
     assert!((room(&mut w, 60) - 0.5).abs() < 1e-4);
+    assert_eq!(room(&mut w, 80), 1.0);
+    // `prey_floor`: 80 one-animal lineages are 80 small populations, not
+    // counted; as one lineage of 80 they are.
+    w.config.balance.prey_floor = 40.0;
+    assert_eq!(room(&mut w, 80), 0.0);
+    let one = w.organisms.iter().find(|o| o.owner == PREY).unwrap().lineage;
+    for o in w.organisms.iter_mut().filter(|o| o.owner == PREY) {
+        o.lineage = one;
+    }
     assert_eq!(room(&mut w, 80), 1.0);
     // The band rule: a band of 2 is small.
     w.config.balance.prey_larder = 0.0;

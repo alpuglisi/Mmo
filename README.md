@@ -9456,7 +9456,7 @@ plateaued at 60–84 and lost 60% in its first winter, inside its grace.
 
 | Check | `winter_larder` 0 | Defaults |
 | --- | --- | --- |
-| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` (main: 11.91) | | 11.91 (± 0.09); every lineage 12 of 12 |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` (main: 11.91) | | 11.91 (± 0.09) before the perf merge; 11.87 (± 0.16) on v72 with `prey_floor`; every lineage 12 of 12 |
 | `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 14/16 (12), 16/16 (16); 4 | 13/16 (11), 16/16 (16); 4 |
 | workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (459), build | | pass |
 | e2e (16 scripts, `E2E_JOBS=2`) | | 14 of 16: smoke and builder failed under load. Alone, builder passed; smoke failed once on a `claim_territory` near water (`mostly_water`, the group's position at that moment) and passed twice after |
