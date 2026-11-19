@@ -9,6 +9,7 @@ import { commandError } from '../errors';
 import { DEFAULT_TICKS_PER_DAY, gameAndReal, ticksToNextSeason } from './duration';
 import { reconcile, setText } from './reconcile';
 import { friendlyError, MEETING_TILES } from './friendlyErrors';
+import { NEWS_MS, OWN_MS, pickToasts, toastAlive } from './toastPick';
 import { apartText, historyRows, meetText, offerLine } from './matingHistory';
 import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
@@ -43,7 +44,7 @@ import { createOnboarding } from './onboarding';
 import { onboardingDisabled } from '../onboarding';
 import { pushSettings } from './push';
 import {
-  canSplit, claimWait, clearMigrationMsg, groupCenter, groupColor, groupName, groupObedience, groupOptions, groupOrders, groupsOf, migrateMsgs, nextViewGroup, parseChoice,
+  canSplit, claimWait, clearMigrationMsg, groupCenter, groupColor, groupLetter, groupName, groupObedience, groupOptions, groupOrders, groupsOf, migrateMsgs, nextViewGroup, parseChoice,
   homeRangeNote, MAX_GROUPS, rallyLeft, rallyMsg, targetGroup, territoryTap, validChoice, type GroupChoice, type TerritoryDraft,
 } from '../groups';
 
@@ -73,6 +74,21 @@ const ATTACK_RANGE = 8;
  * Every organism of the player's lineage has died: say so, point to what
  * killed them, and offer a new lineage (renown and records stay).
  */
+/** Hidden notices kept out of the page, a placeholder in their place (playtest 12: "Start a new lineage" stayed in the DOM while alive). */
+const placeholders = new WeakMap<HTMLElement, Comment>();
+function present(el: HTMLElement, on: boolean): void {
+  let mark = placeholders.get(el);
+  if (!on && el.parentNode) {
+    if (!mark) {
+      mark = document.createComment(el.id || 'notice');
+      placeholders.set(el, mark);
+    }
+    el.replaceWith(mark);
+  } else if (on && !el.parentNode && mark?.parentNode) {
+    mark.replaceWith(el);
+  }
+}
+
 function extinctNoticeEl(id: string, onNewLineage: (() => void) | undefined): HTMLElement {
   return h('div', { class: 'notice bad', id, role: 'status' },
     h('p', { class: 'extinct-text' }),
@@ -352,6 +368,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       void refreshStats().then(() => { if (model.state) renderExtinct(); });
     }
     extinctAlert.hidden = !gone;
+    present(extinctAlert, gone);
     if (!gone) {
       // No hidden "died out" words left in the page after founding (playtest 11).
       extinctTitle.textContent = '';
@@ -538,6 +555,14 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     softDisable(territoryBtn, none, 'Claim a territory for the group: tap its center, then its edge');
     softDisable(rallyBtn, none, 'Gather the group at a point: tap where; it holds there until the rally lapses (at least 5 minutes; the group card shows when)');
     groupSelect.disabled = none !== null;
+    // Clear names whose orders it cancels (playtest 12: a pick from an earlier step cleared Group B unseen).
+    const clearWho = groupChoice === 'all' ? 'all groups' : groupName(groupChoice);
+    const clearTitle = `Cancel the orders of ${clearWho} (migration, territory and rally; pick another in the group menu)`;
+    if (clearMigBtn.title !== clearTitle) {
+      clearMigBtn.title = clearTitle;
+      clearMigBtn.setAttribute('aria-label', clearTitle);
+      setText(clearMigBtn.querySelector('.tool-label')!, groupChoice === 'all' ? 'Clear all' : `Clear ${groupLetter(groupChoice)}`);
+    }
   }
   groupSelect.addEventListener('change', () => setGroupChoice(parseChoice(groupSelect.value)));
   /** The one group a tool acts on, or a toast asking to pick one. */
@@ -918,7 +943,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         // One toast for the order and its warnings, posted last so it is the newest (playtest 9: on a phone,
         // where two toasts show, a brooding note and an alert pushed "migrating toward…" out of sight).
         const brood = (r.data as { brooding_note?: string } | undefined)?.brooding_note;
-        model.toast(t.warning ? 'warn' : 'info', `Order given: ${who.toLowerCase()} migrating toward (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? `: ${t.note}` : ''}.${t.warning ? ` But: ${t.warning}` : ''}${brood ? ` ${brood}` : ''}`);
+        model.toast(t.warning ? 'warn' : 'info', `Order given: ${groupChoice === 'all' ? 'adults' : who} migrating toward (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? `: ${t.note}` : ''}.${t.warning ? ` But: ${t.warning}` : ''}${brood ? ` ${brood}` : ''}`);
       } else if (r?.error) {
         model.toast('error', `Migrate: ${r.error.message}`);
       }
@@ -1546,10 +1571,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const graceDays = wild ? undefined : protectedPlayers.get(o.owner) ?? (flagged ? 0 : undefined);
     inspDetails.replaceChildren(
       h('h3', {}, h('span', { class: 'swatch', style: `background:${cssColor(ownerColor(o.owner))}` }), `#${o.id} · ${ownerName}`, wild ? null : plateBadge(o.owner),
-        graceDays !== undefined ? h('span', { class: 'pill protected-pill', id: 'insp-protected', title: 'A newcomer\'s lineage: other players\' animals can\'t attack it yet, nor it theirs' }, 'protected newcomer') : null),
+        graceDays !== undefined ? h('span', { class: 'pill protected-pill', id: 'insp-protected', title: 'A newcomer\'s lineage: other players\' animals can\'t attack it yet (its first attack on theirs ends that)' }, 'protected newcomer') : null),
       dl([['Action', actionText(o.action)], ['Sex', o.sex], ['Stage', o.matured ? 'adult' : 'juvenile'], ['Lineage', String(o.lineage)],
         ['Position', `${o.x.toFixed(1)}, ${o.y.toFixed(1)}`], ['Body plan', o.look ? describeLook(o.look) : '—'],
-        ...(graceDays !== undefined ? [['Protected', graceDays > 0 ? `newcomer grace, ${span(graceDays * ticksPerDay)} left: other players' animals can't attack it, nor it theirs` : 'newcomer grace: other players\' animals can\'t attack it, nor it theirs'] as [string, string]] : [])]),
+        ...(graceDays !== undefined ? [['Protected', graceDays > 0 ? `newcomer grace, ${span(graceDays * ticksPerDay)} left: other players' animals can't attack it (its first attack on theirs ends that)` : 'newcomer grace: other players\' animals can\'t attack it (its first attack on theirs ends that)'] as [string, string]] : [])]),
       h('p', { class: 'muted small' }, 'Only what can be seen: needs and health of other players\' organisms are hidden.'),
     );
     const poisonous = (model.state?.poisonous ?? []).includes(o.lineage);
@@ -1635,7 +1660,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   append(tabs.matings, [
     h('h3', {}, 'Request a directed mating'), matingForm.el,
     h('h3', {}, 'Incoming requests'), incomingEl, matePrefsEl,
-    h('h3', {}, 'My open offers'), openEl,
+    h('h3', {}, 'Open offers and agreements'), openEl,
     h('h3', {}, 'Recent outcomes'), closedEl,
   ]);
 
@@ -1828,13 +1853,24 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (Date.now() - previewAt > 3000 && partner.value !== '') void updateCompat();
       slots.textContent = `${s.slots_left} directed-mating slot${s.slots_left === 1 ? '' : 's'} left this season.`;
     }
+    // One tap to put the chosen adult on the market (playtest 12: nobody else listed all game).
+    const listIt = h('button', { class: 'secondary', id: 'mating-list-it', title: 'List this adult on the market: anyone may buy one mating with it' }, 'List it for 10') as HTMLButtonElement;
+    listIt.addEventListener('click', async () => {
+      const m = Number(mine.value);
+      if (!m) return model.toast('error', 'Choose one of your adults to list.');
+      if (!(await confirmDialog({ id: 'list-it-confirm', title: `List #${m} on the market for 10 renown?`, ok: 'List it',
+        body: 'Anyone may buy one mating with it; a listing\'s sale pays no market fee. Change the price or withdraw it in the Market tab.' }))) return;
+      const r = await send({ type: 'create_listing', organism: m, fee: 10 });
+      if (r.ok) model.toast('info', `#${m} listed for 10 renown (no market fee on a listing's sale).`);
+      else if (r.error && !LOCAL_CODES.has(r.error.code)) model.toast('error', friendlyError(r.error));
+    });
     const el = h('div', { class: 'form' },
       h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'My adult'), mine),
       h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Partner'), partnerPick),
       partnerNote,
       h('div', { class: 'row' }, h('label', { class: 'partner-id' }, 'Partner id', partner), h('label', {}, 'Price', price)),
       compat,
-      h('div', { class: 'row' }, submit, walk), slots,
+      h('div', { class: 'row' }, submit, walk, listIt), slots,
       h('p', { class: 'muted small' }, `Pick a partner from the list, or on the map ("Request mating…"). Within your own lineage the pair mates at once when within ${MEETING_TILES} tiles; another player must agree, then the two must meet.`));
     return {
       el,
@@ -1921,10 +1957,20 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     }, (row, e) => {
       setText(row.querySelector('.offer-line')!, offerLine(e.offer));
       // How far the walk would be, before accepting (playtest 10): the server's figure, else the client's own.
+      // An offer to the lineage meets halfway; one to your animal three quarters of the way to it (playtest 12).
       const apart = e.offer.apart !== undefined
-        ? `About ${e.offer.apart} tiles apart: they meet three quarters of the way to your animal, which walks the last quarter.`
+        ? (e.offer.lineage !== undefined
+          ? `Your nearest suitable animal is about ${e.offer.apart} tiles away: they would meet halfway.`
+          : `About ${e.offer.apart} tiles apart: they meet three quarters of the way to your animal, which walks the last quarter.`)
         : apartText(e.offer, s?.organisms ?? [], s?.nearby ?? []);
-      setText(row.querySelector('.offer-time')!, [offerTime(e.offer), meetText(e.offer, model.player), apart].filter(Boolean).join(' '));
+      // Ages against lifespans (playtest 12: an offered animal died of old age 30 s later, no age shown).
+      const age = (who: string, a: typeof e.offer.mine_age) => a
+        ? `${who} is ${Math.round(a.age_days)} of about ${Math.round(a.lifespan_days)} days old${a.aging ? ' (old: it may die before they meet)' : ''}.`
+        : '';
+      const mineIsOurs = e.offer.from_player === model.player;
+      const ages = [age(mineIsOurs ? `Your #${e.offer.mine}` : `Their #${e.offer.mine}`, e.offer.mine_age),
+        e.offer.partner ? age(mineIsOurs ? `Their #${e.offer.partner}` : `Your #${e.offer.partner}`, e.offer.partner_age) : ''].filter(Boolean).join(' ');
+      setText(row.querySelector('.offer-time')!, [offerTime(e.offer), meetText(e.offer, model.player), apart, ages].filter(Boolean).join(' '));
       const pick = row.querySelector<HTMLSelectElement>('.pick-own');
       if (pick) {
         const lineageOffer = e.offer.partner === 0 && e.offer.lineage !== undefined;
@@ -1974,7 +2020,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           h('button', { class: 'secondary', onclick: () => void send({ type: 'cancel_mating', request: e.offer.id }) }, 'Cancel')));
     }, (row, e) => {
       setText(row.querySelector('.offer-line')!, offerLine(e.offer));
-      setText(row.querySelector('.offer-time')!, [offerTime(e.offer), meetText(e.offer, model.player)].filter(Boolean).join(' '));
+      // Outgoing pending offers say how far the walk would be too (playtest 12), and an old animal its age.
+      const away = e.offer.status === 'pending' && e.offer.apart !== undefined && e.offer.from_player === me
+        ? `About ${e.offer.apart} tiles from ${e.offer.lineage !== undefined ? 'their nearest suitable animal' : 'the partner'}.` : null;
+      const age = e.offer.mine_age && e.offer.mine_age.age_days >= 0.8 * e.offer.mine_age.lifespan_days
+        ? `#${e.offer.mine} is ${Math.round(e.offer.mine_age.age_days)} of about ${Math.round(e.offer.mine_age.lifespan_days)} days old.` : null;
+      setText(row.querySelector('.offer-time')!, [offerTime(e.offer), meetText(e.offer, model.player), away, age].filter(Boolean).join(' '));
       const note = row.querySelector<HTMLElement>('.offer-note');
       if (note) {
         const mineId = e.offer.from_player === me ? e.offer.mine : e.offer.partner;
@@ -2181,7 +2232,6 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   retireBtn.addEventListener('click', async () => {
     const lineage = model.state?.lineage;
     if (lineage === null || lineage === undefined) return;
-    const alive = model.state?.population ?? 0;
     // Animals carrying a quarter or more of another player's genes join that player's lineage instead (server RETIRE_TRANSFER_SHARE).
     // The window the server enforces, fetched now (game days, real minutes).
     const w = await api.world().catch(() => null);
@@ -2189,6 +2239,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const rule = w?.refound_rule ? `After retiring, ${w.refound_rule}.` : 'Founding again soon after retiring founds fewer founders and costs renown.';
     // Your own next fee, quoted (playtest 9: the dialog gave only the rule).
     const sh = await send({ type: 'renown_shop' });
+    // Counted once the questions above are answered, as the Lineage tab counts them (playtest 12: "Its 901 animals" beside 1,307 alive).
+    const alive = Math.max(model.state?.population ?? 0, (model.state?.groups ?? []).reduce((n, g) => n + g.members, 0));
     const fee = sh.ok ? (sh.data as { next_refound_fee?: number | null; owed?: number } | undefined) : undefined;
     const feeLine = fee?.next_refound_fee ? `Founding again now would cost you ${fee.next_refound_fee} renown${fee.owed ? ` (you already owe ${fee.owed})` : ''}.` : '';
     const yes = await confirmDialog({
@@ -2318,6 +2370,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     // One element, shown or hidden (rebuilding it each state would eat clicks on its button).
     lineageExtinct.hidden = !(s.lineage !== null && s.population === 0);
     setExtinctText(lineageExtinct, lineageExtinct.hidden ? null : s.lineage);
+    present(lineageExtinct, !lineageExtinct.hidden);
     retireEl.hidden = !(s.lineage !== null && s.population > 0);
     // Nothing to end without a living lineage (playtest 7: it stayed after a retire).
     endGraceEl.hidden = !s.grace || gone;
@@ -2435,7 +2488,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
               if (r.ok) model.toast('info', `${groupName(g.id)}'s rally cancelled${note ? `: ${note}` : ''}`);
             } }, 'Cancel rally'),
           canSplit(g, groups) && h('button', { class: 'secondary small', 'data-action': 'split', onclick: () => void splitGroup(g.id) }, 'Split'),
-          g.id !== 0 && h('button', { class: 'secondary small', 'data-action': 'merge', onclick: () => void send({ type: 'merge_groups', from: g.id, into: 0 }) }, 'Merge into A'),
+          g.id !== 0 && h('button', { class: 'secondary small', 'data-action': 'merge', onclick: async () => {
+            // Said so (playtest 12: a merge gave no word at all).
+            const r = await send({ type: 'merge_groups', from: g.id, into: 0 });
+            const moved = (r.data as { moved?: number } | undefined)?.moved;
+            if (r.ok) model.toast('info', `${groupName(g.id)} merged into ${groupName(0)}${moved !== undefined ? `: ${moved} ${moved === 1 ? 'animal' : 'animals'} joined it` : ''}.`);
+          } }, 'Merge into A'),
           (g.territory || g.rally) && h('button', { class: 'secondary small', 'data-action': 'center', onclick: () => {
             const x = groupsOf(model.state).find((x) => x.id === g.id);
             const t = x?.territory ?? x?.rally;
@@ -2462,10 +2520,14 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   function renderToasts(): void {
     measureTip();
     clear(toasts);
-    // The three newest (playtest 9: a tall stack covered tools and map).
-    // On phones a long toast shows two lines; a tap opens the rest (playtest 11: 3–4 line toasts covered a third of the map).
-    for (const t of model.toasts.slice(-3)) {
-      const el = h('div', { class: `toast ${t.kind}${openToasts.has(t.text) ? ' open' : ''}`, title: t.text },
+    const now = Date.now();
+    model.toasts = model.toasts.filter((x) => toastAlive(x, now));
+    // The three newest, two on phones (playtest 9: a tall stack covered tools
+    // and map), the reply to the player's own command always among them, on
+    // top (playtest 12: the alerts it set off pushed a claim's warning out).
+    // On phones a long toast shows two lines; a tap opens the rest (playtest 11).
+    for (const t of pickToasts(model.toasts, narrow() ? 2 : 3)) {
+      const el = h('div', { class: `toast ${t.kind}${t.news ? '' : ' own'}${openToasts.has(t.text) ? ' open' : ''}`, title: t.text },
         t.count ? h('span', { class: 'toast-more' }, `(×${t.count}) `) : null, t.text);
       el.addEventListener('click', () => {
         if (!narrow()) return;
@@ -2473,8 +2535,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         else openToasts.add(t.text);
         el.classList.toggle('open');
         // An opened toast stays while it is read.
-        if (toastTimer) clearTimeout(toastTimer);
-        toastTimer = setTimeout(clearToasts, 12000);
+        t.at = Date.now();
+        delete t.news;
+        scheduleToastSweep();
       });
       append(toasts, [el]);
     }
@@ -2482,14 +2545,22 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (narrow()) requestAnimationFrame(() => {
       for (const el of Array.from(toasts.children) as HTMLElement[]) el.classList.toggle('long', el.scrollHeight > el.clientHeight + 1);
     });
+    scheduleToastSweep();
   }
   const openToasts = new Set<string>();
-  function clearToasts(): void {
-    model.toasts = [];
-    openToasts.clear();
-    renderToasts();
-  }
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Re-draw when the next toast runs out. */
+  function scheduleToastSweep(): void {
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = null;
+    if (model.toasts.length === 0) {
+      openToasts.clear();
+      return;
+    }
+    const now = Date.now();
+    const next = Math.min(...model.toasts.map((x) => (x.at ?? now) + (x.news ? NEWS_MS : OWN_MS) - now));
+    toastTimer = setTimeout(renderToasts, Math.max(50, next + 20));
+  }
 
   // The map is drawn from the state; a drawing error must not stop the
   // panels (or the connection pill) from following it.
@@ -2529,11 +2600,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     model.on('alerts', onAlerts),
     model.on('alerts', sayAway),
     model.on('state', rememberSeen),
-    model.on('toast', () => {
-      renderToasts();
-      if (toastTimer) clearTimeout(toastTimer);
-      toastTimer = setTimeout(clearToasts, 6000);
-    }),
+    model.on('toast', renderToasts),
   );
   if (model.state) {
     showState();

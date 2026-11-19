@@ -191,16 +191,29 @@ async function main() {
     // A long toast shows two lines on a phone; a tap opens the rest (playtest 11: 3–4 line toasts covered a third of the map).
     await page.evaluate(() => window.evo.model.toast('info', 'Your lineage is being hunted: 7 of your animals were eaten on day 300, by a rival pack near 40, 52. Keep the herd together, move it away from the pack, or claim a territory where the hunters are fewer; the Food layer shows where the plants are.'));
     const clamp = await page.evaluate(() => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(() => {
-      const el = document.querySelector('#toasts .toast:last-child');
+      const el = [...document.querySelectorAll('#toasts .toast')].find((x) => x.textContent.includes('being hunted: 7'));
       const lh = parseFloat(getComputedStyle(el).lineHeight) || 16;
       res({ h: el.clientHeight, lh, long: el.classList.contains('long') });
     }))));
     check(clamp.long && clamp.h <= clamp.lh * 2 + 12, 'a long toast should be cut to two lines on a phone', clamp);
-    await page.tap('#toasts .toast:last-child');
-    const opened = await page.evaluate(() => document.querySelector('#toasts .toast:last-child').clientHeight);
+    await page.tap('#toasts .toast:has-text("being hunted: 7")');
+    const opened = await page.evaluate(() => [...document.querySelectorAll('#toasts .toast')].find((x) => x.textContent.includes('being hunted: 7')).clientHeight);
     check(opened > clamp.h, 'a tap opens the rest of the toast', { opened, clamp });
     await page.evaluate(() => { window.evo.model.toasts = []; window.evo.model.emit('toast'); });
     step(`a long toast shows two lines (${clamp.h} px); a tap opens it (${opened} px)`);
+
+    // The reply to the player's own command stays above the alerts it sets off (playtest 12: a claim's "But…" pushed out).
+    const pinned = await page.evaluate(() => {
+      const m = window.evo.model;
+      m.toast('warn', 'Claimed a territory for Group A. But: there is no drinking water in it.');
+      for (const x of ['Your lineage is going hungry.', 'Your lineage is being hunted.', 'Your animals are thirsty.']) m.toast('info', x, true);
+      const shown = [...document.querySelectorAll('#toasts .toast')].map((el) => el.textContent);
+      m.toasts = [];
+      m.emit('toast');
+      return shown;
+    });
+    check(pinned.length === 2 && /^Claimed a territory/.test(pinned[0]) && /thirsty/.test(pinned[1]), 'the reply to an own command should stay shown, above the newest alert', pinned);
+    step('the reply to the player\'s own command stays shown above the alerts it set off');
 
     // 1. The renown pill opens the Market.
     await page.tap('#balance');

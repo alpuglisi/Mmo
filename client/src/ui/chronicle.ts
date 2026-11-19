@@ -4,7 +4,7 @@
 // The data preparation is pure and unit-tested; `renderWorld` only builds DOM.
 
 import type {
-  AchievementList, CatastropheList, CatastropheView, EraList, PlayerId, SpeciesList, SpeciesView,
+  AchievementList, CatastropheList, CatastropheView, EndedSpecies, EraList, PlayerId, SpeciesList, SpeciesView,
 } from '../protocol';
 import { cssColor, ownerColor, OWN_COLOR } from '../world/colors';
 import { h, pct } from './dom';
@@ -97,6 +97,16 @@ export function speciesTree(list: SpeciesView[]): SpeciesRow[] {
   return rows;
 }
 
+/** "Pocket Wayfarers (PocketNomad12, days 17–134, retired) · …", newest first, at most 8. */
+export function endedText(list: readonly EndedSpecies[]): string {
+  const rows = [...list].sort((a, b) => (b.retired_day ?? b.extinct_day) - (a.retired_day ?? a.extinct_day));
+  const words = rows.slice(0, 8).map((e) => {
+    const end = e.retired_day ?? e.extinct_day;
+    return `${e.name} (${e.owner_name}, days ${e.founded_day + 1}–${end + 1}, ${e.retired_day !== undefined ? 'retired' : 'died out'})`;
+  });
+  return words.join(' · ') + (rows.length > 8 ? ` and ${rows.length - 8} more` : '');
+}
+
 function speciesStatus(s: SpeciesView, byId: Map<number, SpeciesView>): string {
   if (s.merged_into !== undefined) return `merged into ${byId.get(s.merged_into)?.name ?? s.merged_into_name ?? 'another species'}`;
   // A retired lineage's species: the retire day, not "extinct" from its last detection (playtest 11).
@@ -181,13 +191,16 @@ export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, 
         r.depth > 0 ? h('span', { class: 'muted' }, '└ ') : null,
         swatch(s.dominant, me),
         h('strong', {}, s.name),
-        h('span', { class: 'muted small' }, ` · ${dietLabel(s.carnivory)} · ${r.status} · ${s.dominant_name} ${pct(s.dominant_share, 0)} of alleles`
+        h('span', { class: 'muted small' }, ` · ${s.diet ?? dietLabel(s.carnivory)} · ${r.status} · ${s.dominant_name} ${pct(s.dominant_share, 0)} of alleles`
           // A trailing space before the button (playtest 11: "detected on day 26Name it…" in the text).
           + `${s.founder_name ? ` · founded by ${s.founder_name}` : ''} · detected on day ${s.founded_day + 1} `),
         onName && r.alive && s.namer === me && !s.named
           ? h('button', { class: 'link small name-species', 'data-action': 'name-species', title: 'It is called after a lineage for now: give it a name of its own (costs renown, once)', onclick: () => onName(s) }, 'Name it…')
           : null);
     })),
+    // Lineages' species that ended with them: one history line (playtest 12: a retired lineage's species vanished without a word).
+    (species.ended ?? []).length > 0 ? h('p', { class: 'muted small', id: 'species-ended' }, 'Ended with their lineages: ',
+      endedText(species.ended ?? [])) : null,
     species.founded.length > 0 ? h('p', { class: 'small' }, 'Species split off (speciation): ', species.founded.map((f) => `${f.name} ${f.count}`).join(' · ')) : null,
     h('h3', {}, 'Catastrophes'),
     catastrophes.history.length === 0
