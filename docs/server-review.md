@@ -167,3 +167,23 @@ From `docs/playtest-6.md` (M5, M12, M15) and `Rulebender6.md`. Each has a test. 
 | A literal duplicate JSON key in a design was accepted. | Refused: `duplicate_gene` ("fur is given twice"). | `gene_names_parse` |
 | A `"NaN"` string value gave `bad_message`. | `bad_coordinates`, like a bare NaN. | `bare_nan_and_infinity_are_spotted_outside_strings` |
 | `substitute_mating` told a living rival animal from a dead one. | Its `mine` (and `respond_mating`'s `partner`) go through `Game::hide_unseen`. | — |
+
+## Round 8: playtest 7 (names, leaks, Lows)
+
+From `docs/playtest-7.md` (M6, M8 and the Lows in `Rulebender7.md`). Each has a test. No snapshot or sim change.
+
+| Finding | Fix | Test |
+| --- | --- | --- |
+| Digits beside staff words passed ("Claude2 fan", "GM2 herd", "Mod2 squad", "Head GM2", "Owner2 herd", "Moder8or"). | `names::digit_forms`: each word is also read with its leftover digits dropped and with `8` as "ate". | `staff_words_with_digits_or_run_together_are_refused_but_plain_names_pass` |
+| Run-together lower case passed ("claudebot", "GMbob", "ownerbob", "Supportbot"). | Staff words (gm, mod(s), owner(s), claude, support, operator, sysop, root) are refused as the start or end of any word, whatever its case, except common words in `AFFIX_ALLOWED` (model, modest, modern, paradigm, landowner, rootstock, supportive, ownerless, …). A list of 51 ordinary names is checked against false positives. | same |
+| "WildHerd", "Wildherd", "A Wild herd", "Wild1 herd" passed. | For lineages, species and titles, no word may start with "wild", except common words in `WILD_ALLOWED` (wildebeest, wildflower, wilderness, wildfire, wildwood, wildcat). | same |
+| "Meadow vole 2" and "The Meadow vole" passed as wild species' names. | Wild names are compared by `names::name_key` (articles and digits dropped, plural either way, at least 4 letters). | `wild_species_names_are_refused` |
+| An exact copy of a rival's lineage name ("Ash Fang Pack"). | `Game::rival_name` refuses a lineage (at founding) or species name equal by `name_key` to another player's living lineage or species; the design check warns. | same |
+| Account look-alikes kept digits and separators ("LateComer_7", "LateComer8", "LateComer" beside "LateComer7"). | Registration also refuses `names::impersonates` look-alikes of any account. (So "user1" and "user2" can't both exist.) | `account_look_alikes_with_digits_or_separators_are_taken` |
+| Saved offenders ("Claude2 fan"). | Cleaned on load by `Game::sanitize_names` with the stricter check. | — |
+| M8: `preview_mating` gave body-plan gaps, fertilities, mismatch and failure chance exactly for a rival's partner (with one's own animals' genes known, that solved the rival's body plan). | All in tenths unless the partner is the player's own. | `rivals_hidden_state_and_positions_do_not_leak` |
+| `/api/metrics` showed `players_online` and per-command counts without a login. | Logged out, `conns` and `players_online` read 0 and `apply_by_command` is empty; timings stay public. (`/api/worlds` still shows players online for the start screen.) | integration `server.rs`, `worlds.rs` |
+| Listing positions looked like an 8-tile grid. | Checked: they are the centres of 16-tile cells (8 + 16k), as before; the paid survey gives 8-tile cells. No change. | — |
+| Fractional auction `days` gave `bad_message`. | Rounded up to whole days (1.5 → 2); 0 or less gives `bad_duration`. | `fractional_auction_days_round_up` |
+| `/api/map.png` needs a login while `/api/terrain` is public. | As intended (terrain has no animals); now in the README. | — |
+| Alert ticks seemed to change between reads. | Stored alerts never change; the watcher saw two alerts with the same text (the older later evicted from the capped feed). Alerts now carry a stable per-player `id` (kept over restarts) to tell them apart. | `alerts_have_stable_ids` |

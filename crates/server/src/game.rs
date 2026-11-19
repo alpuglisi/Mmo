@@ -1686,6 +1686,9 @@ impl Game {
         if self.wild_name(&name) {
             return Err(FoundError::BadName("it is a wild species' name".into()));
         }
+        if self.rival_name(player, &name) {
+            return Err(FoundError::BadName("another player's lineage or species has that name".into()));
+        }
         // Re-founding soon after the player's last lineage ended (retired or
         // died out) prices founders double ([`Game::refound_terms`]):
         // ending a lineage and founding again was a free re-roll (fresh, fed
@@ -3667,22 +3670,23 @@ impl Game {
             }
         }
         let p = self.world.mating_preview(mine, partner).map_err(e)?;
+        // Exact numbers only for one's own pair: with a few of one's own
+        // animals (whose genes the Genes tab shows) the exact gaps and
+        // fertilities against one rival animal solved its body plan
+        // (playtest 7). A rival's (or the wild's) partner gets tenths.
+        let own = self.world.organism(partner).is_some_and(|b| b.owner == player);
+        let r = |x: f32| if own { x } else { (x * 10.0).round() / 10.0 };
         Ok(MatingPreviewView {
             mine,
             partner,
             compatible: p.fertility > 0.0,
-            fertility: p.fertility,
-            body_plan_fertility: p.body_plan_fertility,
-            distance_fertility: p.distance_fertility,
-            // Exact gene differences only for a partner in plain sight (one
-            // just inside the naming margin got its exact genes: playtest 4).
-            body_plan_gaps: body_plan_gaps(&p)
-                .into_iter()
-                .map(|g| if partner_seen { g } else { BodyPlanGap { gap: (g.gap * 10.0).round() / 10.0, ..g } })
-                .collect(),
-            mismatch: p.mismatch,
+            fertility: r(p.fertility),
+            body_plan_fertility: r(p.body_plan_fertility),
+            distance_fertility: r(p.distance_fertility),
+            body_plan_gaps: body_plan_gaps(&p).into_iter().map(|g| BodyPlanGap { gap: r(g.gap), ..g }).collect(),
+            mismatch: r(p.mismatch),
             cost: p.cost,
-            failure_chance: p.failure_chance,
+            failure_chance: r(p.failure_chance),
             // Exact only for a partner the player can see: distances to
             // hidden organisms would locate them (rounded up to 16 tiles).
             distance: if partner_seen { p.distance } else { (p.distance / LISTING_CELL).ceil() * LISTING_CELL },
@@ -4558,7 +4562,8 @@ impl Game {
         day: u64,
         out: &mut Outbox,
     ) {
-        let alert = AlertView { tick: self.world.tick(), day, kind, text, organism };
+        let id = self.alerts.get(&player).and_then(|l| l.iter().map(|a| a.id).max()).unwrap_or(0) + 1;
+        let alert = AlertView { id, tick: self.world.tick(), day, kind, text, organism };
         let list = self.alerts.entry(player).or_default();
         list.push_back(alert.clone());
         if list.len() > MAX_ALERTS {
@@ -9074,7 +9079,7 @@ mod tests {
         g.set_name(1, "ann");
         let wild = g.world.lineages.iter().find(|l| l.owner == WILD).unwrap().name.clone();
         let singular = wild.strip_suffix('s').unwrap_or(&wild).to_string();
-        for n in [wild.clone(), singular.clone(), wild.to_uppercase()] {
+        for n in [wild.clone(), singular.clone(), wild.to_uppercase(), format!("The {singular} 2")] {
             assert!(matches!(g.found(1, &design(&n)), Err(FoundError::BadName(_))), "{n}");
         }
         assert!(g.design_compatibility(1, &design(&singular)).name_warning.is_some());
@@ -9082,6 +9087,11 @@ mod tests {
         let out = g.command(10, 1, None, ClientMsg::SetNameplate { color: "amber".into(), title: singular.clone() });
         assert_eq!(result(&out).1.as_deref(), Some("bad_title"));
         assert!(g.found(1, &design("Grazers of the north")).is_ok());
+        // Nor a copy of another player's living lineage's name (playtest 7).
+        g.set_name(2, "bob");
+        let copy = g.found(2, &design("The Grazers of the north 2"));
+        assert!(matches!(copy, Err(FoundError::BadName(_))), "{:?}", copy.map(|o| o.lineage));
+        assert!(g.found(2, &design("Grazers of the south")).is_ok());
     }
 
     /// A juvenile reads `not_mature`, not `same_sex` (playtest 5), in a
@@ -10783,6 +10793,7 @@ mod tests {
         assert_eq!(p.distance % 16.0, 0.0, "{}", p.distance);
         let tenths = |x: f32| ((x * 10.0).round() - x * 10.0).abs() < 1e-4;
         assert!(p.body_plan_gaps.iter().all(|g| tenths(g.gap)), "{:?}", p.body_plan_gaps);
+        assert!([p.fertility, p.mismatch, p.failure_chance, p.distance_fertility].iter().all(|&x| tenths(x)), "{p:?}");
         let listing = reply_data(&out)["listing"]["id"].as_u64().unwrap();
         g.command(20, 2, Some(10), ClientMsg::WithdrawListing { listing });
         assert_eq!(g.preview_mating(1, dam, stud).unwrap_err().code, "out_of_sight");
