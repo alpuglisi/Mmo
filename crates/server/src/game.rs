@@ -430,6 +430,11 @@ pub const GRACE_WARN_DAYS: f32 = 3.0;
 /// Tiles from the player's animals within which rival hunters are named in
 /// that warning.
 pub const GRACE_PACK_RANGE: f32 = 30.0;
+/// Tiles from a group to the far end of a claim or rally from which the
+/// way is checked for rival hunters and territory (`Game::way_warnings`).
+pub const WAY_WARN_TILES: f32 = 12.0;
+/// Tiles from that way within which other players' hunters are named.
+pub const WAY_HUNTER_TILES: f32 = 10.0;
 /// Most players one player may block.
 pub const MAX_BLOCKED: usize = 200;
 
@@ -2610,7 +2615,8 @@ impl Game {
                             }
                             .into();
                         }
-                        let mut warnings = self.circle_report(player, group, t.center, t.radius, &mut data);
+                        let mut warnings = self.way_warnings(player, group, t.center);
+                        warnings.extend(self.circle_report(player, group, t.center, t.radius, &mut data));
                         // Starving now: the sim loosens the hold within the
                         // hour, whatever the ground will feed once it
                         // recovers; said here, and not again just after.
@@ -2669,6 +2675,7 @@ impl Game {
                 self.order_given(player, group);
                 let mut data = serde_json::to_value(RallyView::from(r)).unwrap();
                 let mut warnings = self.travel_warnings(player, group, false);
+                warnings.extend(self.way_warnings(player, group, r.center));
                 warnings.extend(self.circle_report(player, group, r.center, r.radius, &mut data));
                 put_warnings(&mut data, warnings);
                 self.brood_report(player, group, &mut data);
@@ -6798,6 +6805,64 @@ impl Game {
             }
         }
         warnings
+    }
+
+    /// The way from a group's middle to `to` (straight, as far claims and
+    /// rallies walk): other players' hunters within [`WAY_HUNTER_TILES`]
+    /// of it, and another player's territory at `to` or crossed on the way
+    /// (playtest 10: a claim 28 tiles away and a rally into a rival's
+    /// territory said nothing). Only for a way of [`WAY_WARN_TILES`] or
+    /// more, or one ending in a rival's territory.
+    fn way_warnings(&self, player: PlayerId, group: u8, to: Vec2) -> Vec<String> {
+        let mut out = Vec::new();
+        let Some(from) = self.world.group_middle(player, group) else { return out };
+        let len = from.dist(to);
+        // Distance from a point to the segment from-to.
+        let off = |p: Vec2| {
+            let d = to - from;
+            let l2 = d.x * d.x + d.y * d.y;
+            if l2 <= 1e-6 {
+                return p.dist(from);
+            }
+            let t = (((p.x - from.x) * d.x + (p.y - from.y) * d.y) / l2).clamp(0.0, 1.0);
+            p.dist(from + d * t)
+        };
+        let rival_lands: Vec<(PlayerId, evo_sim::world::groups::Territory)> =
+            self.world.all_territories().filter(|&(p, _, _)| p != player).map(|(p, _, t)| (p, *t)).collect();
+        if let Some((p, _)) = rival_lands.iter().find(|(_, t)| t.contains(to)) {
+            out.push(format!(
+                "That ground lies inside {}'s territory: its holders harass intruders, and your animals there are \
+                 the first they meet.",
+                self.name(*p)
+            ));
+        } else if len >= WAY_WARN_TILES {
+            if let Some((p, _)) = rival_lands.iter().find(|(_, t)| off(t.center) < t.radius) {
+                out.push(format!("The way crosses {}'s territory: its holders harass intruders.", self.name(*p)));
+            }
+        }
+        if len >= WAY_WARN_TILES {
+            let mut by: BTreeMap<PlayerId, usize> = BTreeMap::new();
+            for o in self
+                .world
+                .organisms
+                .iter()
+                .filter(|o| o.alive && o.owner != player && o.owner != WILD && o.traits.carnivory > 0.6)
+            {
+                if off(o.pos) < WAY_HUNTER_TILES {
+                    *by.entry(o.owner).or_default() += 1;
+                }
+            }
+            if !by.is_empty() {
+                let named: Vec<String> =
+                    by.iter().map(|(&o, &n)| format!("{n} of {}'s hunters", self.name(o))).collect();
+                out.push(format!(
+                    "The way ({len:.0} tiles) passes {} within {WAY_HUNTER_TILES:.0} tiles: the group walks it in the \
+                     open.",
+                    named.join(" and ")
+                ));
+            }
+        }
+        out
     }
 
     /// A group's standing orders, by name: what a new order replaces.

@@ -1602,3 +1602,21 @@ fn a_shop_quote_holds_for_a_few_seconds() {
     }
     assert_eq!(g.survey(1).unwrap().price, economy::survey_price(g.owner_population(1)), "then today's");
 }
+
+/// Playtest 10: a rally into a rival's territory said nothing. It warns
+/// now, naming the holder.
+#[test]
+fn a_rally_into_a_rival_territory_warns() {
+    let (mut g, _) = game();
+    tick(&mut g);
+    g.set_name(2, "bo");
+    g.found(2, &design("B").founders(20)).unwrap();
+    g.connect(20, 2, "bo");
+    let there = g.world.group_middle(2, 0).unwrap();
+    let out = g.command(20, 2, Some(1), ClientMsg::ClaimTerritory { group: 0, x: there.x, y: there.y, radius: 4.0 });
+    let ServerMsg::Result { error: None, .. } = &out[0].1 else { panic!("bo's claim: {:?}", out[0].1) };
+    let t = g.world.territory(2, 0).expect("bo's territory");
+    let d = run(&mut g, ClientMsg::Rally { group: 0, x: t.center.x, y: t.center.y }).unwrap();
+    let warnings: Vec<String> = serde_json::from_value(d["warnings"].clone()).unwrap_or_default();
+    assert!(warnings.iter().any(|w| w.contains("inside bo's territory")), "{d}");
+}
