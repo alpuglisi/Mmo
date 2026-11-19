@@ -9374,6 +9374,50 @@ and 8 of 8 (8 and 8 off; viable 7 and 8 either way).
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.77 (± 0.16; 11.82 with the five tunables off). Every lineage survives 12 of 12. |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
 
+### Playtest 10: server Lows
+
+Server-side Lows from `docs/playtest-10.md`:
+
+- **Wording.** The migrate dry-stretch warning no longer reads "about
+  about N days". Real-minute texts go through one helper (`real_minutes`:
+  "under a real minute", "about a real minute", "about N real minutes"),
+  used by the grace warning, the re-found rule, auction lengthening,
+  duration refusals and the reinforce block. A forfeit names the market fee
+  only when one was taken. An escrow payout says "too little for a market
+  fee" when the fee rounds to nothing.
+- **Rounding.** Listings (age, health, trait values), species views (diet,
+  size, body plan), migrate replies (dry stretch, thirsty share, route
+  points in tenths) and the `mostly_water` error's water share are rounded.
+- **Drift risk.** Player lineages always read drift risk "none", because
+  players no longer exchange genes naturally. A wild row has none once it is
+  fertile. The client words a high risk as "sterile now, but drift could soon
+  make them fertile". `fertile_with` counts only rows with fertility above
+  0.
+- **Re-founding reply.** The founding reply's `reduced` is one flat
+  sentence ("your last lineage retired on day N, and a re-founding within W
+  days of that gets half the founders"), not the whole rule nested inside
+  another sentence.
+- **Offers.** Offers made to a player while they had no connection are sent
+  as `mating_request` when they connect, once. Retiring ends the retiree's
+  pending offers with code `retired` ("ann retired their lineage, so the
+  offer ended"), not "died before the mating".
+- **`/api/species`.** A living species leaves out a player's lineage that
+  has ended (retired, replaced, or died out) and has no adults left.
+- **Survey quote.** A shop quote holds 60 real seconds (`QUOTE_SECONDS`,
+  10 before), so a survey confirmed in the client's dialog costs no more
+  than the dialog said.
+- **Drought provision.** The founding reply says founders "start fully
+  watered". It adds the slower water loss only when that loss is below 95%
+  of the usual rate. It no longer reads "100% of the usual rate".
+- **Renown taper (sink).** Balances piled up to 1,700–4,000 unspent. Daily
+  income now tapers on a balance above `economy::INCOME_TAPER_FROM` (1,000;
+  `GameConfig::income_taper_from`, 0 turns it off). Income is scaled by
+  `1,000 / balance`: half at 2,000, a quarter at 4,000, never below the
+  stipend. The ledger line says how much the full income was. Saved renown
+  keeps its value, but hoarding stops paying. A leader who spends (shop,
+  studs, auctions) keeps earning in full. Royalties and achievement bonuses
+  are not tapered.
+
 ### Playtest 9: server Lows
 
 Server-side Lows from `docs/playtest-9.md`:
