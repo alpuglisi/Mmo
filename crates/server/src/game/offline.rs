@@ -815,6 +815,7 @@ mod tests {
             obedience: 0.5,
             migration_deadline_tick: None,
             settle: None,
+            territory_away: None,
         };
         assert_eq!(home_group(&[info(0, 9, false), info(1, 3, true), info(2, 5, true)]), Some(2));
         assert_eq!(home_group(&[info(0, 5, true), info(1, 5, true)]), Some(0), "ties to the lower id");

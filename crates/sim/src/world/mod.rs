@@ -82,6 +82,7 @@ use crate::terrain::{Map, Season, Traverse, Weather};
 
 pub use chronicle::{biome_niche, diet_niche};
 use density::SpeciesDensity;
+pub use environment::CLUTCH_COVERED;
 pub use lod::{Cohort, LodStats, PoolEntry};
 #[cfg(feature = "serde")]
 pub use snapshot::{SnapshotError, SnapshotHeader, SNAPSHOT_VERSION, TERRAIN_VERSION};
@@ -1063,7 +1064,11 @@ impl World {
                 *hunters.entry(o.owner).or_default() += 1;
             }
         }
-        let (full, none) = (apply::PREY_FULL, apply::PREY_NONE);
+        let (full, none) = if bal.pack_prey > 0.0 {
+            (bal.pack_prey, bal.pack_prey * 0.5)
+        } else {
+            (apply::PREY_FULL, apply::PREY_NONE)
+        };
         for (p, h) in hunters {
             let prey = grazers - grazers_of.get(&p).copied().unwrap_or(0);
             let per = prey as f32 / h.max(1) as f32;

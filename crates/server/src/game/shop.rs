@@ -109,9 +109,11 @@ pub const DROUGHT_TRAIT: f32 = evo_sim::stats::STRATEGY_THRESHOLD + 0.1;
 /// [`DesignCompatView::drought_warning`]'s text.
 pub fn drought_design_text(drought: f32) -> String {
     format!(
-        "Drought: {:.0}% of the land is dry. Founders without a drought trait die of thirst within days, even \
-         inside their grace. Add estivation ({DROUGHT_TRAIT:.1} or more) so they sleep \
-         through the dry spell, or wait for the drought to ease.",
+        "Drought: {:.0}% of the land is dry. Founders far from water can die of thirst within days, even inside \
+         their grace. Keeping them by lasting water (the Food layer) is the surest answer, or wait for the drought \
+         to ease. Estivation ({DROUGHT_TRAIT:.1} or more) lets them sleep through a real dry spell where no water is \
+         near, but it has costs: a sleeping lineage doesn't breed, so a dry spring can cost a season's young, and \
+         it wakes needing food.",
         drought * 100.0
     )
 }
@@ -331,13 +333,21 @@ impl Game {
     }
 
     /// `survey`: rivals' groups and territories near the player's main
-    /// group, coarsely, for renown scaled by their lineage's size.
+    /// group (or its biggest group when the main one is empty), coarsely, for renown scaled by their lineage's size.
     pub(super) fn survey(&mut self, player: PlayerId) -> Result<crate::protocol::SurveyView, ErrorInfo> {
         if self.lineage_of(player).is_none() || self.is_extinct(player) {
             return Err(ErrorInfo::new("no_lineage", "you have no living lineage to survey from"));
         }
-        let Some(from) = self.world.group_middle(player, 0) else {
-            return Err(ErrorInfo::new("no_lineage", "your main group has no animals to survey from"));
+        // From the main group, else the biggest group with animals
+        // (playtest 8: refused with 88 alive because the main group was
+        // empty).
+        let from = self.world.group_middle(player, 0).or_else(|| {
+            let groups = self.world.groups(player);
+            let big = groups.iter().filter(|g| g.members > 0).max_by_key(|g| (g.members, std::cmp::Reverse(g.id)))?;
+            self.world.group_middle(player, big.id)
+        });
+        let Some(from) = from else {
+            return Err(ErrorInfo::new("no_lineage", "none of your groups has animals to survey from"));
         };
         let price = economy::survey_price(self.owner_population(player));
         let coarse = |v: f32| (v / 8.0).floor() * 8.0 + 4.0;

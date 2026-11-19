@@ -502,7 +502,11 @@ export class WorldView {
     home: number | null;
   } {
     const groups = drawnGroups(this.state);
-    const territories = groups.flatMap((g) => (g.territory ? [{ group: g.id, x: g.territory.x, y: g.territory.y, radius: g.territory.radius }] : []));
+    // A territory kept while its group migrates is still drawn (playtest 8: hidden from its owner).
+    const territories = groups.flatMap((g) => {
+      const t = g.territory ?? g.territory_kept;
+      return t ? [{ group: g.id, x: t.x, y: t.y, radius: t.radius }] : [];
+    });
     const rallies = groups.flatMap((g) => (g.rally ? [{ group: g.id, x: g.rally.x, y: g.rally.y, radius: g.rally.radius }] : []));
     return { territories, rallies, draft: this.territoryDraft, home: homeRangeGroup(groups)?.id ?? null };
   }
