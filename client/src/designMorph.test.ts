@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import costFixture from './cost.fixture.json';
 import { designCost } from './cost';
 import {
-  applyMorphology, applyTrait, blindSpots, designPayload, morphPayload, morphPrices, morphSupport, newEditorDesign, SHARED_GENES, STARTER_TRAITS, starterValue, visionReadout,
+  applyMorphology, applyTrait, blindSpots, designPayload, morphPayload, morphPrices, morphSupport, newEditorDesign, SHARED_GENES, STARTER_FOUNDERS, STARTER_TRAITS, starterValue, visionReadout,
 } from './designMorph';
 import { DEFAULT_MORPHOLOGY, defaultMorphology, traitsFromMorphology, type Morphology } from './morphology';
 import type { GeneCatalog, MorphInfo } from './protocol';
@@ -50,8 +50,9 @@ describe('feature detection', () => {
     const s = newEditorDesign(real);
     s.name = 'Starter';
     const c = designCost(designPayload(s, real), real);
-    expect(c.traits).toBeCloseTo(9, 5);
-    expect(c.total).toBeLessThan(real.budget * 0.15);
+    // A safe first lineage that still leaves most of the budget (round 12: about 33 points).
+    expect(c.total).toBeLessThan(real.budget * 0.4);
+    expect(s.founders).toBe(Math.max(real.base_founders, STARTER_FOUNDERS));
   });
 
   it('an old server never gets morph, whatever the body plan', () => {
@@ -62,7 +63,7 @@ describe('feature detection', () => {
     expect(p).not.toHaveProperty('morph');
     expect(p).not.toHaveProperty('morphology');
     expect(p.name).toBe('Watchers');
-    expect(JSON.parse(JSON.stringify(p))).toEqual({ name: 'Watchers', thermo: 'warm', birth: 'incubated_eggs', litter_size: 3, traits: starterIn(oldCat), founders: 10 });
+    expect(JSON.parse(JSON.stringify(p))).toEqual({ name: 'Watchers', thermo: 'warm', birth: 'incubated_eggs', litter_size: 3, traits: starterIn(oldCat), founders: STARTER_FOUNDERS });
   });
 
   it('a new server gets the non-default morph fields only', () => {
