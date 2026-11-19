@@ -9395,7 +9395,9 @@ plateaued at 60–84 and lost 60% in its first winter, inside its grace.
   when it has 40 or more alive (`World::refresh_pack_room`). With round 7's
   larder the wild newts were lost on 4 of 16 `predlong` seeds against 2
   without it: a few prey fed a bigger pack that then hunted them out.
-  Measured below (PREY_FLOOR_RESULT).
+  On this main (`predlong 6`, seeds 31–38 and 41–48), seeds with a prey
+  lost: 2 with it, 3 with `prey_floor` 0; pack hunters 16/16 both; fox
+  14/16 both (viable 12 with it, 14 without, within the seeds' spread).
 - **Balance's H1** (hungry hunters may take bright toxic prey) hadn't landed
   on main when this was measured. Once merged it should feed packs that
   live among toxic herds; it is not measured here.
