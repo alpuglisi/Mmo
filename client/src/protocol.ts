@@ -78,6 +78,9 @@ export type ClientMsg =
   /** Reinforcements for a small lineage (adults copied from its own); data: `{ added: OrgId[], shop: ShopView }`. */
   | { type: 'reinforce' }
   | { type: 'provision' }
+  /** Restore the pasture around your main group (every dry tile within 12 tiles regrows in full). Renown: 1 per living
+   * member (at least 200), doubled for each restoration within a ranked season's length. Data: `{restored, price, shop}`. */
+  | { type: 'restore_pasture' }
   | { type: 'survey' }
   | { type: 'name_animal'; organism: OrgId; name: string }
   | { type: 'animal_names' }
@@ -848,6 +851,8 @@ export interface FoundResponse {
   grace?: string;
   /** The drought provision, when it applied (founders start watered); also sent as an alert. */
   watered?: string;
+  /** Where the founders landed and how far the nearest rival's animals and territory are; also sent as an alert. */
+  landing?: string;
 }
 
 export interface GeneInfo {
@@ -1119,6 +1124,9 @@ export interface ShopView {
   provisions_bought?: number;
   provisions_max?: number;
   provision_blocked?: string;
+  /** The price of a pasture restoration now, and how many were bought within the window (absent on older servers). */
+  restore_price?: number;
+  restores_bought?: number;
   /** When the next reinforcement is possible if the window is full: the day and about how many real minutes from now. */
   reinforce_next_day?: number;
   reinforce_next_minutes?: number;
