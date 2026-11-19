@@ -69,6 +69,9 @@ describe('the builder’s interbreeding check', () => {
     const m = hybridAdvice(design(), species, 3, new Map([[1, 0.62]]));
     expect(m.points[0]).toMatch(/Steppe antelope \(120 adults, 62% fertile, measured\)/);
     expect(m.points[0]).not.toMatch(/10% fertile/);
+    // Measured sterile: not listed as one it may interbreed with (playtest 12).
+    const none = hybridAdvice(design(), species, 3, new Map([[1, 0]]));
+    expect(none.points.join(' ')).not.toMatch(/Steppe antelope/);
   });
 
   it('says a distant design keeps its genes, and who it can never breed with', () => {

@@ -2997,6 +2997,12 @@ pub struct SpeciesView {
     pub adults: f64,
     pub peak_adults: f64,
     pub lineages: Vec<SpeciesLineage>,
+    /// The diet band from the exact mean (`herbivore`, `omnivore`,
+    /// `carnivore`, as the creature sprites draw it): `carnivory` is coarse
+    /// for a player's species, and 0.34 rounded to 0.25 read "herbivore"
+    /// (playtest 12).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub diet: String,
     #[serde(serialize_with = "crate::protocol::round::f2")]
     pub carnivory: f32,
     #[serde(serialize_with = "crate::protocol::round::f2")]
@@ -3090,8 +3096,27 @@ pub struct SpeciesList {
     pub samples: usize,
     pub alive: usize,
     pub species: Vec<SpeciesView>,
+    /// Species gone with the player lineages that made them (retired or
+    /// died out), left out of `species`: a history line each (playtest 12:
+    /// a retired lineage's species vanished without a word).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ended: Vec<EndedSpeciesView>,
     /// Speciation events credited per player.
     pub founded: Vec<FoundedCount>,
+}
+
+/// A species that ended with its player lineages (`SpeciesList::ended`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EndedSpeciesView {
+    pub id: u32,
+    pub name: String,
+    pub owner: PlayerId,
+    pub owner_name: String,
+    pub founded_day: u64,
+    pub extinct_day: u64,
+    /// Its main lineage was retired that day (rather than dying out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired_day: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

@@ -243,7 +243,8 @@ export function measuredFertility(s: SpeciesView, measured?: ReadonlyMap<number,
 /** The builder's interbreeding warning for a design, from the living species. */
 /** `measured`: the server's sampled fertility by lineage (`POST /api/design/compatibility`), when it has answered. */
 export function hybridAdvice(d: DesignSpec, species: readonly SpeciesView[], me: PlayerId, measured?: ReadonlyMap<number, number>): HybridAdvice {
-  const near = neighbours(d, species, me);
+  // A species the server measured as sterile with this design isn't "in range" (playtest 12: "Red fox (…, 0% fertile, measured)" under "may interbreed").
+  const near = neighbours(d, species, me).filter((n) => (measuredFertility(n.species, measured) ?? 1) > 0.005);
   const sure = near.filter((n) => !n.possible);
   const wild = sure.filter((n) => n.wild);
   const rivals = sure.filter((n) => !n.wild);

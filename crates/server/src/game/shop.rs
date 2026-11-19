@@ -125,10 +125,10 @@ pub const HEAT_DESIGN_SHARE: f32 = 0.25;
 /// [`DesignCompatView::heat_warning`]'s text.
 pub fn heat_design_text(share: f32, limit: f32) -> String {
     format!(
-        "Heat: in summer about {:.0}% of the land gets hotter than this design can bear (about {limit:.0} °C, its coat \
-         and body hold the heat in), and founders landing there die of heat in their first summer. Shade and water \
-         don't cool them; less fur and fat, a smaller body, burrowing (a burrow keeps the midday heat off) or \
-         estivation (sleeping through the hottest weeks) do.",
+        "Heat: in summer about {:.0}% of the land gets hotter than this design can bear (about {limit:.0} °C, its fur \
+         and fat hold the heat in), and founders landing there die of heat in their first summer. Shade and water \
+         don't cool them, and body size makes no difference; less fur and fat, burrowing (a burrow keeps the midday \
+         heat off) or estivation (sleeping through the hottest weeks) do.",
         share * 100.0
     )
 }
