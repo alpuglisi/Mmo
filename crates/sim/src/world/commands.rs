@@ -468,6 +468,32 @@ impl World {
         })
     }
 
+    /// Refill the plants on every dry tile within `radius` of `center` to
+    /// what the tile holds at most (`Tile::veg_max`); the food added. The
+    /// server's pasture restoration, a renown sink (`Game::restore_pasture`).
+    pub fn restore_pasture(&mut self, center: crate::math::Vec2, radius: f32) -> f32 {
+        let r = radius.max(0.0);
+        let (w, h) = (self.map.width as i64, self.map.height as i64);
+        let (cx, cy) = (center.x.floor() as i64, center.y.floor() as i64);
+        let ri = r.ceil() as i64;
+        let mut added = 0.0;
+        for y in (cy - ri).max(0)..=(cy + ri).min(h - 1) {
+            for x in (cx - ri).max(0)..=(cx + ri).min(w - 1) {
+                let p = crate::math::Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                if p.dist(center) > r {
+                    continue;
+                }
+                let max = self.map.ground_at(p).veg_max;
+                let t = self.map.tile_at_mut(p);
+                if t.water_depth <= 0.0 && t.veg < max {
+                    added += max - t.veg;
+                    t.veg = max;
+                }
+            }
+        }
+        added
+    }
+
     /// Keep an organism from breeding on its own until `until_tick` (it can
     /// still take part in a directed mating). The server holds a female
     /// promised in an open mating agreement, so she isn't already pregnant
