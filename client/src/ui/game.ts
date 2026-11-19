@@ -2128,7 +2128,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const rule = w?.refound_rule ? `After retiring, ${w.refound_rule}.` : 'Founding again soon after retiring founds fewer founders and costs renown.';
     // Your own next fee, quoted (playtest 9: the dialog gave only the rule).
     const sh = await send({ type: 'renown_shop' });
-    const fee = sh.ok ? (sh.data as { next_refound_fee?: number; owed?: number } | undefined) : undefined;
+    const fee = sh.ok ? (sh.data as { next_refound_fee?: number | null; owed?: number } | undefined) : undefined;
     const feeLine = fee?.next_refound_fee ? `Founding again now would cost you ${fee.next_refound_fee} renown${fee.owed ? ` (you already owe ${fee.owed})` : ''}.` : '';
     const yes = await confirmDialog({
       id: 'retire-confirm', title: `Retire lineage #${lineage}?`, ok: 'Retire lineage', danger: true,

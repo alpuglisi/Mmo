@@ -24,7 +24,8 @@ fn game_with(cfg: GameConfig) -> (Game, Vec<OrgId>) {
 }
 
 fn game() -> (Game, Vec<OrgId>) {
-    game_with(GameConfig::default())
+    // Orders in quick succession (the cooldown has its own test).
+    game_with(GameConfig { order_cooldown_ms: 0.0, ..GameConfig::default() })
 }
 
 /// The command's result: `Ok(data)` or `Err(code)`.
@@ -698,7 +699,8 @@ fn a_migration_of_a_dormant_group_warns_and_says_why_it_ended() {
 
 #[test]
 fn claims_say_what_changed_and_warn_when_far_or_short_of_food() {
-    let (mut g, _) = game_with(GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let (mut g, _) =
+        game_with(GameConfig { claim_cooldown_min_minutes: 0.0, order_cooldown_ms: 0.0, ..Default::default() });
     let home = g.world.group_middle(1, 0).unwrap();
     // A radius below the minimum is raised, and says so.
     let d = run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 0.5 }).unwrap();
@@ -815,7 +817,8 @@ fn the_daily_check_alerts_a_dry_territory_and_a_drifted_herd_once() {
 /// refused, and orders say what they replace.
 #[test]
 fn far_claims_migrate_first_and_claims_say_what_they_replace() {
-    let (mut g, _) = game_with(GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let (mut g, _) =
+        game_with(GameConfig { claim_cooldown_min_minutes: 0.0, order_cooldown_ms: 0.0, ..Default::default() });
     let home = g.world.group_middle(1, 0).unwrap();
     assert_eq!(
         run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: -2.0 }),
@@ -894,7 +897,8 @@ fn group_alerts_outlive_daily_summaries() {
 
 #[test]
 fn far_claims_and_rallies_share_the_travel_warnings_and_migrate_checks_the_destination() {
-    let (mut g, _) = game_with(GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let (mut g, _) =
+        game_with(GameConfig { claim_cooldown_min_minutes: 0.0, order_cooldown_ms: 0.0, ..Default::default() });
     let home = g.world.group_middle(1, 0).unwrap();
     for o in g.world.organisms.iter_mut().filter(|o| o.owner == 1) {
         o.dormancy = evo_sim::organism::Dormancy::Winter;
@@ -1378,7 +1382,8 @@ fn the_survey_shows_territories_held_away_and_works_without_a_main_group() {
 #[test]
 fn migrate_warns_of_sleep_rival_ground_and_drying_water() {
     let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
-    let mut g = Game::new(world, GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let mut g =
+        Game::new(world, GameConfig { claim_cooldown_min_minutes: 0.0, order_cooldown_ms: 0.0, ..Default::default() });
     g.set_name(1, "ann");
     g.set_name(2, "bob");
     g.found(1, &design("A")).unwrap();
@@ -1509,7 +1514,8 @@ fn a_merged_or_retired_group_does_not_die_out() {
 /// after doesn't repeat it).
 #[test]
 fn a_dwindling_group_and_a_starving_claim_say_so() {
-    let (mut g, _) = game_with(GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let (mut g, _) =
+        game_with(GameConfig { claim_cooldown_min_minutes: 0.0, order_cooldown_ms: 0.0, ..Default::default() });
     let d = run(&mut g, ClientMsg::SplitGroup { group: 0, organisms: None }).unwrap();
     let b = d["group"].as_u64().unwrap() as u8;
     let record = g.daily_record();
