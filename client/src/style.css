@@ -446,7 +446,6 @@ button.danger { background: #b62324; color: #fff; }
   .toast.long, .toast.open { pointer-events: auto; cursor: pointer; }
   .stage-wrap:has(.toolbar.more-open) .toast { pointer-events: none; }
   .toasts { max-height: 40%; overflow: hidden; }
-  .toast:nth-last-child(n+3) { display: none; } /* the two newest only: keep the map visible */
 
   .sidebar {
     position: absolute; left: 0; right: 0; bottom: 0; width: auto; max-height: var(--tabbar-h, 50px);
@@ -544,6 +543,10 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .standing .board td.rank { width: 2em; color: var(--muted); }
 .standing .board td.num { text-align: right; white-space: nowrap; }
 .standing .board td { overflow-wrap: anywhere; }
+/* A name and its nameplate stay on one line, each cut short if need be (playtest 12: "GeneBroker12 / « / Stud Farmer / »" over three lines on a phone). */
+.standing .board td:has(> .who), .board td:has(> .nameplate) { white-space: nowrap; overflow-wrap: normal; }
+.standing td:has(> .nameplate) .who { max-width: 6.5em; }
+.board td .nameplate { max-width: 6.5em; vertical-align: bottom; }
 #season-more { margin-top: 6px; }
 /* Eight tabs share a phone's width: smaller labels, no side padding to spare. */
 @media (max-width: 760px) {
@@ -673,4 +676,4 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .design-warning.warn-warn { border-color: #d29922; color: #e3b341; }
 .design-warning.warn-bad { border-color: #f85149; color: #ff7b72; }
 .possess-bar button[hidden] { display: none; }
-.tool.soft-disabled { opacity: 0.5; }
+.tool.soft-disabled, button.soft-disabled { opacity: 0.5; }

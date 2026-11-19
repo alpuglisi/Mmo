@@ -504,6 +504,69 @@ pub fn within_one(a: &str, b: &str) -> bool {
     s[p..] == l[p + 1..]
 }
 
+/// Whether `a` and `b` are at most two edits apart (letters added, dropped,
+/// changed or neighbours swapped: the optimal string alignment distance),
+/// for long names ("Hedrmatser" for "Herdmaster": playtest 12).
+pub fn within_two(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len().abs_diff(b.len()) > 2 {
+        return false;
+    }
+    let (n, m) = (a.len(), b.len());
+    let mut d = vec![vec![0usize; m + 1]; n + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut v = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                v = v.min(d[i - 2][j - 2] + 1);
+            }
+            d[i][j] = v;
+        }
+    }
+    d[n][m] <= 2
+}
+
+/// Whether `text` as a whole, or one of its words, is within two edits of
+/// `name` (not any stretch: "Herd of masters" is two letters from
+/// "Herdmaster" too).
+fn two_off(text: &str, name: &str) -> bool {
+    within_two(&fold(&letters(text)), name)
+        || text.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| within_two(&fold(&letters(w)), name))
+}
+
+/// Whether `text`'s words, put in another order, spell `name` (each word
+/// at least 3 letters, at most 5 words), a letter off at most: "Master
+/// Herd", "Hunter Apex", "Comer Late" (playtest 12).
+fn reordered(text: &str, name: &str) -> bool {
+    let words: Vec<String> =
+        text.split(|c: char| !c.is_ascii_alphanumeric()).map(|w| fold(&letters(w))).filter(|w| !w.is_empty()).collect();
+    if words.len() < 2 || words.len() > 5 || words.iter().any(|w| w.len() < 3) || name.len() < 6 {
+        return false;
+    }
+    fn permute(words: &mut Vec<String>, k: usize, name: &str) -> bool {
+        if k == words.len() {
+            let joined = words.concat();
+            return joined == name || within_one(&joined, name);
+        }
+        for i in k..words.len() {
+            words.swap(k, i);
+            if permute(words, k + 1, name) {
+                return true;
+            }
+            words.swap(k, i);
+        }
+        false
+    }
+    permute(&mut words.clone(), 0, name)
+}
+
 /// Whether some stretch of `text` is within one edit of `name`.
 fn near_inside(text: &str, name: &str) -> bool {
     let n = name.len();
@@ -594,6 +657,11 @@ pub fn impersonates<'a>(text: &str, others: impl IntoIterator<Item = &'a str>, k
                 // 6 letters, anywhere in `text` ("Herdmastr10", "GeneBrokr",
                 // "Herdmaste": playtest 10).
                 || (ol.len() >= 6 && near_inside(&fl, &ol))
+                // Two edits in a long name (9+ letters: "Hedrmatser"), and
+                // the name's parts in another order ("Master Herd"):
+                // playtest 12.
+                || (ol.len() >= 9 && two_off(text, &ol))
+                || reordered(text, &ol)
                 || (kind == Kind::Account
                     && short.len() >= 5
                     && long.len() - short.len() <= 2
@@ -607,7 +675,7 @@ pub fn impersonates<'a>(text: &str, others: impl IntoIterator<Item = &'a str>, k
 /// Nomad", "Pocket Master", "Apex Nomad" (playtest 11) blend two players'
 /// names. Two names' ends ("Nomad Hunter") or starts are generic enough to
 /// pass.
-fn blends(text: &str, names: &[String]) -> bool {
+pub fn blends(text: &str, names: &[String]) -> bool {
     let t = fold(&letters(text));
     (4..=t.len().saturating_sub(4)).any(|k| {
         let (start, end) = t.split_at(k);
@@ -955,9 +1023,21 @@ mod tests {
             ("Herd Pocket", false),
             ("Steppe grazers", false),
             ("Masters of the herd", false),
+            // Playtest 12: the parts in another order, two swaps in a long name.
+            ("Master Herd", true),
+            ("Hunter Apex", true),
+            ("Nomad Pocket", true),
+            ("Broker Gene", true),
+            ("Hedrmatser", true),
+            ("Herd of masters", false),
         ] {
             assert_eq!(impersonates(name, players, Kind::Title), blend, "{name:?}");
         }
+        // With a rival's lineage name (playtest 12: "Apex Drifter" from
+        // ApexHunter12 and "Pocket Drifters").
+        let cores: Vec<String> = ["apexhunter", "pocketdrifters", "pocketdrifter"].iter().map(|c| fold(c)).collect();
+        assert!(blends("Apex Drifter", &cores));
+        assert!(!blends("Dust Drifter", &cores));
     }
 
     #[test]

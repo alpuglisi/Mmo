@@ -255,3 +255,16 @@ A random id with digits around a staff word ("8mod2") is now refused, the same a
 | `players_online` in `/api/assign` (anonymous) and `/api/worlds` (logged in). | Both only for the operator token (`/api/assign` reads 0, `/api/worlds` leaves it out). `evo-lobby` sends the token. The mobile e2e runs its servers with one. | integration `worlds.rs`, `push.rs` |
 | Listed animals can be requested from anywhere; a pending request's `apart` (8-tile steps, refreshed every push) narrowed one below its 32-tile region. | `apart` is in 32-tile steps while the requester doesn't see the partner. | — |
 | Anonymous `/api/metrics` command and save timings. | `apply_ms` (all of it), the save timings and `save_bytes` read 0 without the operator token. Tick and state timings stay public. | integration `server.rs` |
+
+## Round 13 (playtest 12)
+
+| Finding | Fix | Test |
+|---|---|---|
+| Medium 4: a player's name with its words reversed passed everywhere ("Master Herd", "Hunter Apex", "Bender Rule", "Comer Late", species "Nomad Pocket"). | `names::reordered`: a name whose words (2 to 5, at least 3 letters each), put in another order, spell a player's name (6+ letters, a letter off at most) is a look-alike, for every kind. | `blends_of_two_names_are_look_alikes` (reordered cases) |
+| Two neighbour swaps ("Hedrmatser"). | Names of 9+ letters: within two edits (optimal string alignment, `within_two`) of the whole name or one of its words. Not any stretch: "Herd of masters" passes. | same |
+| Blends with a rival lineage name ("Apex Drifter"). | `Game::blends_rivals`: `names::blends` over other players' names and their living lineage names (with and without a plural s). Applied with `holds_rival_name` (titles, animal and species names) and at founding. | `blends_of_two_names_are_look_alikes` (lineage cores) |
+| Medium 5: migrate, claim and rally warnings named rival territories (with coordinates) anywhere on the map. The cooldown was per group. | `way_warnings` (territory at the destination, crossed on the way) counts only territories the player sees, by the state's outline rule (within 48 tiles of one of their groups). Unseen territories are not mentioned at all. The destination warning (`rival_ground_at`) already used that rule. The migrate/rally cooldown is now per player: one order a second across all their groups. | `move_orders_have_a_short_cooldown` |
+| Low: anonymous `/api/world` gave exact grace days for every graced player, a retired lineage included. | `protected` lists living lineages only, with `days_left` rounded up to whole days. | — |
+| Anonymous `/api/metrics` `state_encode_ns` grew with connections. | Zero without the operator token. | — |
+| A listing's purchase streamed the seller's animal's position; `meet_note` placed out-of-sight predators. | An agreement from a listing gives both animals and the meeting point as 32-tile region centres, with the distance in 16-tile steps (other agreements keep 8-tile cells and 4-tile steps). The note says the point moved to keep clear of a predator, without how far or which way. | — |
+| `others_on_the_way` not filtered by sight. | Already counts only grazers the player sees, since round 11; the playtest build predated it. | — |

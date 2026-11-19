@@ -31,6 +31,15 @@ export interface Toast {
   text: string;
   /** How many alike messages (same words, other #ids or numbers) this one stands for. */
   count?: number;
+  /**
+   * News the server pushed (alerts, mating requests and updates), not the
+   * reply to the player's own command: on phones the newest reply stays
+   * shown above them (playtest 12: a claim's warning was pushed out by the
+   * alerts it set off).
+   */
+  news?: boolean;
+  /** When it was shown (ms, `Date.now()`), for how long it stays. */
+  at?: number;
 }
 
 /** Two toasts are alike when only their ids and numbers differ ("Founder #3 was eaten."). */
@@ -131,19 +140,31 @@ export class GameModel {
     this.emit('offers');
   }
 
-  toast(kind: Toast['kind'], text: string): void {
+  toast(kind: Toast['kind'], text: string, news = false): void {
     // A burst of alike messages (a predator working through the founders)
     // shows as the newest one with a count, not a column of copies.
     const last = this.toasts[this.toasts.length - 1];
-    if (last && last.kind === kind && toastShape(last.text) === toastShape(text)) {
+    if (last && last.kind === kind && !!last.news === news && toastShape(last.text) === toastShape(text)) {
       last.text = text;
+      last.at = Date.now();
       last.count = (last.count ?? 1) + 1;
       this.emit('toast');
       return;
     }
-    this.toasts.push({ kind, text });
+    this.toasts.push({ kind, text, at: Date.now(), ...(news ? { news } : {}) });
     if (this.toasts.length > 6) this.toasts.shift();
     this.emit('toast');
+  }
+
+  /** Texts to toast only through `toastFresh` (the founding notes, also sent as alerts). */
+  private onceTexts = new Set<string>();
+  sayOnce(texts: readonly string[]): void {
+    for (const x of texts) this.onceTexts.add(x);
+  }
+  /** Toast `text` as the newest, once: an earlier copy (never drawn) goes. */
+  toastFresh(kind: Toast['kind'], text: string): void {
+    this.toasts = this.toasts.filter((t) => t.text !== text);
+    this.toast(kind, text, true);
   }
 
   /** Drop error toasts of a command that has since succeeded ("Label: …"), so a fixed mistake doesn't linger beside the success. */
@@ -212,14 +233,14 @@ export class GameModel {
         // An offer to the lineage has no partner yet (0): "one of yours", no link (playtest 5: "#0#0").
         const toLineage = m.offer.partner === 0;
         const text = `${m.offer.from_name} asks to mate their #${m.offer.mine} with ${toLineage ? 'one of yours (you pick which)' : `your #${m.offer.partner}`}`;
-        this.toast('info', text);
+        this.toast('info', text, true);
         this.addFeed([{ kind: 'offer', text, tick: this.tick(), day: this.state?.clock.day, ...(toLineage ? {} : { organism: m.offer.partner }) }]);
         this.emit('offers');
         break;
       }
       case 'alert':
         this.addFeed([alertEntry(m.alert)]);
-        if (toasts(this.prefs, m.alert.kind)) this.toast('info', m.alert.text);
+        if (toasts(this.prefs, m.alert.kind) && !this.onceTexts.has(m.alert.text)) this.toast('info', m.alert.text, true);
         break;
       case 'session_ended':
         this.emit('session_ended');
@@ -246,7 +267,7 @@ export class GameModel {
           break;
         }
         const text = offerUpdateText(m.offer, m.outcome, m.error, this.player);
-        this.toast(m.error && m.offer.status !== 'accepted' ? 'error' : 'info', text);
+        this.toast(m.error && m.offer.status !== 'accepted' ? 'error' : 'info', text, true);
         this.addFeed([{ kind: 'offer', text, tick: this.tick(), day: m.day ?? this.state?.clock.day }]);
         this.emit('offers');
         break;

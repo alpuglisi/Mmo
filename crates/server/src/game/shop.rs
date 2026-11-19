@@ -125,10 +125,10 @@ pub const HEAT_DESIGN_SHARE: f32 = 0.25;
 /// [`DesignCompatView::heat_warning`]'s text.
 pub fn heat_design_text(share: f32, limit: f32) -> String {
     format!(
-        "Heat: in summer about {:.0}% of the land gets hotter than this design can bear (about {limit:.0} °C, its coat \
-         and body hold the heat in), and founders landing there die of heat in their first summer. Shade and water \
-         don't cool them; less fur and fat, a smaller body, burrowing (a burrow keeps the midday heat off) or \
-         estivation (sleeping through the hottest weeks) do.",
+        "Heat: in summer about {:.0}% of the land gets hotter than this design can bear (about {limit:.0} °C, its fur \
+         and fat hold the heat in), and founders landing there die of heat in their first summer. Shade and water \
+         don't cool them, and body size makes no difference; less fur and fat, burrowing (a burrow keeps the midday \
+         heat off) or estivation (sleeping through the hottest weeks) do.",
         share * 100.0
     )
 }
@@ -740,6 +740,28 @@ impl Game {
         (self.world.lineages.iter().enumerate())
             .filter(|(l, x)| x.owner != WILD && x.owner != player && counts.get(*l).is_some_and(|c| c.alive > 0))
             .any(|(_, x)| names::holds_name(text, &x.name))
+            || self.blends_rivals(player, text)
+    }
+
+    /// Whether `text` is the start of one rival name and the end of another
+    /// (`names::blends`), counting other players' living lineage names
+    /// with their names: "Apex Drifter" from ApexHunter12 and "Pocket
+    /// Drifters" (playtest 12).
+    pub(crate) fn blends_rivals(&self, player: PlayerId, text: &str) -> bool {
+        let letters = |s: &str| names::fold(&s.chars().filter(char::is_ascii_alphabetic).collect::<String>());
+        let mut cores: Vec<String> = self.names.iter().filter(|(&p, _)| p != player).map(|(_, n)| letters(n)).collect();
+        let counts = self.world.lineage_counts();
+        for (_, x) in (self.world.lineages.iter().enumerate())
+            .filter(|(l, x)| x.owner != WILD && x.owner != player && counts.get(*l).is_some_and(|c| c.alive > 0))
+        {
+            let core = letters(&x.name);
+            if let Some(one) = core.strip_suffix('s') {
+                cores.push(one.to_string());
+            }
+            cores.push(core);
+        }
+        cores.retain(|c| c.len() >= 4);
+        names::blends(text, &cores)
     }
 
     /// The names players chose that others see: nameplate titles, animal

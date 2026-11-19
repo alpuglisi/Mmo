@@ -266,6 +266,7 @@ describe('GameModel offers', () => {
   it('turns failed results into error toasts', () => {
     const m = new GameModel();
     m.apply({ type: 'result', id: 1, command: 'possess', ok: false, error: { code: 'possessed_by_other', message: 'taken' } });
-    expect(m.toasts[0]).toEqual({ kind: 'error', text: 'Possess: Taken' });
+    expect(m.toasts[0]).toMatchObject({ kind: 'error', text: 'Possess: Taken' });
+    expect(m.toasts[0].news).toBeUndefined();
   });
 });

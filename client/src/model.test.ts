@@ -7,7 +7,8 @@ describe('toasts', () => {
     m.toast('info', 'Founder #3 was eaten.');
     m.toast('info', 'Founder #17 was eaten.');
     m.toast('info', 'Founder #20 was eaten.');
-    expect(m.toasts).toEqual([{ kind: 'info', text: 'Founder #20 was eaten.', count: 3 }]);
+    expect(m.toasts).toMatchObject([{ kind: 'info', text: 'Founder #20 was eaten.', count: 3 }]);
+    expect(m.toasts).toHaveLength(1);
     m.toast('info', 'A storm is coming.');
     m.toast('error', 'A storm is coming.');
     expect(m.toasts.map((t) => t.count ?? 1)).toEqual([3, 1, 1]);
@@ -27,5 +28,20 @@ describe('mating updates', () => {
     expect(m.offers.get(3)?.offer.expires_tick).toBe(100 + 24 * 20);
     send({ status: 'completed' });
     expect(m.toasts.length).toBe(said + 1);
+  });
+});
+
+describe('founding notes', () => {
+  it('toasts a founding note once, however the alert and the reply interleave', () => {
+    const m = new GameModel();
+    const text = 'Your founders landed around (14, 12).';
+    // The alert came while the designer was up (nothing drew it).
+    m.apply({ type: 'alert', alert: { kind: 'world', text, tick: 1 } } as never);
+    m.sayOnce([text]);
+    m.toastFresh('info', text);
+    // A late copy of the alert toasts nothing more.
+    m.apply({ type: 'alert', alert: { kind: 'world', text, tick: 2 } } as never);
+    expect(m.toasts.filter((t) => t.text === text)).toHaveLength(1);
+    expect(m.toasts[m.toasts.length - 1].count ?? 1).toBe(1);
   });
 });

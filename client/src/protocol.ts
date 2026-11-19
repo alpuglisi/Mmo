@@ -394,7 +394,7 @@ export interface NearbyOrganism {
   matured: boolean;
   /** Visible body plan, for the sprite (absent from older servers). */
   look?: Appearance;
-  /** Its lineage is a newcomer under its grace: no other player's animal may attack it, nor it theirs. */
+  /** Its lineage is a newcomer under its grace: no other player's animal may attack it (its own may hunt rivals' unprotected animals; the first such attack ends the grace). */
   protected?: true;
   /** Down in its burrow: attack orders are refused and hunters mostly can't reach it. */
   burrowed?: true;
@@ -1427,6 +1427,8 @@ export interface SpeciesView {
   extinct_day?: number;
   /** Gone because its owner retired its main lineage (that day), not extinct. */
   retired_day?: number;
+  /** Diet band from the exact mean carnivory ('herbivore' | 'omnivore' | 'carnivore'); `carnivory` is coarse for a player's species. */
+  diet?: string;
   merged_into?: number;
   /** The name of the species it merged into. */
   merged_into_name?: string;
@@ -1515,7 +1517,20 @@ export interface SpeciesList {
   samples: number;
   alive: number;
   species: SpeciesView[];
+  /** Species gone with the player lineages that made them (retired or died out), left out of `species`. */
+  ended?: EndedSpecies[];
   founded: FoundedCount[];
+}
+
+export interface EndedSpecies {
+  id: number;
+  name: string;
+  owner: PlayerId;
+  owner_name: string;
+  founded_day: number;
+  extinct_day: number;
+  /** Its main lineage was retired that day (rather than dying out). */
+  retired_day?: number;
 }
 
 export interface EraRow {
