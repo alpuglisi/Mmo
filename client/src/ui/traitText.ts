@@ -10,7 +10,7 @@
 // returns the caption. They only describe: any combination is allowed.
 
 import {
-  adultMass, buoyancy, foodCostOf, GENE_DEFAULTS, DEGREES_PER_INSULATION, FANG_THRESHOLD, fangPlantLoss, flight, geneValue, iceSlip, scaleWarmthLoss,
+  adultMass, sizeWord, buoyancy, foodCostOf, GENE_DEFAULTS, DEGREES_PER_INSULATION, FANG_THRESHOLD, fangPlantLoss, flight, geneValue, iceSlip, scaleWarmthLoss,
 } from '../bodyMath';
 import type { Morphology } from '../morphology';
 import type { DesignSpec } from '../protocol';
@@ -102,9 +102,8 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     low: 'small: quick, stealthy, matures fast; weak and short-lived',
     mid: 'medium: middling strength, defense, speed and lifespan',
     high: 'large: strong, tough, long-lived; slow, hungry, easy to spot',
-    // The size word is the world's weight class (tiny < 1 kg, small < 8, medium < 40, large), as the preview
-    // and the inspector say it (playtest 7: "medium" here, "small" there, for one body).
-    context: (d, _l, base) => `${base.replace(/^\w+/, sizeClass(adultMass(d)))} (adult ≈ ${kg(adultMass(d))})${foodNote(foodCostOf(d, 'body_size', GENE_DEFAULTS.body_size), 'vs. the default size')}`,
+    // The leading word is the weight class (`sizeWord`), as the inspector names the animal.
+    context: (d, _l, base) => `${base.replace(/^\w+/, sizeWord(adultMass(d)))} (adult ≈ ${kg(adultMass(d))})${foodNote(foodCostOf(d, 'body_size', GENE_DEFAULTS.body_size), 'vs. the default size')}`,
   },
   muscle: {
     what: 'Strength and speed, paid for in food.',

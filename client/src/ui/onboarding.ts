@@ -321,7 +321,7 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
     ['Why are my animals dying?', () => 'The Genes tab charts deaths by cause (the names below are the chart\'s); each has a fix. '
       + 'Thirst and hunger are different deaths with different fixes: a herd beside a lake can starve on grazed-bare ground, and one on lush grass can die of thirst far from water. '
       + 'Thirst (no water): animals die within days away from drinkable water; keep herds, territories and rallies near lakes and rivers, above all in a drought, when ponds and streams dry up (and in winter, when they freeze). '
-      + 'Founding in a drought: the design screen says how dry the land is; found fewer, or wait for rain, and move the founders to water if they land far from it: their first days are the riskiest. '
+      + 'Founding in a drought: the design screen says how dry the land is. A drought founding can die out whatever its size (thirst, not crowding, kills it): wait for rain, or keep the founders by lakes and rivers, moving them to water if they land far from it: their first days are the riskiest. '
       + 'Starved (no food): too many animals on too little plant food or prey; spread out (split groups, migrate to green land), found fewer, or eat something else. '
       + 'Winter sleep: some sleepers die every winter, more in their first year and when thin; fat stores help, and founders sleep their first winter free. '
       + 'Exposure: too cold or too hot for the body; fur, fat or a warmer range in winter, shade and water in summer. '
