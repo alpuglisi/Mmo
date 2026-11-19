@@ -27,7 +27,7 @@ Where the design's build order stands:
 What remains is in [Suggested next steps](#suggested-next-steps). Launch
 marketing (drafting, human approval, scheduling and publishing on the
 owner's accounts) lives in [`tools/marketing/`](tools/marketing/PUBLISHING.md).
-Six AI playtests so far; what each found and what changed is summarised in
+Seven AI playtests so far; what each found and what changed is summarised in
 [`docs/changelog-playtests.md`](docs/changelog-playtests.md).
 
 ![World on day 45: player lineages (colored) and the wild ecosystem (pale = herbivores, dark red = predators)](docs/img/world-day45.png)
@@ -1353,7 +1353,18 @@ surviving founder groups"). The simulation runs while a player sleeps, and
 at 1 tick per second a night offline is several hundred simulated days, so
 an unattended small lineage could be wiped out with nothing its owner could
 do. Implemented as the *surviving founder group* form, deliberately narrow so
-that logging out never pays as a strategy:
+that logging out never pays as a strategy.
+
+**Current limits (playtests 5–7).** The 12 real hours below are also capped
+in game time: a spell lasts at most 900 game days (`GameConfig::offline_max_days`),
+about 12 real hours at the normal one-second tick but about 75 real minutes
+(with the home range's fade) at the 100 ms playtest speed, where 12 hours
+was thousands of game days. A spell is dated from when the player left, not
+from when the server noticed: the core shields from then, after 10 idle
+minutes, and the home range from 10 minutes after leaving. Possession ends
+a minute after the connection drops (playtest 3), so the "possessed" case
+below applies only within that minute. The Lineage tab still shows these
+durations three different ways (playtest 7; changing in round 8).
 
 - **Who.** A player's lineage is protected from the moment their last
   connection to that world closes until they connect again, or for at most
@@ -1391,9 +1402,8 @@ that logging out never pays as a strategy:
   logged-out player's protection just by asking), listed on the stud marketplace or an auction,
   or put up as the organism of an auction's highest bid: the doc's "the trip
   carries risk" stands, and a player can't shield a stud by logging off.
-  Possessed organisms aren't protected either (possession outlives a
-  disconnect; an organism still possessed while its owner is away is under
-  orders, not sheltering).
+  Possessed organisms aren't protected either (an organism still possessed
+  in the minute before possession ends is under orders, not sheltering).
 - **What the player sees.** On login, if protection actually applied (the
   lineage was at or below the floor while they were away), a `milestone`
   alert: "While you were away, offline protection shielded your small
@@ -8944,6 +8954,66 @@ around it.
   thirsty in a drought.
 
 
+
+### Playtest 6: balance
+
+Playtest 6 (`docs/playtest-6.md`, findings 1, 4, 6 and part of 9 here). The
+warm egg-laying hibernator took over (Herdmaster6: warm, small, six
+incubated eggs, hibernating, toxic and bright, very sociable, 50 founders;
+the hard cap from about day 200; every legacy crown). A late cold flier
+still reached first place by share. Species credit went to copies of a
+rival's design and to a 47-animal group of one's own lineage, and players'
+toxins made the wild Steppe antelope "poisonous". Founding in a drought
+wiped a lineage, and egg-laying carnivores lost about 10 eggs per hatching
+without a warning.
+
+**Sim rules, on by default from snapshot version 62** (taken as 58 and
+renumbered at merge after versions 58–61), off at 0 for older saves
+(`serde_util::before_v62`):
+
+| Tunable (default) | Rule |
+| --- | --- |
+| `clutch_cover` (2.1) | A sitting parent fully covers 4 eggs. A bigger clutch's brooded temperature is `site + (brooded − site) × (4 / eggs)^2.1`: a clutch of 6 is warmed only 42% of the way, so it chills on cool nights. This is the lever that moved playtest 6's herd. The wild burrowing omnivores' four-egg clutches are spared: with 3 eggs covered they suffered, and two wild prey species died out on single `predlong` seeds. |
+| `toxin_upkeep` (0.5) | Toxins cost food: hunger × `1 + 0.4 × 0.5 × toxins` (+12% at toxins 0.6), whatever the body's metabolism. |
+| `hungry_hunters` (1) | A hunter's learned avoidance of a toxic prey lineage falls by up to 60% as its hunger rises from 60 to 100: a starving predator takes the risk. |
+| `toxin_source` (1) | A poisoning teaches a hunter's lineage about the prey's lineage only when the prey's toxin is that lineage's own (one of its two toxin alleles carries the lineage owner's origin). A wild antelope carrying a player's toxin through a hybrid no longer marks the wild species as poisonous. |
+| `speciation_credit` (1) | A split is credited (the "Species founded" achievement) only when its parent species was the player's own, at least a year old, and the split holds at least 100 adults (`species::SPECIATION_ADULTS`). A copy of a rival's design, or a small or young split, is a species without credit (its own lineage may still name it, once). A species whose lineage has died keeps its owner, so it never continues as another player's cluster: the copier's lineage is never re-filed into the original's species. |
+
+**Server**:
+- **Design-check warnings.** `POST /api/design/compatibility` adds `drought_warning` (drought ≥ 40% and estivation below 0.3) and `carnivore_egg_warning` (incubated eggs with carnivory ≥ 0.5); polish shows both. The founders' drought provision is `founding_drought` (version 61), from another branch.
+- **Namer.** A named species keeps its namer, and an uncredited split is named by its own lineage's player.
+- **Game text.** The warnings carry no playtest notes.
+
+**Scripted replay** (`dominance`). Eight players; Herd is Herdmaster6's
+exact design, founded on day 28. Seeds 1–4, 840 days, both arms on the
+merged build. The playtest 6 arm has the five new tunables off.
+
+| Player | Playtest 6 rules: final share, titles*, capped | New rules: final share, titles*, capped |
+| --- | --- | --- |
+| Steady | 3.6%, 0, 2 | 2.9%, 0, 1 |
+| Big (warm hibernator) | 6.3%, 3, 1 | 9.3%, 12, 1 |
+| Broker (warm live herd) | 4.8%, 1, 0 | 6.2%, 7, 1 |
+| Eggs (playtest 2's egg layer) | 11.2%, 1, 3 | 8.9%, 0, 2 |
+| Flier (PocketNomad5) | 19.5%, 10, 3 | 20.9%, 11, 3 |
+| Cold (LateComer5/6) | 8.4%, 0, 3 | 11.5%, 1, 2 |
+| Loophole (Rulebender5) | 6.2%, 0, 0 | 3.6%, 0, 0 |
+| Herd (Herdmaster6) | 12.7%, 25, 4 | 8.1%, 9, 2 |
+| **Warm egg layers (Eggs + Herd)** | **26 of 40** | **9 of 40** |
+| **Cold fliers** | **10 of 40** | **12 of 40** |
+
+(* Titles are the legacy titles of the 40 whole seasons after day 210.
+"Capped" counts the seeds on which the lineage touched 95% of the 2,100
+hard cap at least once; no lineage ends at it.) The herd falls from 25
+titles to 9 and from the cap on every seed to two. Its mean share falls
+from 17% to 8%. No design takes more than 12 titles, the warm herds gain,
+and every design survives every seed. The toxic flier's 11 titles come
+from 10 founders.
+
+How the defaults were found:
+- **Toxin levers alone don't touch the herd.** With `toxin_upkeep` at 1 or 2 the herd still took 29–30 titles; the toxic fliers and the playtest 2 egg layer took the losses.
+- **Clutch size does.** `clutch_cover` at 1 gave the herd 14 titles before the last merge and 23 after; at 2 it died out on every seed.
+- **Settled at** 1.25 with toxin upkeep 0.5 (with 3 eggs covered), then moved to 4 eggs covered at 2.1. That keeps the same cover for a clutch of 6 and spares the wild four-egg layers; the table above is that final setting.
+
 ### Playtest 5: balance
 
 Playtest 5 (`docs/playtest-5.md`, findings 1, 2, 3, 7 and part of 13 here):
@@ -9151,6 +9221,7 @@ How the prey-per-hunter bounds were chosen (the six-player study,
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` (main: 11.90) | | 11.91 (± 0.10); every lineage 12 of 12 |
 | `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 12/16 (11), 16/16 (16); 1 (newts, seed 38) | 13/16 (13), 16/16 (16); 3 (newts, seeds 34, 36 and 38) |
 | workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (456), build, e2e (16 scripts, `E2E_JOBS=2`) | | pass |
+| After merging main's round 7 (renumbered to v63): sweep; predlong (fox, pack hunters; prey lost); tests, clippy, fixtures, client (`vitest` 459), e2e | predlong 14/16 (13), 16/16; 2 | sweep 11.91 (± 0.09); predlong 14/16 (12), 16/16; 4; pass (e2e 14 of 16 under load, mobile and panels passed alone) |
 
 - **predlong includes a player pack lineage**, so the larder applies there.
   The newts were lost on two more seeds, where the larder kept more
