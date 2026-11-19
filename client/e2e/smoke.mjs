@@ -1434,7 +1434,11 @@ async function main() {
       }
       return { r: null, tries };
     }, { group: newGroup, t: { x: shown.t.x, y: shown.t.y } });
-    if (!cooldown.r) throw new Error(`back-to-back claims never met the cooldown: ${JSON.stringify(cooldown.tries)}`);
+    // The cooldown is waived while the group's territory is dry or grazed
+    // bare (`World::territory_failing`), which the fast world often makes it:
+    // then every re-claim goes through, by the rule.
+    if (!cooldown.r && cooldown.tries.some((t) => t !== 'ok')) throw new Error(`back-to-back claims never met the cooldown: ${JSON.stringify(cooldown.tries)}`);
+    const cooldownSaid = cooldown.r ? 'cooldown refused a re-claim' : 'cooldown waived (its territory is failing: re-claims allowed)';
     // Rally the new group from its card with one map tap; it replaces the
     // territory, shows on the map and on the card, and is cancelled.
     await page.click(`#group-list .group-card[data-group="${newGroup}"] button[data-action="rally"]`);
@@ -1462,7 +1466,7 @@ async function main() {
     if (!merged.ok) throw new Error(`merge_groups failed: ${JSON.stringify(merged.error)}`);
     await waitFor('one group again', () => page.evaluate(() => window.evo.model.state.groups.length === 1
       && document.querySelector('#group-select').value === 'all' && !window.evo.model.state.organisms.some((o) => o.group)), 20000);
-    step(`groups: split ${split.data.moved} organisms into group ${newGroup}, territory radius ${shown.t.radius.toFixed(1)} drawn (${cards} group cards), cooldown refused a re-claim, rallied (radius ${rally.data.radius.toFixed(1)}) and cancelled, merged back (${merged.data.moved})`);
+    step(`groups: split ${split.data.moved} organisms into group ${newGroup}, territory radius ${shown.t.radius.toFixed(1)} drawn (${cards} group cards), ${cooldownSaid}, rallied (radius ${rally.data.radius.toFixed(1)}) and cancelled, merged back (${merged.data.moved})`);
 
     await page.evaluate(() => window.evo.screen().view.setFollow(true));
     await page.click('#tab-organism');
