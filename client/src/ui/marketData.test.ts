@@ -144,8 +144,11 @@ describe('compatibility and the shop', () => {
       .toBe("bob's Foxes: sterile (body plans too different to breed, even in the closest pair)");
     // Playtest 3: "sterile (body size 0.22 apart; 0.30 is sterile)" contradicted itself.
     const mostly = compatRowText({ ...row, fertility: 0.03, compatible: false, gap: 0.22, limiting: 'body_size',
-      fertile_share: 0.2, fertility_low: 0, fertility_high: 0.45, drift_risk: 'high' });
-    expect(mostly).toBe("ann's Foxes: mostly sterile: 20% of pairs can conceive, most pairs 0%–45% (body size far apart in the closest pair) · drift risk high");
+      fertile_share: 0.2, fertility_low: 0, fertility_high: 0.45, drift_risk: 'none' });
+    expect(mostly).toBe("ann's Foxes: mostly sterile: 20% of pairs can conceive, most pairs 0%–45% (body size far apart in the closest pair)");
+    // Playtest 10: a sterile wild row near the line says what the risk is.
+    expect(compatRowText({ ...row, owner: 0, fertility: 0, compatible: false, gap: 0.32, drift_risk: 'high' }))
+      .toContain('sterile now, but drift could soon make them fertile');
     expect(mostly).not.toContain('0.30 is sterile');
     expect(compatRowText({ ...row, limiting: 'morphology', gap: 0.3, compatible: false, fertility: 0, fertile_share: 0 }))
       .toContain('differs in eye or leg count');
