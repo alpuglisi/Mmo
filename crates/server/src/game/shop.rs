@@ -182,6 +182,7 @@ impl Game {
         let reinforced = self.reinforcements_this_season(player);
         let max_alive = self.reinforce_max_alive();
         ShopView {
+            refound_debt: self.economy.refound_debt.get(&player).copied().filter(|&d| d > 0),
             balance: self.balance(player),
             slots_left: self.world.mating_slots_left(player),
             slots_bought: bought,
@@ -210,6 +211,8 @@ impl Game {
             provisions_max: economy::MAX_PROVISIONS_PER_SEASON,
             provision_blocked: self.provision_terms(player).err().map(|e| e.message),
             survey_price: economy::survey_price(self.owner_population(player)),
+            restore_price: economy::restore_price(self.owner_population(player), self.restores_bought(player)),
+            restores_bought: self.restores_bought(player),
             animal_name_price: economy::ANIMAL_NAME_PRICE,
             reinforce_next_day: self.reinforce_next(player).map(|x| x.0),
             reinforce_next_minutes: self.reinforce_next(player).map(|x| x.1),
@@ -299,6 +302,36 @@ impl Game {
         Ok((needy.len(), self.shop_view(player)))
     }
 
+    /// Pasture restorations `player` bought within the last ranked
+    /// season's length.
+    fn restores_bought(&self, player: PlayerId) -> u32 {
+        self.recent_count(self.economy.restore_days.get(&player))
+    }
+
+    /// `restore_pasture`: the plants within [`economy::RESTORE_RADIUS`] of
+    /// the player's main group regrow in full, for renown that scales with
+    /// the lineage and doubles with each restoration in the window.
+    pub(super) fn restore_pasture(&mut self, player: PlayerId) -> Result<(f32, u64, ShopView), ErrorInfo> {
+        if self.lineage_of(player).is_none() || self.is_extinct(player) {
+            return Err(ErrorInfo::new("no_lineage", "you have no living lineage to restore pasture for"));
+        }
+        let Some(at) = self.world.group_middle(player, 0) else {
+            return Err(ErrorInfo::new("no_lineage", "your main group has no animals"));
+        };
+        let price = economy::restore_price(self.owner_population(player), self.restores_bought(player));
+        self.spend(
+            player,
+            price,
+            format!("Pasture restored within {} tiles of your main group", economy::RESTORE_RADIUS),
+        )?;
+        let restored = self.world.restore_pasture(at, economy::RESTORE_RADIUS);
+        let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
+        let days = self.economy.restore_days.entry(player).or_default();
+        days.retain(|&d| d + window > today);
+        days.push(today);
+        Ok(((restored * 10.0).round() / 10.0, price, self.shop_view(player)))
+    }
+
     /// `survey`: rivals' groups and territories near the player's main
     /// group (or its biggest group when the main one is empty), coarsely, for renown scaled by their lineage's size.
     pub(super) fn survey(&mut self, player: PlayerId) -> Result<crate::protocol::SurveyView, ErrorInfo> {
@@ -339,7 +372,12 @@ impl Game {
         self.spend(
             player,
             price,
-            format!("Survey: {} rival groups within {} tiles", groups.len(), economy::SURVEY_RADIUS),
+            format!(
+                "Survey: {} rival group{} within {} tiles",
+                groups.len(),
+                if groups.len() == 1 { "" } else { "s" },
+                economy::SURVEY_RADIUS
+            ),
         )?;
         Ok(crate::protocol::SurveyView {
             price,
@@ -770,7 +808,9 @@ impl Game {
                     cost: crate::game::RefoundTerms::cost(design, n),
                     until_day: t.until_day,
                     minutes_left: t.minutes_left,
-                    fee: t.fee.min(self.balance(player)),
+                    fee: t.fee,
+                    fee_now: t.fee.min(self.balance(player)),
+                    fee_owed: t.fee.saturating_sub(self.balance(player)),
                     reason: t.reason,
                 }
             }),
@@ -804,7 +844,9 @@ impl Game {
             let scale = evo_sim::mating::wild_gap_scale(&self.world.config.balance, player, o.owner);
             if let Some(s) = spread(&own, &[&*o.genome], relief, scale) {
                 v.compatible = Some(compatible(&s));
-                v.body_plan_fertility = Some(s.mean);
+                // Tenths: exact means over a rival's animal solved its body
+                // plan (playtest 8).
+                v.body_plan_fertility = Some((s.mean * 10.0).round() / 10.0);
             }
         }
     }

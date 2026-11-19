@@ -235,6 +235,7 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .toasts { position: absolute; top: calc(56px + var(--cat-h, 0px)); left: 10px; display: flex; flex-direction: column; gap: 6px; max-width: min(460px, 80%); pointer-events: none; }
 .toast { padding: 6px 10px; border-radius: 6px; background: rgba(22, 27, 34, 0.94); border-left: 3px solid var(--accent); }
 .toast.error { border-left-color: var(--bad); }
+.toast.warn { border-left-color: var(--warn); }
 .toast-more { color: var(--muted); }
 /* While the game screen is still being built (game.ts `ready`), the map tools wait. */
 .game.starting .toolbar, .game.starting .fab { pointer-events: none; opacity: 0.6; }
@@ -655,3 +656,5 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .design-warning { margin: 6px 0; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); }
 .design-warning.warn-warn { border-color: #d29922; color: #e3b341; }
 .design-warning.warn-bad { border-color: #f85149; color: #ff7b72; }
+.possess-bar button[hidden] { display: none; }
+.tool.soft-disabled { opacity: 0.5; }

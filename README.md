@@ -2009,6 +2009,30 @@ minutes, every purchase failed when the buyer's animal died):
   past 90% of their lifespan say "old"; accepted agreements' escort views
   refresh twice a game day.
 
+**Playtest 8 changes** (economy):
+
+- **Seller-caused failures**: the buyer's animal killed by the seller's
+  own lineage, or a lapse where the seller's animal ended more than 3
+  tiles farther from the meeting point than it started (or never came
+  while the buyer's reached it), is the seller's fault
+  (`Game::seller_at_fault`): the buyer is refunded and paid the hold fee
+  by the seller, owed when short (`Game::charge_owed`). The meeting point
+  avoids the seller's predators too. Each side's distance to the point
+  is tracked (`Offer::start_dist`, `Offer::buyer_best`).
+- **Stud raid**: two players' animals don't mate naturally while either
+  is possessed, or for two game days after (`World::bar_cross_mating`,
+  not saved, like rendezvous): the market's agreements are the way.
+- The seller-retire penalty is charged in full, the shortfall owed
+  (renown owed is taken from what comes in next, for any of these).
+- `preview_mating`'s `cost` and listings' `body_plan_fertility` are
+  rounded to tenths for others' animals.
+- `/api/metrics` per-command counts only for an operator
+  (`EVO_ADMIN_TOKEN` in `x-admin-token`); `/api/assign?name=` tells an
+  anonymous caller neither whether the account exists nor that a lineage
+  was found (a logged-in caller, or `evo-lobby` holding the same token,
+  is told, so the lobby still routes a player to their lineage's server;
+  its own public answer says no more).
+
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.
 
@@ -8997,6 +9021,52 @@ around it.
 
 
 
+
+
+### Playtest 8: balance
+
+Playtest 8 (`docs/playtest-8.md`, finding 1 verified, 12 and 13 here) ran
+without balance round 8. Its warm, small, incubated-egg, toxic, bright
+hibernator held the cap from about day 260 (30–48% of alleles for whole
+eras). The best predator pack reached 149 beside herds of 2,100. Renown
+piled up (3,200–19,990 unspent), and every player "survived" all three
+catastrophes.
+
+**Verification replay** (`dominance --only Steady,Big,Broker,Herd,Cold,Pack`,
+six players as in playtest 8; Pack is ApexHunter8's live-bearing pure
+carnivore pack of 40, founded on day 37; seeds 1–4, 840 days). "Era mean" is
+the highest mean share over a whole era on any seed.
+
+| Player | Playtest 8 rules (v73 tunables off): era mean, peak alive, capped, titles | v73 rules: era mean, peak alive, capped, titles |
+| --- | --- | --- |
+| Steady | 9.7%, 874, 1, 1 | 5.1%, 554, 0, 0 |
+| Big | 9.5%, 618, 0, 1 | 9.3%, 404, 0, 2 |
+| Broker | 5.9%, 617, 0, 0 | 6.5%, 498, 0, 0 |
+| Herd (Herdmaster6/8) | 37.3%, 2,100, 4, 31 | 5.2%, 328, 0, 0 |
+| Cold (LateComer) | 36.2%, 2,100, 4, 7 | 25.8%, 616, 0, 14 |
+| Pack (ApexHunter8) | 6.1%, 758, 0, 0 | 6.8%, 194, 0, 24 |
+
+Under playtest 8's rules the herd and the toxic flier both reach the cap on
+every seed and hold more than a third of the alleles for an era, as in the
+playtest. Under v73 neither reaches the cap and no design holds more than 26%
+for an era: hungry predators now take bright toxic prey. In this six-player
+world the starter herds stay small under both rule sets (with one strong
+pack, Steady died out on 2 of 4 seeds either way).
+
+At honest-signals strengths 0.5 and 0.25 the cold flier took over instead
+(era means 39–44%), so the default stays at 1.
+
+**Predators** (finding 12): the pack peaks at about 190–240 under v73
+(758 when the bright herds were immune and abundant), and it takes the most
+titles in this world. Packs of a few hundred beside herds of 2,000 are not
+reached: the herds no longer get that big next to a pack.
+
+**Server** (finding 13):
+- **Restore pasture** (`restore_pasture`, a renown sink that grows with the lineage). Every dry tile within 12 tiles of the main group regrows its full plant cover. It costs 1 renown per living member (at least 200), doubled for each restoration within a ranked season's length: about 2,000, 4,000 and 8,000 in a row for a capped lineage. The shop shows `restore_price` and `restores_bought`; the client protocol has the command and fields (UI for polish).
+- **Survivor** now requires keeping half the lineage's size at the catastrophe's start (`SURVIVAL_KEEP`, 0.25 before), through at least a quarter of a ranked season of the catastrophe (`SURVIVAL_HELD`).
+
+**Checks**: sweep 11.91 (± 0.07); tests, fmt, both clippy, client
+typecheck/test/build and all 16 e2e scripts pass.
 
 ### Playtest 7: balance
 

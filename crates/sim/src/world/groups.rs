@@ -127,6 +127,15 @@ pub const SQUAT_MEMBERS: usize = 12;
 /// How many times a squat's holders a claiming group must number to take
 /// its ground.
 pub const SQUAT_RATIO: usize = 10;
+/// A rival territory that feeds at least this many times its holders is
+/// more ground than they need ([`World::food_check`]): a group
+/// [`OVERCLAIM_RATIO`] times their number may claim over it, however many
+/// adults hold it (playtest 8: a breeding pair grew past 12 on a key water
+/// spot and could never be displaced).
+pub const OVERCLAIM_FOOD: usize = 4;
+/// How many times an over-large territory's holders a claiming group must
+/// number to take its ground.
+pub const OVERCLAIM_RATIO: usize = 2;
 /// Margin on a group's daily plant need for what [`World::food_check`]
 /// leaves out (activity, pregnancy, the cold).
 pub const FOOD_NEED_MARGIN: f32 = 1.15;
@@ -1231,8 +1240,10 @@ impl World {
     }
 
     /// The rival territories a claim at `center`, radius `r` overlaps, all
-    /// of them squats `player`'s `group` may take ([`SQUAT_MEMBERS`],
-    /// [`SQUAT_RATIO`]); `Overlaps` if any other rival ground is in the way.
+    /// of them squats `player`'s `group` may take (at most [`SQUAT_MEMBERS`]
+    /// adults and [`SQUAT_RATIO`] times outnumbered, or holding
+    /// [`OVERCLAIM_FOOD`] times the food they need and [`OVERCLAIM_RATIO`]
+    /// times outnumbered); `Overlaps` if any other rival ground is in the way.
     fn claim_squats(
         &self,
         player: PlayerId,
@@ -1246,9 +1257,17 @@ impl World {
             if p == player || t.center.dist(center) >= t.radius + r {
                 continue;
             }
-            let theirs = self.group_counts(p, g).0;
+            // Adults hold ground, not their young (playtest 8: a breeding
+            // pair's litters took it past the squat size for good); and ground
+            // far beyond what the holders eat is open to a group twice theirs.
+            let (theirs, adults) = self.group_counts(p, g);
             let mine = *mine.get_or_insert_with(|| self.group_counts(player, group).0);
-            if theirs > SQUAT_MEMBERS || mine < SQUAT_RATIO * theirs.max(1) {
+            let squat = adults <= SQUAT_MEMBERS && mine >= SQUAT_RATIO * adults.max(1);
+            let overclaimed = mine >= OVERCLAIM_RATIO * theirs.max(1)
+                && self
+                    .food_check(p, g, t.center, t.radius)
+                    .is_some_and(|f| f.supports >= OVERCLAIM_FOOD * theirs.max(1));
+            if !(squat || overclaimed) {
                 return Err(CommandError::Overlaps);
             }
             squats.push((p, g));

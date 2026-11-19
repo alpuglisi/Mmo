@@ -773,7 +773,7 @@ async fn two_servers_share_accounts(a_cfg: ServerConfig, b_cfg: ServerConfig) {
     let v = cb.post_json("/api/login", r#"{"name":"late","password":"a long password"}"#, None).await;
     assert_eq!(v["player"], made["player"], "{v}");
     let v = cb.get_json("/api/assign?name=late").await;
-    assert_eq!(v["has_account"], true, "{v}");
+    assert_eq!(v["has_account"], false, "by name, no account is revealed: {v}");
     a.shutdown().await;
     b.shutdown().await;
 }

@@ -1021,6 +1021,18 @@ impl World {
         if !self.may_conceive(a) || !self.may_conceive(b) {
             return;
         }
+        // Two players' animals don't mate naturally while either is
+        // possessed or barred (`World::bar_cross_mating`): the market's
+        // agreements are the way (playtest 8: a possessed "stud raid").
+        let players = a.owner != b.owner && a.owner != crate::WILD && b.owner != crate::WILD;
+        if players
+            && (a.possessed_by.is_some()
+                || b.possessed_by.is_some()
+                || self.cross_mating_barred(a.id)
+                || self.cross_mating_barred(b.id))
+        {
+            return;
+        }
         let (f, m) = if a.sex == Sex::Female { (i, j) } else { (j, i) };
         // A breeding territory taken since the pair decided, by a female of
         // her lineage who conceived earlier this tick

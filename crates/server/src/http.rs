@@ -507,6 +507,10 @@ pub struct FoundResponse {
     /// lose water more slowly for their first days.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watered: Option<String>,
+    /// Where the founders landed and how far the nearest rival's animals
+    /// and territory are; also sent as an alert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landing: Option<String>,
 }
 
 async fn found_lineage(
@@ -549,6 +553,7 @@ async fn found_lineage(
             refound_fee: ok.refound_fee,
             grace: ok.grace,
             watered: ok.watered,
+            landing: ok.landing,
         }),
     ))
 }
@@ -614,9 +619,21 @@ async fn metrics(State(app): State<AppState>, World(w): World, headers: HeaderMa
     // traffic stay public.
     if authed(&app, &headers).is_err() {
         (m.conns, m.players_online) = (0, 0);
+    }
+    // World-wide per-command counts only for an operator (`EVO_ADMIN_TOKEN`
+    // in the `x-admin-token` header): a rival watched them to see a hunt
+    // start (playtest 8).
+    if !is_admin(&headers) {
         m.apply_by_command.clear();
     }
     Json(m)
+}
+
+/// Whether the request carries the operator token (`EVO_ADMIN_TOKEN`,
+/// unset: nobody is an operator).
+fn is_admin(headers: &HeaderMap) -> bool {
+    let Ok(want) = std::env::var("EVO_ADMIN_TOKEN") else { return false };
+    !want.is_empty() && headers.get("x-admin-token").and_then(|v| v.to_str().ok()) == Some(want.as_str())
 }
 
 /// `GET /api/worlds`: every hosted world with its clock, population and
@@ -682,13 +699,25 @@ async fn assign(
         return Err(e);
     };
     let w = &app.worlds[i];
+    // By name, the reason doesn't say a lineage was found either.
+    // A logged-in caller, or a lobby holding the operator token
+    // (`EVO_ADMIN_TOKEN`), learns whether the account and a lineage exist;
+    // anyone else doesn't (playtest 8: account enumeration by `?name=`).
+    let trusted = bearer(&headers).is_some() || is_admin(&headers);
+    let reason = if !trusted && reason == crate::worlds::AssignReason::Lineage {
+        crate::worlds::AssignReason::Fill
+    } else {
+        reason
+    };
     Ok(Json(crate::worlds::AssignView {
         world: w.id.to_string(),
         name: w.name.to_string(),
         reason,
         players_online: loads[i].players_online,
         capacity: loads[i].capacity,
-        has_account: player.is_some(),
+        // Only a logged-in caller learns it (playtest 8: `?name=` told anyone
+        // whether an account existed).
+        has_account: player.is_some() && trusted,
     }))
 }
 

@@ -88,6 +88,8 @@ const STATS_REFRESH_MS = 5000;
 const PROTECTED_REFRESH_MS = 30000;
 const SEASONS_REFRESH_MS = 15000;
 const CHRONICLE_REFRESH_MS = 10000;
+/** "While you were away" only after at least this long away (wall clock). */
+const AWAY_MIN_MS = 5 * 60_000;
 /** Bought nameplates change rarely. */
 const NAMEPLATES_REFRESH_MS = 60000;
 /**
@@ -208,6 +210,24 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   // this moves the window from group to group (and keeps it on the group as it moves).
   const viewGroupBtn = tool('view-group', 'eye', 'View group', 'Move the view window (what you can see of others) to each of your groups in turn, then back to the whole lineage');
   const viewGroupLabel = viewGroupBtn.querySelector('.tool-label')!;
+  /**
+   * A tool that can't act now stays tappable and says why (playtest 8: a
+   * greyed button with the reason only in a tooltip, which phones never show).
+   */
+  function softDisable(btn: HTMLButtonElement, why: string | null, title: string): void {
+    btn.classList.toggle('soft-disabled', why !== null);
+    btn.setAttribute('aria-disabled', String(why !== null));
+    btn.title = why ?? title;
+    if (why === null) delete btn.dataset.why;
+    else btn.dataset.why = why;
+  }
+  for (const b of [splitBtn, viewGroupBtn]) {
+    b.addEventListener('click', (e) => {
+      if (!b.dataset.why) return;
+      e.stopImmediatePropagation();
+      model.toast('info', b.dataset.why);
+    }, true);
+  }
   const hint = h('div', { class: 'hint', id: 'hint' });
   const toasts = h('div', { class: 'toasts', id: 'toasts', 'aria-live': 'polite' });
   const moreBtn = tool('tools-more', 'more', 'Tools', 'Group commands and the view window', ' narrow-only');
@@ -307,12 +327,22 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const extinctAlert = h('div', { class: 'catastrophe-alert extinct-alert', id: 'extinct-alert', role: 'alert', hidden: true },
     h('span', { class: 'cat-icon', 'aria-hidden': 'true' }, '⚠'), h('div', { class: 'cat-text' }, extinctTitle, extinctText),
     deps.onNewLineage ? h('button', { type: 'button', class: 'new-lineage', id: 'extinct-alert-new', onclick: deps.onNewLineage }, 'Start a new lineage') : null);
+  /**
+   * Whether `lineage` was retired: this browser remembers it, else the
+   * server's lineage stats say so (playtest 8: worded as a die-out after a
+   * reload in another tab or browser).
+   */
+  function retiredNow(lineage: number | null | undefined): boolean {
+    if (wasRetired(lineage)) return true;
+    return lineage !== null && lineage !== undefined && stats?.lineage === lineage && stats.ended === 'retired';
+  }
+
   function renderExtinct(): void {
     const st = model.state;
     const gone = !!st && st.lineage !== null && st.population === 0;
     extinctAlert.hidden = !gone;
     if (!gone) return;
-    const retired = wasRetired(st!.lineage);
+    const retired = retiredNow(st!.lineage);
     const title = retired ? `You retired lineage #${st!.lineage}: start a new lineage` : 'Your lineage died out: start a new lineage';
     if (extinctTitle.textContent !== title) {
       extinctTitle.textContent = title;
@@ -463,11 +493,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const tg = targetGroup(groupChoice, groups);
     const g = tg === null ? undefined : groups.find((x) => x.id === tg);
     const can = !full && (g === undefined || canSplit(g, groups));
-    if (splitBtn.disabled === can) {
-      splitBtn.disabled = !can;
-      splitBtn.title = full ? `You have ${MAX_GROUPS} groups, the most: merge two (Lineage tab) to split again`
-        : can ? 'Split the group in two (the far half across its widest spread)' : 'Too few animals in this group to split';
-    }
+    softDisable(splitBtn, can ? null : full ? `You have ${MAX_GROUPS} groups, the most: merge two (Lineage tab) to split again.`
+      : 'Too few animals in this group to split.', 'Split the group in two (the far half across its widest spread)');
   }
   groupSelect.addEventListener('change', () => setGroupChoice(parseChoice(groupSelect.value)));
   /** The one group a tool acts on, or a toast asking to pick one. */
@@ -575,6 +602,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       }
       return;
     }
+    // A plant eater doesn't hunt: no Attack (playtest 8). Its visible diet is the server's class.
+    const grazer = p.look?.diet === 'herbivore';
+    possessAttack.hidden = grazer;
+    if (grazer && mode === 'attack') setMode('select');
     const touch = narrow() || window.matchMedia('(pointer: coarse)').matches;
     possessBar.dataset.org = String(p.id);
     setText(possessText, mode === 'attack'
@@ -772,10 +803,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }
   function renderViewGroup(): void {
     const s = model.state;
-    viewGroupBtn.disabled = viewGroup === null && nextViewGroup(s, null) === null;
-    viewGroupBtn.title = viewGroupBtn.disabled
-      ? 'View group: split your lineage into groups (Split) to look around each in turn'
-      : 'Move the view window (what you can see of others) to each of your groups in turn, then back to the whole lineage';
+    softDisable(viewGroupBtn, viewGroup === null && nextViewGroup(s, null) === null
+      ? 'View group needs two or more groups: split your lineage (Split) to look around each in turn.' : null,
+    'Move the view window (what you can see of others) to each of your groups in turn, then back to the whole lineage');
   }
   /** Points the window at `id`'s middle; false if refused. */
   async function pinOnGroup(id: number): Promise<boolean> {
@@ -840,7 +870,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const who = groupChoice === 'all' ? 'Adults' : `${groupName(groupChoice)} adults`;
       if (r?.ok) {
         model.toast('info', `${who} migrating toward (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? `: ${t.note}` : ''}`);
-        if (t.warning) model.toast('error', `Migrate: ${t.warning}`);
+        if (t.warning) model.toast('warn', `Migrating, but: ${t.warning}`);
         broodingToast(r.data);
       } else if (r?.error) {
         model.toast('error', `Migrate: ${r.error.message}`);
@@ -855,7 +885,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (r.ok) {
         const t = r.data as { x: number; y: number; radius: number; warning?: string; note?: string };
         model.toast('info', `${groupName(id)} gathering at (${t.x.toFixed(0)}, ${t.y.toFixed(0)}), within ${t.radius.toFixed(1)} tiles${t.note ? ` (${t.note})` : ''}`);
-        if (t.warning) model.toast('error', `Rally: ${t.warning}`);
+        if (t.warning) model.toast('warn', `Rallying, but: ${t.warning}`);
         broodingToast(r.data);
       }
       return;
@@ -874,7 +904,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         const t = r.data as { x: number; y: number; radius: number; warning?: string; note?: string; pending?: boolean };
         if (t.pending) model.toast('info', `${groupName(g.id)} is migrating to (${t.x.toFixed(0)}, ${t.y.toFixed(0)}): ${t.note ?? 'it claims the territory when it arrives'}`);
         else model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? ` (${t.note})` : ''}`);
-        if (t.warning) model.toast('error', `Territory: ${t.warning}`);
+        if (t.warning) model.toast('warn', `${t.pending ? 'Ordered' : 'Claimed'}, but: ${t.warning}`);
         broodingToast(r.data);
       }
       return;
@@ -1964,9 +1994,17 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   // "While you were away" (playtest 7): the alerts since the last tick this
   // device saw, once, when a returning player's feed arrives.
   const awayKey = seenKey(deps.world ?? '', model.player);
+  // The last tick seen and when (wall clock): said only after a real
+  // absence, not on every reload (playtest 8).
   let lastSeen = 0;
-  try { lastSeen = Number(localStorage.getItem(awayKey) ?? 0) || 0; } catch { /* storage off */ }
-  let awaySaid = !deps.returning || lastSeen === 0;
+  let lastSeenAt = 0;
+  try {
+    const raw = localStorage.getItem(awayKey) ?? '';
+    const v = raw.startsWith('{') ? JSON.parse(raw) as { tick?: number; at?: number } : { tick: Number(raw) || 0, at: 0 };
+    lastSeen = Number(v.tick) || 0;
+    lastSeenAt = Number(v.at) || 0;
+  } catch { /* storage off */ }
+  let awaySaid = !deps.returning || lastSeen === 0 || Date.now() - lastSeenAt < AWAY_MIN_MS;
   function sayAway(): void {
     if (awaySaid || model.feed.length === 0) return;
     awaySaid = true;
@@ -1979,8 +2017,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const now = Date.now();
     if (tick <= 0 || now - seenSaved < 10_000) return;
     seenSaved = now;
-    try { localStorage.setItem(awayKey, String(tick)); } catch { /* storage off */ }
+    try { localStorage.setItem(awayKey, JSON.stringify({ tick, at: now })); } catch { /* storage off */ }
   }
+  // Also on leaving the page (a reload within seconds shouldn't count as being away).
+  const saveSeenNow = () => { seenSaved = 0; rememberSeen(); };
+  window.addEventListener('pagehide', saveSeenNow);
+  cleanups.push(() => window.removeEventListener('pagehide', saveSeenNow));
   /** Alerts from before the current lineage's founding show only on request. */
   let showEarlierFeed = false;
   function renderFeedPanel(): void {
@@ -2017,7 +2059,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const listMore = h('p', { class: 'muted small', id: 'organism-list-more' });
   const groupsEl = h('div', { id: 'group-list' });
   const retireBtn = h('button', { type: 'button', id: 'retire-lineage', class: 'danger' }, 'Retire lineage');
-  const retireRule = h('p', { class: 'small', id: 'lineage-retire-rule' }, h('strong', {}, 'Not a free re-roll: '), 'founding again soon after retiring founds fewer founders and costs renown. A quick re-found also continues your last grace instead of starting a new one.');
+  const retireRule = h('p', { class: 'small', id: 'lineage-retire-rule' }, h('strong', {}, 'Not a free re-roll: '), 'founding again soon after retiring founds fewer founders and costs renown. Founding again within that window also continues your last lineage\'s grace (even one that has run out); it never starts a new one.');
   const retireEl = h('details', { id: 'lineage-retire', class: 'retire' },
     h('summary', {}, 'Retire this lineage'),
     h('p', { class: 'muted small' },
@@ -2032,7 +2074,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (!retireEl.open) return;
     void api.world().then((w) => {
       retireRule.replaceChildren(h('strong', {}, 'Not a free re-roll: '), w?.refound_rule ? `after retiring, ${w.refound_rule}.` : 'founding again soon after retiring founds fewer founders and costs renown.',
-        ' A quick re-found also continues your last grace instead of starting a new one.');
+        ' Founding again within that window also continues your last lineage\'s grace (even one that has run out); it never starts a new one.');
     }).catch(() => undefined);
   });
   retireBtn.addEventListener('click', async () => {
@@ -2165,7 +2207,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     // A founded lineage with nobody left: say so plainly, and where to see why.
     // One element, shown or hidden (rebuilding it each state would eat clicks on its button).
     lineageExtinct.hidden = !(s.lineage !== null && s.population === 0);
-    if (!lineageExtinct.hidden && wasRetired(s.lineage) && !lineageExtinct.dataset.retired) {
+    if (!lineageExtinct.hidden && retiredNow(s.lineage) && !lineageExtinct.dataset.retired) {
       // Retired, not dead: say so (and no "what killed them").
       lineageExtinct.dataset.retired = '1';
       lineageExtinct.querySelector('.extinct-text')?.replaceChildren(h('strong', {}, `You retired lineage #${s.lineage}.`), ' Its animals have left the world.');

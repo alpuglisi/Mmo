@@ -293,6 +293,12 @@ pub enum ClientMsg {
     /// alive, at most 200); at most 3 within a ranked season's length.
     /// Data: `{fed, shop}`.
     Provision,
+    /// Restore the pasture around the lineage's main group: every dry tile
+    /// within 12 tiles regrows to its full plant cover. Renown: 1 per living
+    /// member (at least 200), doubled for each restoration already bought
+    /// within a ranked season's length (a sink that grows with the
+    /// lineage). Data: `{restored, price, shop}` (`restored`: food added).
+    RestorePasture,
     /// Protocol 2 only: the client lost track of the delta states; the
     /// connection's next state is a keyframe. Handled by the connection (no
     /// `result`), never by the world.
@@ -394,6 +400,7 @@ impl ClientMsg {
             ClientMsg::Reinforce => "reinforce",
             ClientMsg::Compatibility => "compatibility",
             ClientMsg::Provision => "provision",
+            ClientMsg::RestorePasture => "restore_pasture",
             ClientMsg::SubstituteMating { .. } => "substitute_mating",
             ClientMsg::Survey => "survey",
             ClientMsg::NameAnimal { .. } => "name_animal",
@@ -449,6 +456,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "name_species",
     "nameplates",
     "provision",
+    "restore_pasture",
     "substitute_mating",
     "survey",
     "name_animal",
@@ -1885,6 +1893,9 @@ pub struct CrowdingView {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ShopView {
     pub balance: u64,
+    /// Renown still owed on a re-founding fee, taken from the next income (absent: none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refound_debt: Option<u64>,
     /// Directed-mating slots left this weather season, bought ones included.
     pub slots_left: u32,
     /// Extra slots bought this weather season.
@@ -1940,6 +1951,12 @@ pub struct ShopView {
     pub provisions_max: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provision_blocked: Option<String>,
+    /// The price of a pasture restoration now (`restore_pasture`) and how
+    /// many were bought within the window.
+    #[serde(default)]
+    pub restore_price: u64,
+    #[serde(default)]
+    pub restores_bought: u32,
     /// When the next reinforcement is possible if the window is full: the
     /// simulated day and about how many real minutes from now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2065,10 +2082,17 @@ pub struct RefoundView {
     /// about how many wall-clock minutes until then.
     pub until_day: u64,
     pub minutes_left: u64,
-    /// Renown the re-founding costs now (after a retirement: doubling with
-    /// each re-founding in the window; at most the balance).
+    /// Renown the re-founding costs (after a retirement: doubling with each
+    /// re-founding in the window), in full.
     #[serde(default)]
     pub fee: u64,
+    /// The part of `fee` paid now (at most the balance); the rest is owed
+    /// and taken from the next renown (playtest 8: the fee showed as the
+    /// balance, the debt never).
+    #[serde(default)]
+    pub fee_now: u64,
+    #[serde(default)]
+    pub fee_owed: u64,
     pub reason: String,
 }
 
