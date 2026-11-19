@@ -435,6 +435,13 @@ pub const GRACE_PACK_RANGE: f32 = 30.0;
 pub const WAY_WARN_TILES: f32 = 12.0;
 /// Tiles from that way within which other players' hunters are named.
 pub const WAY_HUNTER_TILES: f32 = 10.0;
+/// Share of a player's animals deep asleep from which the day's loss
+/// warnings ([`FOLDED_WARNINGS`]) fold into one line (`Game::warning_alerts`).
+pub const DORMANT_FOLD_SHARE: f64 = 0.5;
+/// The warnings folded while most of a lineage sleeps.
+pub const FOLDED_WARNINGS: [&str; 6] = ["starving", "hunted", "decline", "cold", "heat", "eggs"];
+/// Game days between one group's territory alerts (`Game::territory_alert_due`).
+pub const TERRITORY_ALERT_DAYS: u64 = 3;
 /// Most players one player may block.
 pub const MAX_BLOCKED: usize = 200;
 
@@ -1053,6 +1060,10 @@ pub struct Game {
     /// Lineages told their grace is about to end (`warn_grace_ending`).
     /// Not saved: after a restart one may be told again.
     grace_warned: BTreeSet<u32>,
+    /// When each group last had a territory alert (outgrown, grazed bare,
+    /// no longer feeds, recovered), for `TERRITORY_ALERT_DAYS` between them
+    /// (`Game::territory_alert_due`). Not saved.
+    territory_said: BTreeMap<(PlayerId, u8), u64>,
     /// How each group's last order ended on its own (arrived, stalled,
     /// claimed on arrival), shown on its card until its next order: alerts
     /// scroll away (playtest 4: a migration "silently did nothing"). Not
@@ -1364,6 +1375,7 @@ impl Game {
             hardship_note: BTreeSet::new(),
             group_deaths: None,
             grace_warned: BTreeSet::new(),
+            territory_said: BTreeMap::new(),
             outcomes: BTreeMap::new(),
             hosts,
             pending_out,
@@ -6021,7 +6033,17 @@ impl Game {
             } else {
                 0
             };
-            if lost >= EGG_WARN_MIN && lost > e.born + expected {
+            // Abandoned eggs chill by design (playtest 10: "your eggs are
+            // failing" for a lineage that leaves its eggs): not warned of.
+            let (abandon, layers) = w
+                .organisms
+                .iter()
+                .filter(|o| o.alive && o.lineage == lineage && o.traits.birth.lays_eggs())
+                .fold((0usize, 0usize), |(a, n), o| {
+                    (a + usize::from(o.traits.birth == evo_sim::design::BirthType::AbandonedEggs), n + 1)
+                });
+            let by_design = layers > 0 && abandon * 2 > layers;
+            if !by_design && lost >= EGG_WARN_MIN && lost > e.born + expected {
                 let (cause, n) =
                     e.eggs_lost.iter().max_by_key(|(_, &n)| n).map(|(c, &n)| (c.as_str(), n)).unwrap_or(("", 0));
                 let season = season_of(w, r.day);
@@ -6035,10 +6057,18 @@ impl Game {
                             evo_sim::terrain::Season::Spring => "Spring nights are still cold for eggs. ",
                             _ => "",
                         };
+                        // Fewer eggs only helps a clutch bigger than a parent
+                        // warms (playtest 10: a litter-4 lineage was told to lay
+                        // fewer).
+                        let fewer = if litter > evo_sim::world::CLUTCH_COVERED as f64 + 0.5 {
+                            "A sitting parent keeps 4 eggs warm: bigger clutches chill on cool nights. "
+                        } else {
+                            ""
+                        };
+                        let lay = if fewer.is_empty() { "" } else { "lay fewer eggs per clutch, " };
                         format!(
-                            "{when}A sitting parent keeps 4 eggs warm: bigger clutches chill on cool nights. Keep brooding \
-                             parents at their nests (group orders and migrations pull them away), lay fewer eggs per \
-                             clutch, or nest in shelter (forest, near water)."
+                            "{when}{fewer}Keep brooding parents at their nests (group orders and migrations pull them \
+                             away), {lay}or nest in shelter (forest, near water)."
                         )
                     }
                     "raided" => {
@@ -6260,6 +6290,40 @@ impl Game {
             });
             self.warned
                 .retain(|(q, k), _| *q != p || now.iter().any(|w| &w.kind == k) || (k == "near_cap" && near_cap_armed));
+            // Mostly asleep (playtest 10: hungry, hunted and crashing alerts
+            // every few seconds while 70% of a herd slept): the day's
+            // warnings about losses fold into one line, said at most every
+            // `WARNING_REPEAT_DAYS`.
+            let (alive, asleep) = self
+                .world
+                .organisms
+                .iter()
+                .filter(|o| o.alive && o.owner == p)
+                .fold((0usize, 0usize), |(n, a), o| (n + 1, a + usize::from(o.dormancy.is_deep())));
+            let now = if alive > 0 && asleep as f64 >= DORMANT_FOLD_SHARE * alive as f64 {
+                let (fold, keep): (Vec<LineageWarning>, Vec<LineageWarning>) =
+                    now.into_iter().partition(|w| FOLDED_WARNINGS.contains(&w.kind.as_str()));
+                let due = !fold.is_empty()
+                    && self.warned.get(&(p, "dormant".to_string())).is_none_or(|&d| day >= d + WARNING_REPEAT_DAYS);
+                if due {
+                    self.warned.insert((p, "dormant".to_string()), day);
+                    for w in &fold {
+                        self.warned.insert((p, w.kind.clone()), day);
+                    }
+                    let first = |t: &str| t.split(": ").next().unwrap_or(t).trim_end_matches('.').to_string();
+                    let said: Vec<String> = fold.iter().map(|w| first(&w.text)).collect();
+                    let text = format!(
+                        "While most of your lineage sleeps ({:.0}% asleep): {}. Sleepers can't be moved or fed; the \
+                         daily summary counts the losses, and this is said again in {WARNING_REPEAT_DAYS} days at most.",
+                        100.0 * asleep as f64 / alive as f64,
+                        said.join("; ")
+                    );
+                    self.alert_on(p, AlertKind::Need, text, None, day.saturating_sub(1), out);
+                }
+                keep
+            } else {
+                now
+            };
             for w in now {
                 let key = (p, w.kind.clone());
                 let repeat = w.kind != "near_cap";
@@ -6519,6 +6583,7 @@ impl Game {
                     if self.claimed_starving.remove(&(player, group)).is_some_and(|t| {
                         self.world.tick().saturating_sub(t) <= self.world.config.ticks_per_day as u64
                     }) => {}
+                GroupEvent::HoldLoosened { player, group, .. } if !self.territory_alert_due(player, group) => {}
                 GroupEvent::HoldLoosened { player, group, hungry_share, parched_share } => {
                     let what = match (hungry_share >= 0.05, parched_share >= 0.05) {
                         (true, true) => format!(
@@ -6563,6 +6628,7 @@ impl Game {
                         .insert((player, group), format!("reached ({:.0}, {:.0}), claim blocked", target.x, target.y));
                     self.alert(player, AlertKind::Group, text, None, out);
                 }
+                GroupEvent::HoldRestored { player, group } if !self.territory_alert_due(player, group) => {}
                 GroupEvent::HoldRestored { player, group } => {
                     let text = format!("{} has recovered: it keeps inside its territory again.", group_name(group));
                     self.alert(player, AlertKind::Group, text, None, out);
@@ -6807,6 +6873,20 @@ impl Game {
         warnings
     }
 
+    /// Whether a territory alert for `(player, group)` may be said now, and
+    /// if so, mark it said: at most one every [`TERRITORY_ALERT_DAYS`]
+    /// (playtest 10: a territory's alerts swung outgrown, grazed bare, no
+    /// longer feeds, recovered and starving within days).
+    fn territory_alert_due(&mut self, player: PlayerId, group: u8) -> bool {
+        let now = self.world.tick();
+        let gap = TERRITORY_ALERT_DAYS * self.world.config.ticks_per_day.max(1) as u64;
+        if self.territory_said.get(&(player, group)).is_some_and(|&t| now < t + gap) {
+            return false;
+        }
+        self.territory_said.insert((player, group), now);
+        true
+    }
+
     /// The way from a group's middle to `to` (straight, as far claims and
     /// rallies walk): other players' hunters within [`WAY_HUNTER_TILES`]
     /// of it, and another player's territory at `to` or crossed on the way
@@ -7019,7 +7099,7 @@ impl Game {
                         // Said again only once it has really recovered (playtest 6:
                         // the alert repeated every few days for one territory).
                         let regrown = food.is_none_or(|f| f.standing_days >= 2.0 * BARE_DAYS);
-                        if self.condition_begins((p, g.id, 1), bare, regrown) {
+                        if self.condition_begins((p, g.id, 1), bare, regrown) && self.territory_alert_due(p, g.id) {
                             let days = days_text(food.map_or(0.0, |f| f.standing_days));
                             let tail = if starved > 0 {
                                 format!(" {starved} of the group starved yesterday.")
@@ -7050,7 +7130,8 @@ impl Game {
                         // before anyone starves (playtest 5: claimed at 475, held
                         // 1,941, 55% starved in 10 days).
                         let outgrown = !bare && food.is_some_and(|f| f.supports < f.members);
-                        if self.condition_begins((p, g.id, 2), outgrown, !outgrown) {
+                        if self.condition_begins((p, g.id, 2), outgrown, !outgrown) && self.territory_alert_due(p, g.id)
+                        {
                             let f = food.expect("checked");
                             let advice = if sleeping {
                                 "Most of the group is asleep and moves only when it wakes: split it, move it or claim more \
@@ -8917,13 +8998,52 @@ mod tests {
         (counts.laid, counts.chilled, counts.raided) = (20, 8, 1);
         let out = run_days(&mut g, 1);
         let w = g.lineage_warnings(3).into_iter().find(|w| w.kind == "eggs").expect("an eggs warning");
-        assert!(w.text.contains("9 eggs were lost (8 chilled)") && w.text.contains("4 eggs warm"), "{}", w.text);
+        assert!(w.text.contains("9 eggs were lost (8 chilled)"), "{}", w.text);
+        // A clutch of 4 is all a parent warms: not told to lay fewer
+        // (playtest 10).
+        assert!(!w.text.contains("lay fewer") && !w.text.contains("4 eggs warm"), "{}", w.text);
         assert!(alerts_in(&out, 3)
             .iter()
             .any(|a| a.kind == AlertKind::Need && a.text.starts_with("Your eggs are failing")));
         // A day with few losses: none.
         run_days(&mut g, 1);
         assert!(g.lineage_warnings(3).iter().all(|w| w.kind != "eggs"));
+    }
+
+    /// Playtest 10: hungry, hunted and crashing alerts every few seconds
+    /// while 70% of a herd slept. While most of a lineage sleeps the day's
+    /// loss warnings fold into one line; and a group's territory alerts
+    /// come at most one every `TERRITORY_ALERT_DAYS`.
+    #[test]
+    fn warnings_fold_while_the_lineage_sleeps_and_territory_alerts_cool_down() {
+        let (mut g, _, _) = game();
+        g.set_name(3, "cat");
+        let ok =
+            g.found(3, &FounderDesign::new("Layers", Thermo::Warm, BirthType::IncubatedEggs, 4).founders(6)).unwrap();
+        run_days(&mut g, 1);
+        let counts = g.world.counters.eggs.entry(ok.lineage).or_default();
+        (counts.laid, counts.chilled, counts.raided) = (20, 8, 1);
+        run_days(&mut g, 1);
+        // The same day's record, said again with the lineage asleep.
+        g.warned.clear();
+        for o in g.world.organisms.iter_mut().filter(|o| o.owner == 3) {
+            o.dormancy = evo_sim::organism::Dormancy::Winter;
+        }
+        let mut out = Outbox::new();
+        let day = g.world.day();
+        g.warning_alerts(day, &mut out);
+        let need: Vec<String> =
+            alerts_in(&out, 3).iter().filter(|a| a.kind == AlertKind::Need).map(|a| a.text.clone()).collect();
+        assert!(need.iter().all(|t| !t.starts_with("Your eggs are failing")), "{need:?}");
+        assert!(need.iter().any(|t| t.starts_with("While most of your lineage sleeps")), "{need:?}");
+        // Territory alerts: one, then none for three days, then one again.
+        assert!(g.territory_alert_due(3, 0));
+        assert!(!g.territory_alert_due(3, 0));
+        let long_ago = g.world.tick().saturating_sub((TERRITORY_ALERT_DAYS + 1) * g.world.config.ticks_per_day as u64);
+        g.territory_said.insert((3, 0), long_ago.min(g.world.tick().saturating_sub(1)));
+        if g.world.tick() > TERRITORY_ALERT_DAYS * g.world.config.ticks_per_day as u64 {
+            assert!(g.territory_alert_due(3, 0));
+        }
     }
 
     /// Playtest 3: a winter founding's clutches vanished with no word. Lost
