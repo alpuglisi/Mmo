@@ -13366,6 +13366,22 @@ mod tests {
         assert!(!g.state_for(10).unwrap().view.pinned, "found unpins");
     }
 
+    /// Playtest 11: without the renown, a title or animal name that would be
+    /// refused for another player's name answers `insufficient_funds` like
+    /// any other (the name checks were a free oracle).
+    #[test]
+    fn name_checks_come_after_the_price() {
+        let (mut g, a, _) = game();
+        assert!(g.balance(1) < economy::NAMEPLATE_PRICE);
+        let out = g.command(10, 1, None, ClientMsg::SetNameplate { color: "amber".into(), title: "bob".into() });
+        assert_eq!(result(&out).1.as_deref(), Some("insufficient_funds"));
+        while g.balance(1) >= economy::ANIMAL_NAME_PRICE {
+            let _ = g.post(1, -1, LedgerKind::Income, "test".into(), None, None);
+        }
+        let out = g.command(10, 1, None, ClientMsg::NameAnimal { organism: a[0], name: "B".into() });
+        assert_eq!(result(&out).1.as_deref(), Some("insufficient_funds"));
+    }
+
     /// Playtest 10: a claim or rally circle counts prey only where the
     /// player sees (circles anywhere, many a second, mapped the herds).
     #[test]
