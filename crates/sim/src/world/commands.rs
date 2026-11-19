@@ -874,6 +874,20 @@ impl World {
                 || self.market_shield.contains(&b.id))
     }
 
+    /// Whether raider `o` is kept off clutch `c` by the rules that keep it
+    /// off the clutch's parents (`Balance::raid_rules`): founding grace both
+    /// ways (`World::grace_spares`) and the market shield on its mother or
+    /// guardian. Playtest 11: nest raids ignored grace and the shield.
+    pub(crate) fn clutch_spared(&self, o: &crate::organism::Organism, c: &super::Clutch) -> bool {
+        self.config.balance.raid_rules > 0.0
+            && o.owner != crate::WILD
+            && o.owner != c.owner
+            && (self.lineage_grace_left(c.lineage).is_some()
+                || (c.owner != crate::WILD && self.attack_grace_left(o).is_some())
+                || self.market_shield.contains(&c.mother)
+                || c.guardian.is_some_and(|g| self.market_shield.contains(&g)))
+    }
+
     /// The target of a possessed organism's attack order, if it has one.
     pub fn attack_target(&self, id: OrgId) -> Option<OrgId> {
         self.attack_orders.get(&id).copied()

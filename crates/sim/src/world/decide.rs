@@ -1795,7 +1795,7 @@ impl World {
                 if best.is_some_and(|(bd, _)| bd <= d) || self.confine(cl.pos, bound) != cl.pos {
                     continue;
                 }
-                if self.gives_up_on(o, cl.lineage) {
+                if self.gives_up_on(o, cl.lineage) || self.clutch_spared(o, cl) {
                     continue;
                 }
                 best = Some((d, cl.pos));

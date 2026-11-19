@@ -611,6 +611,14 @@ fn playtest10_off(b: &mut crate::Balance) {
 fn landing_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v90::OLD_VALUE;
     (b.reinforce_clear, b.founding_together) = (old, old);
+    raids_off(b);
+}
+
+/// The playtest 11 raid and placement tunables as snapshots before version
+/// 91 read them.
+fn raids_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v91::OLD_VALUE;
+    (b.raid_rules, b.animal_clear) = (old, old);
 }
 
 /// Version 85 snapshots (before the playtest 10 balance rules) restore with
@@ -2187,4 +2195,24 @@ fn version_89_snapshots_restore_without_reinforce_clear() {
     let w = fixture_world();
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!((r.config.balance.reinforce_clear, r.config.balance.founding_together), (1.0, 1.0));
+}
+
+/// Version 90 snapshots (before the playtest 11 raid and placement rules)
+/// restore with them off, and are otherwise the same world.
+#[test]
+fn version_90_snapshots_restore_without_raid_rules() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v90();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 90);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.raid_rules, r.config.balance.animal_clear), (0.0, 0.0));
+    assert!(r.snapshot_v90() == old);
+    raids_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.raid_rules, r.config.balance.animal_clear), (1.0, 1.0));
 }

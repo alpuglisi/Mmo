@@ -1142,7 +1142,13 @@ impl World {
         let c = &self.clutches[k];
         // A raider that has given up on a rare species passes its clutches
         // over too (`Balance::prey_switching`).
-        if c.eggs.is_empty() || c.owner == o.owner || self.gives_up_on(o, c.lineage) {
+        if c.eggs.is_empty() || c.owner == o.owner || self.gives_up_on(o, c.lineage) || self.clutch_spared(o, c) {
+            return;
+        }
+        // Offline protection softens a raid as it does a strike
+        // (`Balance::raid_rules`).
+        let shield = self.offline_clutch_factor(c);
+        if shield < 1.0 && rng.gen::<f32>() >= shield {
             return;
         }
         // A present guardian may drive the raider off.

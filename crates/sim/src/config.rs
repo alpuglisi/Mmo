@@ -1495,6 +1495,23 @@ pub struct Balance {
     /// 10: a split founding landed in two clusters 110 tiles apart). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v90"))]
     pub founding_together: f32,
+    // Playtest 11 raids and placement (version 91; *Playtest 11: raids,
+    // landings and heat* in the README). Off at 0, what snapshots before
+    // version 91 read (`serde_util::before_v91`).
+    /// Nest raids follow the rules that keep a hunter off the clutch's
+    /// parents: founding grace both ways, the market shield on the mother
+    /// or guardian (`World::clutch_spared`), and offline protection, which
+    /// softens a raid as it does a strike (`World::offline_clutch_factor`).
+    /// Playtest 11: raids ignored all three. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v91"))]
+    pub raid_rules: f32,
+    /// A player's founding in a running world and reinforcements keep
+    /// `world::ANIMAL_CLEAR` tiles from every other player's animal in every
+    /// pick, the search widening before the rule relaxes; with nothing
+    /// clear, the emptiest ground (playtest 11: a founding landed inside a
+    /// rival herd, "0 tiles away"). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v91"))]
+    pub animal_clear: f32,
 }
 
 impl Balance {
@@ -1813,12 +1830,14 @@ impl Default for Balance {
             refuge_ramp: 1.0,
             reinforce_clear: 1.0,
             founding_together: 1.0,
+            raid_rules: 1.0,
+            animal_clear: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 188;
+    pub const FIELD_COUNT: usize = 190;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -2016,6 +2035,8 @@ impl Balance {
             ("refuge_ramp", &mut self.refuge_ramp),
             ("reinforce_clear", &mut self.reinforce_clear),
             ("founding_together", &mut self.founding_together),
+            ("raid_rules", &mut self.raid_rules),
+            ("animal_clear", &mut self.animal_clear),
         ]
     }
 
