@@ -136,6 +136,9 @@ pub const ANIMAL_CLEAR: f32 = 8.0;
 /// (`Map::water_dist`; playtest 9: 9 tiles from water outside a drought,
 /// 21 of 60 dead of thirst).
 pub const FOUND_WATER_NEAR: u16 = 6;
+/// With `Balance::founding_together`, a player's founding's later homes
+/// lie within this many tiles of its first.
+pub const FOUNDING_TOGETHER: f32 = 20.0;
 /// Side in tiles of the cells a pack's thickest cluster is found in
 /// (`World::refresh_pack_homes`, `Balance::pack_cohesion`).
 const PACK_CELL: f32 = 12.0;
@@ -394,6 +397,9 @@ struct HomeSearch {
     /// Other players' living animals, and whether each is a predator
     /// (`Balance::rival_clear`; empty without it).
     rival_animals: PointGrid<bool>,
+    /// The founding's first home, once picked, when its later homes stay
+    /// near it (`Balance::founding_together`).
+    near: Option<Vec2>,
 }
 
 impl HomeSearch {
@@ -553,6 +559,7 @@ impl HomeSearch {
             rival_ranges,
             rival_lands,
             rival_animals,
+            near: None,
         }
     }
 }
@@ -1484,6 +1491,11 @@ impl World {
                 }
                 if k == 0 {
                     self.lineage_homes[lineage as usize] = Some(home);
+                    if self.config.balance.founding_together > 0.0 && owner != crate::WILD && self.tick > 0 {
+                        if let Some(s) = search.as_mut() {
+                            s.near = Some(home);
+                        }
+                    }
                 }
             }
             let genome = design.founder_genome(owner, &mut rng);
@@ -1674,6 +1686,7 @@ impl World {
             rival_ranges,
             rival_lands,
             rival_animals,
+            near: together,
         } = search;
         // Judge the spot as it is now (`Balance::founding_conditions`): only
         // in a running world, so a new world's founding is unchanged.
@@ -1747,6 +1760,12 @@ impl World {
                 if k < 150 && water_far {
                     continue;
                 }
+            }
+            // A founding's later homes near its first
+            // (`Balance::founding_together`; playtest 10: two clusters 110
+            // tiles apart), in the strict pass.
+            if strict && together.is_some_and(|c| c.dist(p) > FOUNDING_TOGETHER) {
+                continue;
             }
             // Nor, in the first half of the strict pass, where rival groups
             // range and are headed (`Balance::rival_reach`).
@@ -2717,6 +2736,40 @@ mod winter_tests {
                 "owner {owner}: home {home:?} far from water"
             );
         }
+    }
+
+    /// Playtest 10: a split founding landed in two clusters 110 tiles
+    /// apart. With `Balance::founding_together` a founding spread over
+    /// several homes keeps them within `FOUNDING_TOGETHER` tiles of the
+    /// first.
+    #[test]
+    fn a_split_founding_stays_together() {
+        let mut w = World::new(WorldConfig { seed: 10, width: 128, height: 128, ..Default::default() });
+        for (owner, design) in crate::presets::wild_designs() {
+            let n = (design.founders / 3).max(4);
+            w.found_lineage_unchecked(owner, &design.founders(n));
+        }
+        w.run_days(1);
+        let design =
+            crate::design::FounderDesign::new("big", crate::design::Thermo::Warm, crate::design::BirthType::Live, 2)
+                .founders(140);
+        let spread = |w: &World, owner: PlayerId| {
+            let home = w.lineage_homes[w.lineages.len() - 1].unwrap();
+            w.organisms.iter().filter(|o| o.owner == owner).map(|o| o.pos.dist(home)).fold(0.0f32, f32::max)
+        };
+        let mut worst_old = 0.0f32;
+        for owner in 60..64 {
+            let mut c = w.clone();
+            c.found_lineage_unchecked(owner, &design);
+            // Founders scatter around each home too (group tolerance).
+            let far = spread(&c, owner);
+            assert!(far <= FOUNDING_TOGETHER + 16.0, "owner {owner}: a founder {far:.1} tiles from the first home");
+            let mut old = w.clone();
+            old.config.balance.founding_together = 0.0;
+            old.found_lineage_unchecked(owner, &design);
+            worst_old = worst_old.max(spread(&old, owner));
+        }
+        assert!(worst_old > FOUNDING_TOGETHER + 16.0, "the old rule spread them {worst_old:.1} at most");
     }
 
     /// Playtest 8: founders landed old (85 days 11 days after landing).
