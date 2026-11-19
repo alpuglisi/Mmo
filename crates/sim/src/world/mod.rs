@@ -136,6 +136,12 @@ pub const ANIMAL_CLEAR: f32 = 8.0;
 /// (`Map::water_dist`; playtest 9: 9 tiles from water outside a drought,
 /// 21 of 60 dead of thirst).
 pub const FOUND_WATER_NEAR: u16 = 6;
+/// Side in tiles of the cells a pack's thickest cluster is found in
+/// (`World::refresh_pack_homes`, `Balance::pack_cohesion`).
+const PACK_CELL: f32 = 12.0;
+/// Tiles from its pack's thickest cluster past which a player's pack
+/// hunter heads back to it (`Balance::pack_cohesion`).
+pub const PACK_STRAY: f32 = 10.0;
 /// Days a new founding's founders lose water more slowly in a drought
 /// (`Balance::founding_drought`).
 pub const FOUNDER_WATER_DAYS: f32 = 6.0;
@@ -809,6 +815,11 @@ pub struct World {
     /// Recomputed before every tick, so not saved.
     #[cfg_attr(feature = "serde", serde(skip))]
     pack_room: BTreeMap<PlayerId, f32>,
+    /// Where each player's group's pack hunters are thickest, for pack
+    /// cohesion (`Balance::pack_cohesion`, `World::refresh_pack_homes`).
+    /// Recomputed before every tick, so not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pack_homes: BTreeMap<(PlayerId, u8), Vec2>,
 }
 
 /// Steps from water a founder's tile needs (`Balance::dry_sites`).
@@ -918,6 +929,7 @@ impl World {
             toxic_lessons: BTreeMap::new(),
             crowding: Vec::new(),
             pack_room: BTreeMap::new(),
+            pack_homes: BTreeMap::new(),
             clutch_at: IdMap::default(),
             path_scratch: PathScratch::default(),
             season_offset: Map::seasonal_offset(0, config.days_per_year),
@@ -1096,6 +1108,56 @@ impl World {
     /// `owner`'s room for the pack larder as this tick started (0–1).
     pub(crate) fn pack_room(&self, owner: PlayerId) -> f32 {
         self.pack_room.get(&owner).copied().unwrap_or(0.0)
+    }
+
+    /// Where a player's group's pack hunters are thickest
+    /// (`Balance::pack_cohesion`), if it has any.
+    pub(crate) fn pack_home(&self, owner: PlayerId, group: u8) -> Option<Vec2> {
+        self.pack_homes.get(&(owner, group)).copied()
+    }
+
+    /// Each player's group's pack home (`Balance::pack_cohesion`): the
+    /// middle of its pack hunters in and around the `PACK_CELL` cell that
+    /// holds most of them, as each tick starts. Playtest 9: a pack with
+    /// pack instinct 1.0 spread over the whole map; its mean fell between
+    /// its parts, so the thickest cluster is what strays return to.
+    fn refresh_pack_homes(&mut self) {
+        self.pack_homes.clear();
+        let bal = &self.config.balance;
+        if bal.pack_cohesion <= 0.0 {
+            return;
+        }
+        let cell = |p: Vec2| ((p.x / PACK_CELL).floor() as i32, (p.y / PACK_CELL).floor() as i32);
+        let mut cells: BTreeMap<(PlayerId, u8), BTreeMap<(i32, i32), (u32, Vec2)>> = BTreeMap::new();
+        for o in self.organisms.iter().filter(|o| o.alive && decide::player_pack(bal, o)) {
+            let e = cells.entry((o.owner, o.group)).or_default().entry(cell(o.pos)).or_default();
+            e.0 += 1;
+            e.1 = e.1 + o.pos;
+        }
+        for (key, grid) in cells {
+            let around = |(cx, cy): (i32, i32)| {
+                let (mut n, mut sum) = (0u32, Vec2::ZERO);
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        if let Some(&(k, s)) = grid.get(&(cx + dx, cy + dy)) {
+                            n += k;
+                            sum = sum + s;
+                        }
+                    }
+                }
+                (n, sum)
+            };
+            let mut best = (0u32, Vec2::ZERO);
+            for &c in grid.keys() {
+                let a = around(c);
+                if a.0 > best.0 {
+                    best = a;
+                }
+            }
+            if best.0 > 0 {
+                self.pack_homes.insert(key, best.1 * (1.0 / best.0 as f32));
+            }
+        }
     }
 
     /// Each player's room for the pack larder (`apply::player_pack_larder`):
@@ -2066,6 +2128,7 @@ impl World {
         // after a restore, which keeps no cache).
         self.refresh_crowding();
         self.refresh_pack_room();
+        self.refresh_pack_homes();
         if self.config.lod.enabled && self.tick.is_multiple_of(self.config.ticks_per_hour()) {
             self.lod_update();
         }

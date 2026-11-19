@@ -805,3 +805,23 @@ fn hungry_hunters_take_bright_prey_and_aversions_fade() {
     aversive.retain(|&i| w.organisms[i].bright_aversion);
     assert!((n / 3..2 * n / 3).contains(&aversive.len()), "{} of {n} still averse", aversive.len());
 }
+
+/// Playtest 9: a pack with pack instinct 1.0 spread over the map. Its home
+/// for `Balance::pack_cohesion` is its thickest cluster, not the mean (which
+/// falls between its parts), and none without the rule.
+#[test]
+fn a_packs_home_is_its_thickest_cluster() {
+    let mut w = world();
+    for k in 0..5 {
+        place(&mut w, HUNTER, &hunter(), Vec2::new(10.5 + k as f32 * 0.5, 10.5));
+    }
+    for k in 0..2 {
+        place(&mut w, HUNTER, &hunter(), Vec2::new(50.5 + k as f32, 50.5));
+    }
+    w.refresh_pack_homes();
+    let home = w.pack_home(HUNTER, 0).expect("a pack home");
+    assert!(home.dist(Vec2::new(11.5, 10.5)) < 1.0, "{home:?}");
+    w.config.balance.pack_cohesion = 0.0;
+    w.refresh_pack_homes();
+    assert_eq!(w.pack_home(HUNTER, 0), None);
+}

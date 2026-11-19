@@ -982,6 +982,16 @@ impl World {
             0.0
         };
         let graze_utility = hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 } + 0.4 * fatten;
+        // A player's pack hunter strayed from its pack's thickest cluster
+        // heads back (`Balance::pack_cohesion`; playtest 9: a pack with
+        // pack instinct 1.0 spread over the map), unless starving.
+        let pack_pull = (cfg.balance.pack_cohesion > 0.0 && player_pack(&cfg.balance, o))
+            .then(|| self.pack_home(o.owner, o.group))
+            .flatten()
+            .filter(|h| h.dist(o.pos) > super::PACK_STRAY);
+        let pull = pack_pull.map_or(0.0, |_| {
+            cfg.balance.pack_cohesion.min(1.5) * (0.35 + 0.45 * pack_instinct(o)) * (1.0 - hunger.powi(3))
+        });
         let mut options: [(Action, f32); 18] = [
             (Action::Flee, threat * (1.3 - boldness) * flee_weight * (1.0 - reckless) * tame * hide),
             (Action::Graze, graze_utility),
@@ -1008,9 +1018,9 @@ impl World {
                     Some(c)
                         if o.pos.dist(c) > 1.5 + 4.0 * (1.0 - p[Gene::GroupTolerance]) + 0.8 * (kin as f32).sqrt() =>
                     {
-                        (p[Gene::GroupTolerance] * 0.25 + n.social / 100.0 * 0.3) * (1.0 - hunger)
+                        ((p[Gene::GroupTolerance] * 0.25 + n.social / 100.0 * 0.3) * (1.0 - hunger)).max(pull)
                     }
-                    _ => 0.0,
+                    _ => pull,
                 },
             ),
             (Action::Wander, 0.05 + 0.15 * p[Gene::Wanderlust]),
@@ -1156,7 +1166,7 @@ impl World {
                     self.wander(o, &mut intent, &mut rng, 6.0);
                 }
             }
-            Action::Group => intent.target = kin_centroid,
+            Action::Group => intent.target = pack_pull.or(kin_centroid),
             Action::Wander => self.wander(o, &mut intent, &mut rng, 2.0 + 8.0 * p[Gene::Wanderlust]),
             // Navigating with its group, it keeps up with the group.
             Action::Migrate => {
