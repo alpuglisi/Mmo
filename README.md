@@ -9461,6 +9461,72 @@ and 8 of 8 (8 and 8 off; viable 7 and 8 either way).
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.77 (± 0.16; 11.82 with the five tunables off). Every lineage survives 12 of 12. |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
 
+### Playtest 11: server Lows
+
+Server-side Lows from `docs/playtest-11.md`:
+
+- **Hunger text.** "Going hungry" names the cap that actually binds: the
+  soft cap, the world-share cap (with its share), or both.
+- **Decline.** Within one decline a crash stays a crash. When the lineage
+  is 30% or more below its peak over the last two 10-day windows, the
+  warning reads "still crashing: peak → now". It no longer drops to "dying
+  off slowly" just because the last 10 days lost less.
+- **Rounding.**
+  - Rally and abandon-territory replies give `x`, `y` and `radius` in
+    hundredths. The state keeps exact values, so its wire format is
+    unchanged.
+  - Reinforce `at` is in hundredths.
+  - `/api/species` `peak_adults` is a whole number.
+  - `preview_mating` `distance` is in whole tiles.
+- **Restore preview.** When nothing would regrow (winter, a drought, already
+  grown), the preview prices 0 and its `hint` says why. It keeps no quote.
+  A purchase is still refused with `nothing_to_restore`.
+- **Wording.**
+  - "it had 1 adult": counts go through `count_of` and `thousands`, so
+    plurals and thousands separators are right.
+  - The substitute alert says "within about a real minute" or "about N real
+    minutes".
+  - For an unpriced request it names the requester's mating slot, not a
+    hold fee. A forfeited slot says whose it is ("ann forfeits one of this
+    season's mating slots").
+  - The reinforce refusal reads "you have N alive now, young included" or
+    "you had N at the most".
+  - A sale with a fee gives the gross price, the fee and the net ("Sale: 30
+    renown … less a 3 renown market fee: 27 paid to you").
+  - The taper ledger reads "(8, reduced by the taper on a balance over
+    1,000)".
+  - The re-founding feed line uses the flat sentence instead of the whole
+    rule.
+  - The species list in the client has a space before "Name it…".
+- **Closed offers.** A command on an offer that closed recently answers
+  `unknown_offer` with "offer N has already closed (declined)". The last
+  1,024 closed offers are kept in memory.
+- **Compatibility fields.**
+  - `fertility` is the mean over all pairs, with sterile pairs counting 0,
+    so it is never more than `fertile_share`. The mean over the fertile
+    pairs alone is `fertility / fertile_share`.
+  - `compatible` means `fertile_share` ≥ 0.5, however low each pair's
+    chance.
+  - The client adds "at about N% each".
+  - `fertile_with` and `at_risk` leave out the player's own lineage.
+  - The design compatibility reply now carries `points` and `budget`.
+- **Auctions.** When the real-time minimum lengthens an auction asked for
+  in days, the reply says so in game days, e.g. "lengthened from 20 to about
+  62 game days: every auction runs at least 5 real minutes".
+- **Public feed.** Achievements in `/api/achievements` are in the third
+  person ("ann's lineage"). Players' own alerts keep "your".
+- **Retirement.** A retired lineage gets no "· 0 alive" day summary.
+  `/api/species` leaves out an extinct species made only of ended player
+  lineages, unless another species descends from it.
+- **Territory.** "has recovered" is sent only to a group that was told its
+  territory no longer feeds it.
+- **Era ranks.** Eras rank by the mean as shown (tenths of a percent), then
+  by final share. Two players at 0.7% no longer rank by hidden digits.
+- **Move-order cooldown.** One migrate or rally per group per real second
+  (`GameConfig::order_cooldown_ms`, 1,000; 0 turns it off). Otherwise the
+  error is `order_cooldown`. A refused order does not start the wait.
+- **`next_refound_fee`** is null before the player's first founding.
+
 ### Playtest 10: server Lows
 
 Server-side Lows from `docs/playtest-10.md`:

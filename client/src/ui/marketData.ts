@@ -152,7 +152,10 @@ export function compatRowText(r: CompatibilityView['rows'][number]): string {
     return `${who}: mostly sterile: ${share}${range} (${cause})${drift}`;
   }
   if (r.fertility >= 0.999) return `${who}: fully fertile${drift}`;
-  return `${who}: ${pct0(r.fertility)} fertile on average${range}${share ? `; ${share}` : ''} (${cause})${drift}`;
+  // The fertile pairs' own mean beside the share (playtest 11: "10% fertile" beside "80% of pairs can conceive"
+  // read as a contradiction: sterile pairs count 0 in the mean).
+  const each = share && r.fertile_share && r.fertile_share < 0.995 ? `, at about ${pct0(r.fertility / r.fertile_share)} each` : '';
+  return `${who}: ${pct0(r.fertility)} fertile on average${range}${share ? `; ${share}${each}` : ''} (${cause})${drift}`;
 }
 
 /** The shop's explanation line. */

@@ -63,6 +63,9 @@ const SHARE_MILESTONES: [f64; 5] = [0.01, 0.05, 0.1, 0.25, 0.5];
 /// the world snapshot's tiles apart: `crate::snapshot`; version 4 saved
 /// games still restore).
 pub const SAVED_GAME_VERSION: u32 = 5;
+/// Closed offers remembered for their `unknown_offer` replies.
+const CLOSED_OFFERS_KEPT: usize = 1024;
+
 /// Ledger entries returned by the `ledger` command unless asked otherwise.
 /// Adults of the other sex an offer to a lineage samples for one that
 /// can conceive with the offered animal (`offer_to_lineage`).
@@ -177,6 +180,10 @@ pub struct GameConfig {
     pub state_leaderboard_rows: usize,
     /// Most open offers one player may have made at once.
     pub max_open_offers: usize,
+    /// Real milliseconds between two migrate or rally orders to one group
+    /// (playtest 11: four migrates and a clear in one second, a free probe
+    /// of the map's bands and hunters); 0: none.
+    pub order_cooldown_ms: f64,
     /// Daily income tapers above this balance ([`economy::tapered_income`];
     /// 0: no taper).
     pub income_taper_from: u64,
@@ -567,6 +574,7 @@ impl Default for GameConfig {
             state_leaderboard_rows: 50,
             max_open_offers: 8,
             income_taper_from: economy::INCOME_TAPER_FROM,
+            order_cooldown_ms: 1000.0,
             season_days: league::DEFAULT_SEASON_DAYS,
             offline_protection_ticks: DEFAULT_PROTECTION_TICKS,
             home_range_ticks: DEFAULT_HOME_RANGE_TICKS,
@@ -908,6 +916,17 @@ pub struct Game {
     /// Head-count prices last shown to each player (`Game::quote_shop`).
     /// Not saved.
     shop_quotes: BTreeMap<PlayerId, shop::ShopQuote>,
+    /// Recently closed offers (status, requester, partner's owner), so a
+    /// command on one says it closed rather than that it never existed
+    /// (playtest 11). Memory only, the newest [`CLOSED_OFFERS_KEPT`].
+    closed_offers: BTreeMap<u64, (OfferStatus, PlayerId, PlayerId)>,
+    /// Groups told their territory no longer feeds them: only those hear
+    /// that it recovered (playtest 11: an unpaired "has recovered" after
+    /// the cool-down dropped the bad news). Memory only.
+    loosened_said: BTreeSet<(PlayerId, u8)>,
+    /// The tick of each group's last migrate or rally order
+    /// ([`GameConfig::order_cooldown_ms`]). Memory only.
+    last_move_order: BTreeMap<(PlayerId, u8), u64>,
     /// Each player's recent finished matings, newest first (memory only:
     /// `GET /api/matings/history`).
     mating_log: BTreeMap<PlayerId, VecDeque<MatingRecord>>,
@@ -1344,6 +1363,9 @@ impl Game {
             alerts: BTreeMap::new(),
             alert_ids: BTreeMap::new(),
             shop_quotes: BTreeMap::new(),
+            closed_offers: BTreeMap::new(),
+            loosened_said: BTreeSet::new(),
+            last_move_order: BTreeMap::new(),
             mating_log: BTreeMap::new(),
             watched: BTreeMap::new(),
             progress: BTreeMap::new(),
@@ -2036,7 +2058,8 @@ impl Game {
                 let days = self.economy.refound_days.entry(player).or_default();
                 days.retain(|&d| d + window > today);
                 days.push(today);
-                let text = format!("Re-founded: {n} of {} founders, {fee} renown ({}).", design.founders, t.reason);
+                // The flat sentence (playtest 11: the feed nested the whole rule).
+                let text = format!("Re-founded: {n} of {} founders, {fee} renown: {}.", design.founders, t.short);
                 // Live: delivered with the next tick's messages.
                 let mut out: Outbox = Vec::new();
                 self.alert(player, AlertKind::Milestone, text, None, &mut out);
@@ -2525,11 +2548,13 @@ impl Game {
                 finite(&[x, y])?;
                 // No group: the main group, like a rally or a territory.
                 let group = group.unwrap_or(0);
+                self.move_order_cooldown(player, group)?;
                 let asked = Vec2::new(x, y);
                 let before = self.orders_of(player, group);
                 let home =
                     self.world.groups(player).iter().find(|g| g.id == group).and_then(|g| g.settle).map(|s| s.center);
                 let to = self.world.command_migrate_group(player, group, asked).map_err(e)?;
+                self.last_move_order.insert((player, group), self.world.tick());
                 if let Some(h) = home {
                     self.left_home.insert((player, group), h);
                 }
@@ -2751,6 +2776,7 @@ impl Game {
                 let t = self.world.abandon_territory(player, group).map_err(e)?;
                 self.territory_alerted.retain(|&(p, g, _)| (p, g) != (player, group));
                 let mut data = serde_json::to_value(TerritoryView::from(t)).unwrap();
+                round_xy_radius(&mut data);
                 if self.world.settle_circle(player, group).is_some() {
                     data["note"] = "the group goes back to its home ground".into();
                 }
@@ -2758,10 +2784,13 @@ impl Game {
             }
             ClientMsg::Rally { group, x, y } => {
                 finite(&[x, y])?;
+                self.move_order_cooldown(player, group)?;
                 let before = self.orders_of(player, group);
                 let r = self.world.rally_group(player, group, Vec2::new(x, y)).map_err(e)?;
+                self.last_move_order.insert((player, group), self.world.tick());
                 self.order_given(player, group);
                 let mut data = serde_json::to_value(RallyView::from(r)).unwrap();
+                round_xy_radius(&mut data);
                 let mut warnings = self.travel_warnings(player, group, false);
                 warnings.extend(self.way_warnings(player, group, r.center));
                 warnings.extend(self.circle_report(player, group, r.center, r.radius, &mut data));
@@ -2911,11 +2940,19 @@ impl Game {
                 let l = self.create_auction(player, organism, reserve, days, ticks)?;
                 let lasts = l.expires_tick.unwrap_or_default().saturating_sub(self.world.tick());
                 // Say when the wall-clock floor lengthened it (it was silent).
+                // In game days when asked in days (playtest 11: `days: 20`
+                // ran ~62 days and the note spoke of ticks).
                 let note = (lasts > asked).then(|| {
-                    format!(
-                        "lengthened to {lasts} ticks ({}): auctions run at least that long",
-                        real_minutes(lasts as f64 * self.cfg.tick_ms / 60_000.0)
-                    )
+                    let tpd = self.world.config.ticks_per_day.max(1) as f64;
+                    let floor = real_minutes(self.cfg.min_auction_ticks as f64 * self.cfg.tick_ms / 60_000.0);
+                    let floor = floor.trim_start_matches("about ");
+                    match days {
+                        Some(d) if ticks.is_none() => format!(
+                            "lengthened from {d} to about {:.0} game days: every auction runs at least {floor}",
+                            lasts as f64 / tpd
+                        ),
+                        _ => format!("lengthened from {asked} to {lasts} ticks: every auction runs at least {floor}"),
+                    }
                 });
                 Ok(Some(serde_json::json!({ "listing": self.listing_view(&l, None), "note": note })))
             }
@@ -3020,7 +3057,42 @@ impl Game {
         self.offers
             .get(&request)
             .filter(|o| o.from == player || o.to == player)
-            .ok_or_else(|| ErrorInfo::new("unknown_offer", format!("no offer {request} involving you")))
+            .ok_or_else(|| self.unknown_offer(request, player, "no offer {request} involving you"))
+    }
+
+    /// Refuse a migrate or rally to `group` within
+    /// [`GameConfig::order_cooldown_ms`] of the last one that was taken.
+    fn move_order_cooldown(&self, player: PlayerId, group: u8) -> Result<(), ErrorInfo> {
+        if self.cfg.order_cooldown_ms <= 0.0 {
+            return Ok(());
+        }
+        let ticks = (self.cfg.order_cooldown_ms / self.cfg.tick_ms.max(1.0)).ceil() as u64;
+        let now = self.world.tick();
+        if self.last_move_order.get(&(player, group)).is_some_and(|&t| now < t + ticks) {
+            return Err(ErrorInfo::new(
+                "order_cooldown",
+                format!(
+                    "one migrate or rally order a group every {:.0} second{}: wait a moment",
+                    self.cfg.order_cooldown_ms / 1000.0,
+                    if self.cfg.order_cooldown_ms == 1000.0 { "" } else { "s" }
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `unknown_offer` for `request`: that it already closed (and how) when
+    /// it was the player's and closed recently, else `missing` (with
+    /// `{request}` in it replaced by the id).
+    fn unknown_offer(&self, request: u64, player: PlayerId, missing: &str) -> ErrorInfo {
+        match self.closed_offers.get(&request) {
+            Some(&(status, from, to)) if from == player || to == player => {
+                let how =
+                    serde_json::to_value(status).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+                ErrorInfo::new("unknown_offer", format!("offer {request} has already closed ({how})"))
+            }
+            _ => ErrorInfo::new("unknown_offer", missing.replace("{request}", &request.to_string())),
+        }
     }
 
     fn request_mating(
@@ -4124,7 +4196,8 @@ impl Game {
             let income = economy::tapered_income(full, self.balance(p), from);
             if income > 0 {
                 let taper = if income < full {
-                    format!(" ({full} less the taper on a balance over {from})")
+                    // Playtest 11: "(32 less the taper on a balance over 1000)".
+                    format!(" ({full}, reduced by the taper on a balance over {})", thousands(from))
                 } else {
                     String::new()
                 };
@@ -4154,7 +4227,7 @@ impl Game {
             .offers
             .get(&request)
             .filter(|o| o.to == player)
-            .ok_or_else(|| ErrorInfo::new("unknown_offer", format!("no offer {request} made to you")))?;
+            .ok_or_else(|| self.unknown_offer(request, player, "no offer {request} made to you"))?;
         if offer.status != OfferStatus::Pending {
             return Err(ErrorInfo::new("offer_closed", format!("offer {request} is {:?}", offer.status)));
         }
@@ -4392,7 +4465,12 @@ impl Game {
             failure_chance: r(p.failure_chance),
             // Exact only for a partner the player can see: distances to
             // hidden organisms would locate them (rounded up to 16 tiles).
-            distance: if partner_seen { p.distance } else { (p.distance / LISTING_REGION).ceil() * LISTING_REGION },
+            // Whole tiles (playtest 11: "distance: 11.76" read as noise).
+            distance: if partner_seen {
+                p.distance.round()
+            } else {
+                (p.distance / LISTING_REGION).ceil() * LISTING_REGION
+            },
             meeting_distance: MEETING_DISTANCE,
             problem: incompatibility(&p),
         })
@@ -4615,7 +4693,8 @@ impl Game {
         } else if full > 0 {
             format!("nothing is forfeit{slept}")
         } else if self.world.forfeit_mating_slot(o.from) {
-            "a mating slot is forfeit".to_string()
+            // Whose (playtest 11: "a mating slot is forfeit" said to both).
+            format!("{} forfeits one of this season's mating slots", self.name(o.from))
         } else {
             "nothing was forfeit".to_string()
         }
@@ -4781,6 +4860,10 @@ impl Game {
         }));
         // Closed offers stay only until reported; keep the table small.
         self.offers.remove(&request);
+        self.closed_offers.insert(request, (status, o.from, o.to));
+        while self.closed_offers.len() > CLOSED_OFFERS_KEPT {
+            self.closed_offers.pop_first();
+        }
     }
 
     /// Settle a closing offer's escrow: paid to the partner's owner if the
@@ -4799,9 +4882,16 @@ impl Game {
             // The market fee is destroyed: only the rest is paid out.
             let fee = o.fee.min(amount);
             let net = amount - fee;
-            let fee_note = if fee > 0 { format!(", less a {fee} renown market fee") } else { String::new() };
-            let text =
-                format!("Sale: {net} renown from {from} for {what}{fee_note} (your #{} with #{})", o.partner, o.mine);
+            // Gross and net both (playtest 11: "Sale: 11 … less a 1 renown
+            // fee" read the net as the price).
+            let text = if fee > 0 {
+                format!(
+                    "Sale: {amount} renown from {from} for {what}, less a {fee} renown market fee: {net} paid to you (your #{} with #{})",
+                    o.partner, o.mine
+                )
+            } else {
+                format!("Sale: {net} renown from {from} for {what} (your #{} with #{})", o.partner, o.mine)
+            };
             if self.post(o.to, net as i64, LedgerKind::Sale, text.clone(), Some(o.id), o.listing).is_ok()
                 && amount >= MARKET_TITLE_MIN_PRICE
             {
@@ -4902,13 +4992,18 @@ impl Game {
             self.world.clear_rendezvous(o.partner);
             let minutes =
                 (self.offer_deadline(&o).saturating_sub(self.world.tick()) as f64 * self.cfg.tick_ms / 60_000.0).ceil();
+            // An unpriced request holds no fee: the requester's mating slot is
+            // what is forfeit (playtest 11: a hold fee named for one).
             let fee = if excused {
                 "nothing is forfeit if none comes"
+            } else if o.escrow == 0 {
+                "else your mating slot for it is forfeit at the deadline"
             } else {
                 "else the hold fee is forfeit at the deadline"
             };
+            let within = real_minutes(minutes);
             let text = format!(
-                "Your #{} {how} on the way to {}: send another animal for agreement #{id} within about {minutes:.0} minutes, or cancel ({fee}).",
+                "Your #{} {how} on the way to {}: send another animal for agreement #{id} within {within}, or cancel ({fee}).",
                 o.mine,
                 self.partner_text(&o)
             );
@@ -4942,7 +5037,10 @@ impl Game {
         mine: OrgId,
         out: &mut Outbox,
     ) -> Result<Option<serde_json::Value>, ErrorInfo> {
-        let o = self.offer_for(request, player).map_err(|_| {
+        let o = self.offer_for(request, player).map_err(|e| {
+            if e.message.contains("already closed") {
+                return e;
+            }
             ErrorInfo::new(
                 "unknown_offer",
                 format!(
@@ -6103,7 +6201,25 @@ impl Game {
                 && base > 0
                 && (died >= STARVING_FLOOR || died as f64 >= STARVING_SHARE * base as f64)
             {
-                let litter = self.crowding_view(player).map_or(1.0, |c| c.litter);
+                let crowd = self.crowding_view(player);
+                let litter = crowd.as_ref().map_or(1.0, |c| c.litter);
+                // Which cap slows them (playtest 11: "the soft cap" named
+                // while the world-share cap bound).
+                let (soft, world) = crowd.as_ref().map_or((true, None), |c| {
+                    let world = c.world_cap.filter(|&w| c.count > w).map(|_| c.world_share);
+                    (c.count > c.soft_cap as f32 || world.is_none(), world)
+                });
+                let share_cap = |share: f32| {
+                    format!("the world-share cap (a lineage crowds past {:.0}% of the world's animals)", share * 100.0)
+                };
+                let cap = match (soft, world) {
+                    (true, Some(share)) => format!("The soft cap with {}", share_cap(share)),
+                    (false, Some(share)) => {
+                        let t = share_cap(share);
+                        format!("{}{}", t[..1].to_uppercase(), &t[1..])
+                    }
+                    _ => "The soft cap".to_string(),
+                };
                 // Mostly thirst: say so, and point at water rather than food
                 // (playtest 6: a pure thirst die-off was told it was "going
                 // hungry" and sent to the Food layer).
@@ -6115,8 +6231,8 @@ impl Game {
                         .to_string()
                 } else {
                     format!(
-                        "The soft cap has litters at ×{litter:.2} of full size, yet the lineage is still more than its \
-                         ground can feed. "
+                        "{cap} has litters at ×{litter:.2} of full size, yet the lineage is still more than its ground \
+                         can feed. "
                     )
                 };
                 // Mostly asleep: groups can't be moved (playtest 5: a 91%
@@ -6323,6 +6439,11 @@ impl Game {
             // the share names whose deaths it counts (playtest 9: "dying off
             // slowly: 261 → 143 ... (34%)").
             let drop = 100.0 * (then.saturating_sub(now)) as f64 / then.max(1) as f64;
+            // Within one decline a crash stays a crash (playtest 11: "dying
+            // off slowly … 25%" right after "crashing 42%"): measured from
+            // the peak of the last two windows.
+            let peak = self.decline_peak(lineage).filter(|&(p, _)| p > then);
+            let from_peak = peak.map(|(p, days)| (p, days, 100.0 * p.saturating_sub(now) as f64 / p.max(1) as f64));
             let text = if now >= then {
                 format!(
                     "Your lineage is losing animals faster than it looks: {lost} died of hunger, thirst or cold over the \
@@ -6333,6 +6454,12 @@ impl Game {
                 format!(
                     "Your lineage is crashing: {then} → {now} alive over the last {DECLINE_DAYS} days ({drop:.0}% fewer); \
                      {lost} died of hunger, thirst or cold ({pct:.0}% of the {then}). {advice}"
+                )
+            } else if let Some((p, days, d)) = from_peak.filter(|f| f.2 >= DECLINE_CRASH * 100.0) {
+                format!(
+                    "Your lineage is still crashing: {p} → {now} alive over the last {days} days ({d:.0}% fewer; \
+                     {drop:.0}% in the last {DECLINE_DAYS}); {lost} died of hunger, thirst or cold in those {DECLINE_DAYS} \
+                     days. {advice}"
                 )
             } else {
                 format!(
@@ -6444,6 +6571,20 @@ impl Game {
         }
         // Only a lineage that is actually shrinking (playtest 8: "dying off slowly: 954 → 1251").
         (then >= 10 && now < then && lost as f64 >= DECLINE_SHARE * then as f64).then_some((lost, then, now))
+    }
+
+    /// The most alive `lineage` had over the last two decline windows
+    /// ([`DECLINE_DAYS`] each) and how many days ago that was.
+    fn decline_peak(&self, lineage: u32) -> Option<(u64, u64)> {
+        let n = self.history.len();
+        let span = (2 * DECLINE_DAYS as usize + 1).min(n);
+        self.history
+            .iter()
+            .skip(n - span)
+            .enumerate()
+            .filter_map(|(i, r)| r.lineages.iter().find(|e| e.lineage == lineage).map(|e| (e.alive as u64, i)))
+            .max_by_key(|&(alive, i)| (alive, std::cmp::Reverse(i)))
+            .map(|(alive, i)| (alive, (span - 1 - i) as u64))
     }
 
     /// Say each lineage warning as an alert when it starts, and again every
@@ -6774,6 +6915,7 @@ impl Game {
                          beyond the edge until it recovers. Claim better ground, or abandon the territory to move on.",
                         group_name(group)
                     );
+                    self.loosened_said.insert((player, group));
                     self.alert(player, AlertKind::Group, text, None, out);
                 }
                 GroupEvent::Displaced { player, group, by, territory: t } => {
@@ -6803,6 +6945,7 @@ impl Game {
                         .insert((player, group), format!("reached ({:.0}, {:.0}), claim blocked", target.x, target.y));
                     self.alert(player, AlertKind::Group, text, None, out);
                 }
+                GroupEvent::HoldRestored { player, group } if !self.loosened_said.remove(&(player, group)) => {}
                 GroupEvent::HoldRestored { player, group } if !self.territory_alert_due(player, group) => {}
                 GroupEvent::HoldRestored { player, group } => {
                     let text = format!("{} has recovered: it keeps inside its territory again.", group_name(group));
@@ -7193,7 +7336,7 @@ impl Game {
             let (was, now) = (*peak, g.adults);
             let few = now < GROUP_FEW && was >= GROUP_FEW;
             if g.members == 0 && was > 0 {
-                texts.push(format!("{} has died out (it had {was} adults).", group_name(g.id)));
+                texts.push(format!("{} has died out (it had {}).", group_name(g.id), count_of(was as u64, "adult")));
                 self.group_peak.remove(&key);
             } else if g.members > 0 && (2 * now <= was || few) {
                 texts.push(format!(
@@ -7212,7 +7355,11 @@ impl Game {
         for key in gone {
             if let Some(was) = self.group_peak.remove(&key) {
                 if was > 0 {
-                    texts.push(format!("{} has died out (it had {was} adults).", group_name(key.1)));
+                    texts.push(format!(
+                        "{} has died out (it had {}).",
+                        group_name(key.1),
+                        count_of(was as u64, "adult")
+                    ));
                 }
             }
         }
@@ -7534,7 +7681,10 @@ impl Game {
             let Some(entry) = record.lineages.iter().find(|e| e.lineage == lineage) else { continue };
             let died: u64 = entry.deaths.values().sum();
             let eggs_lost: u64 = entry.eggs_lost.values().sum();
-            if entry.born > 0 || died > 0 || eggs_lost > 0 {
+            // A retired lineage gets no "· 0 alive" day summary (playtest 11):
+            // the retirement said it.
+            let retired = entry.alive == 0 && self.economy.retired_day.contains_key(&p);
+            if !retired && (entry.born > 0 || died > 0 || eggs_lost > 0) {
                 let mut causes: Vec<(&String, &u64)> = entry.deaths.iter().collect();
                 causes.sort_by(|a, b| b.1.cmp(a.1));
                 // The day's counts come from the sim's causes ("exposure" only
@@ -7785,7 +7935,7 @@ impl Game {
         }
         let mut bonuses: Vec<(PlayerId, u64, String)> = Vec::new();
         for a in &ch.achievements[self.seen_achievements.min(ch.achievements.len())..] {
-            let text = achievement_text(&self.world, &a.kind);
+            let text = achievement_text(&self.world, &a.kind, None);
             let mut push = None;
             let mut paid = true;
             match a.kind {
@@ -7872,6 +8022,22 @@ impl Game {
             .species
             .iter()
             .filter(|s| species_listed(s, season_days))
+            // An extinct species made only of player lineages that have
+            // ended (retired or died out) and that no species descends
+            // from is that lineage's history, not the world's: left out
+            // (playtest 11: a retired lineage still listed as a species).
+            .filter(|s| {
+                let ended = |l: u32| {
+                    w.lineages.get(l as usize).is_some_and(|x| {
+                        x.owner != WILD && (self.lineage_of(x.owner) != Some(l) || self.is_extinct(x.owner))
+                    })
+                };
+                let parent_of_another = t.species.iter().any(|o| o.parent == Some(s.id));
+                s.extinct_day.is_none()
+                    || s.lineages.is_empty()
+                    || parent_of_another
+                    || !s.lineages.iter().all(|&(l, _)| ended(l))
+            })
             .map(|s| SpeciesView {
                 id: s.id,
                 name: s.name.clone(),
@@ -7900,7 +8066,7 @@ impl Game {
                 dominant_share: s.dominant_share,
                 // Whole animals: the estimate's fractions read as noise.
                 adults: s.adults.round(),
-                peak_adults: s.peak_adults,
+                peak_adults: s.peak_adults.round(),
                 // A living species leaves out a player's lineage that has
                 // ended (retired, or replaced by a new founding) with no
                 // adults left in it (playtest 10: a retired lineage listed
@@ -8044,7 +8210,7 @@ impl Game {
                 player: a.player,
                 name: self.name(a.player),
                 kind: a.kind.label().into(),
-                text: achievement_text(w, &a.kind),
+                text: achievement_text(w, &a.kind, Some(&self.name(a.player))),
             })
             .collect();
         ChronicleView {
@@ -8541,7 +8707,10 @@ fn era_order(ranking: &[EraRowData], means: Option<&BTreeMap<PlayerId, f64>>) ->
                 rows.push((p, 0.0, 0.0));
             }
         }
-        let mean = |p: PlayerId| m.get(&p).copied().unwrap_or(0.0);
+        // By the mean as shown (tenths of a percent), then the final share
+        // (playtest 11: two players at 0.7% ranked by the hidden digits, the
+        // one with the bigger final share below).
+        let mean = |p: PlayerId| (m.get(&p).copied().unwrap_or(0.0) * 1000.0).round();
         rows.sort_by(|a, b| mean(b.0).total_cmp(&mean(a.0)).then(b.1.total_cmp(&a.1)).then(a.0.cmp(&b.0)));
     }
     rows
@@ -8680,6 +8849,36 @@ pub fn watered_text(w: &evo_sim::World) -> Option<String> {
     ))
 }
 
+/// A reply's `x`, `y` and `radius` in hundredths (playtest 11: float noise
+/// in rally radii and abandon_territory's x). The state keeps the exact
+/// values (its wire format is fixed).
+fn round_xy_radius(data: &mut serde_json::Value) {
+    for k in ["x", "y", "radius"] {
+        if let Some(v) = data.get(k).and_then(|v| v.as_f64()) {
+            data[k] = crate::protocol::round::hundredths(v as f32).into();
+        }
+    }
+}
+
+/// "1 adult", "1,234 adults": a count with its noun, the plural right and
+/// thousands separated (playtest 11: "(it had 1 adults)").
+pub fn count_of(n: u64, noun: &str) -> String {
+    format!("{} {noun}{}", thousands(n), if n == 1 { "" } else { "s" })
+}
+
+/// `n` with commas between thousands ("1,000").
+pub fn thousands(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// A route for a reply, its points in tenths of a tile (playtest 10: f32
 /// noise in the route points).
 fn route_json(route: &[[f32; 2]]) -> serde_json::Value {
@@ -8738,14 +8937,22 @@ fn catastrophe_text(k: CatastropheKind) -> &'static str {
     }
 }
 
-fn achievement_text(w: &World, k: &AchievementKind) -> String {
+/// An achievement's text: to its player ("your lineage") with `who` None,
+/// or in the third person for the public feed with `who` their name
+/// (playtest 11: the feed read "your lineage" for every player).
+fn achievement_text(w: &World, k: &AchievementKind, who: Option<&str>) -> String {
+    let (your, yours) = match who {
+        Some(n) => (format!("{n}'s"), format!("{n}'s")),
+        None => ("your".to_string(), "yours".to_string()),
+    };
     match k {
         AchievementKind::SpeciesFounded { species } => {
             let name = w.chronicle.species.get(*species).map_or_else(|| format!("#{species}"), |s| s.name.clone());
-            format!("Species founded: {name} split off as a species of its own, carrying mostly your alleles.")
+            format!("Species founded: {name} split off as a species of its own, carrying mostly {your} alleles.")
         }
         AchievementKind::LineageLongevity { lineage, years } => {
-            let name = w.lineages.get(*lineage as usize).map_or("Your lineage", |l| l.name.as_str());
+            let fallback = if who.is_some() { format!("{your} lineage") } else { "Your lineage".to_string() };
+            let name = w.lineages.get(*lineage as usize).map_or(fallback, |l| l.name.clone());
             format!("Lineage longevity: {name} has lived {years} year{}.", if *years == 1 { "" } else { "s" })
         }
         AchievementKind::NicheDominance { era, niche, share } => {
@@ -8753,7 +8960,7 @@ fn achievement_text(w: &World, k: &AchievementKind) -> String {
             // "among herbivores" for a diet, "in the forest" for a biome.
             let label = if axis == "diet" { format!("among {what}s") } else { format!("in the {what}") };
             format!(
-                "Niche dominance: over era {}, on average {:.0}% of the breeding alleles {label} were yours.",
+                "Niche dominance: over era {}, on average {:.0}% of the breeding alleles {label} were {yours}.",
                 era + 1,
                 share * 100.0
             )
@@ -8765,7 +8972,7 @@ fn achievement_text(w: &World, k: &AchievementKind) -> String {
                 .get(*catastrophe as usize)
                 .map_or("a catastrophe", |c| catastrophe_text(c.kind));
             // Factual, not a cheer: it can come after heavy losses (playtest 3: after a 70% loss).
-            format!("Survivor: your lineage came through {what} with at least half the animals it had when it began.")
+            format!("Survivor: {your} lineage came through {what} with at least half the animals it had when it began.")
         }
     }
 }
@@ -9073,7 +9280,8 @@ mod tests {
 
     fn game() -> (Game, Vec<OrgId>, Vec<OrgId>) {
         let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
-        let mut g = Game::new(world, GameConfig::default());
+        // Orders in quick succession (the cooldown has its own test).
+        let mut g = Game::new(world, GameConfig { order_cooldown_ms: 0.0, ..GameConfig::default() });
         g.set_name(1, "ann");
         g.set_name(2, "bob");
         let a = g.found(1, &design("A")).unwrap().founders;
@@ -9604,10 +9812,14 @@ mod tests {
         let code = |g: &mut Game, conn, player, m| result(&g.command(conn, player, None, m)).1;
         let out = g.command(10, 1, None, ClientMsg::Rally { group: 0, x: 30.0, y: 31.0 });
         let r: RallyView = serde_json::from_value(reply_data(&out)).unwrap();
-        assert_eq!((r.x, r.y, r.radius), (30.0, 31.0, World::rally_radius(a.len())));
+        let radius = crate::protocol::round::hundredths(World::rally_radius(a.len())) as f32;
+        assert_eq!((r.x, r.y, r.radius), (30.0, 31.0, radius));
         assert!(r.expires_tick > g.world.tick());
         let s = g.state_for(10).unwrap();
-        assert_eq!(s.groups[0].rally, Some(r));
+        // The state keeps the exact radius; the reply gives hundredths.
+        let exact = s.groups[0].rally.unwrap();
+        assert_eq!((exact.x, exact.y, exact.expires_tick), (r.x, r.y, r.expires_tick));
+        assert!((exact.radius - r.radius).abs() < 0.006);
         // Bob sees none of it.
         assert_eq!(g.state_for(20).unwrap().groups[0].rally, None);
         let nan = ClientMsg::Rally { group: 0, x: f32::NAN, y: 1.0 };
@@ -9679,6 +9891,58 @@ mod tests {
         assert!(g.offers.is_empty());
     }
 
+    /// Playtest 11: migrate and rally once a second per group; a refused
+    /// order doesn't start the wait.
+    #[test]
+    fn move_orders_have_a_short_cooldown() {
+        let (mut g, _, _) = game();
+        g.cfg.order_cooldown_ms = 1000.0;
+        let code = |g: &mut Game, m| result(&g.command(10, 1, None, m)).1;
+        assert_eq!(code(&mut g, ClientMsg::Rally { group: 9, x: 1.0, y: 1.0 }).as_deref(), Some("no_such_group"));
+        assert_eq!(code(&mut g, ClientMsg::Migrate { x: 30.0, y: 30.0, group: Some(0) }), None);
+        assert_eq!(code(&mut g, ClientMsg::Rally { group: 0, x: 30.0, y: 31.0 }).as_deref(), Some("order_cooldown"));
+        let ticks = (1000.0 / g.cfg.tick_ms).ceil() as u64;
+        for _ in 0..ticks {
+            g.world.step();
+        }
+        assert_eq!(code(&mut g, ClientMsg::Rally { group: 0, x: 30.0, y: 31.0 }), None);
+    }
+
+    /// Playtest 11: a command on a closed offer says it closed.
+    #[test]
+    fn a_closed_offer_says_it_closed() {
+        let (mut g, a, b) = game();
+        let (fa, mb) = (female(&g, &a), male(&g, &b));
+        let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: mb, price: None });
+        let id = offer_id(&out);
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: false, partner: None });
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
+        let e = out.iter().find_map(|(_, m)| match m {
+            ServerMsg::Result { error: Some(e), .. } => Some(e.clone()),
+            _ => None,
+        });
+        let e = e.expect("refused");
+        assert_eq!(e.code, "unknown_offer");
+        assert!(e.message.contains("already closed (declined)"), "{}", e.message);
+    }
+
+    /// Playtest 11: counts, the public feed's achievements, era ties.
+    #[test]
+    fn small_texts_read_right() {
+        assert_eq!(count_of(1, "adult"), "1 adult");
+        assert_eq!(count_of(1234, "adult"), "1,234 adults");
+        assert_eq!(thousands(1_000), "1,000");
+        assert_eq!(thousands(999), "999");
+        let (g, _, _) = game();
+        let k = AchievementKind::SurvivedCatastrophe { catastrophe: 99 };
+        assert!(achievement_text(&g.world, &k, None).contains("your lineage"));
+        assert!(achievement_text(&g.world, &k, Some("ann")).contains("ann's lineage"));
+        // 0.7% each as shown: the bigger final share ranks first.
+        let means = BTreeMap::from([(1, 0.0071), (2, 0.0069)]);
+        let order = era_order(&[(1, 0.004, 0.004), (2, 0.019, 0.019)], Some(&means));
+        assert_eq!(order[0].0, 2);
+    }
+
     /// Playtest 10: renown piled up unspent; income tapers above the
     /// threshold and the ledger says so.
     #[test]
@@ -9711,7 +9975,7 @@ mod tests {
         g.pay_income(&record);
         assert_eq!(g.balance(1) - 4 * g.cfg.income_taper_from, full / 4);
         let last = g.ledger(1, 1);
-        assert!(last[0].text.contains("less the taper"), "{}", last[0].text);
+        assert!(last[0].text.contains("reduced by the taper on a balance over 1,000"), "{}", last[0].text);
     }
 
     #[test]
@@ -10628,8 +10892,8 @@ mod tests {
         // Bob is paid the price less the 10% market fee, which is destroyed.
         assert_eq!((g.balance(1), g.escrow(1), g.balance(2)), (start - 30, 0, start + 27));
         let bob_alert = alerts_in(&out, 2).into_iter().find(|x| x.kind == AlertKind::Market).expect("sale alert");
-        assert!(bob_alert.text.starts_with("Sale: 27 renown from ann"), "{}", bob_alert.text);
-        assert!(bob_alert.text.contains("less a 3 renown market fee"), "{}", bob_alert.text);
+        assert!(bob_alert.text.starts_with("Sale: 30 renown from ann"), "{}", bob_alert.text);
+        assert!(bob_alert.text.contains("less a 3 renown market fee: 27 paid to you"), "{}", bob_alert.text);
         let ann_alert = alerts_in(&out, 1).into_iter().find(|x| x.text.starts_with("Mating done")).expect("buyer told");
         assert!(ann_alert.text.contains("30 renown paid from escrow"), "{}", ann_alert.text);
         // The sale is news to the seller, and the mating's outcome to the
@@ -11015,7 +11279,7 @@ mod tests {
         assert!(alive <= g.reinforce_max_alive());
         let out = g.command(10, 1, None, ClientMsg::Reinforce);
         assert_eq!(result(&out).1.as_deref(), Some("too_large"));
-        assert!(format!("{out:?}").contains("yours had 100"), "{out:?}");
+        assert!(format!("{out:?}").contains("you had 100 at the most"), "{out:?}");
         // The peak lapses with the window.
         run_days(&mut g, 4);
         assert!(g.season_peak(1) < 100, "{:?}", g.economy.alive_days.get(&1));

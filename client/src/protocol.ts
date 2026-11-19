@@ -1154,7 +1154,7 @@ export interface ShopView {
   /** Renown owed, taken from what comes in next. */
   owed?: number;
   /** What re-founding after a retirement would cost now. */
-  next_refound_fee?: number;
+  next_refound_fee?: number | null;
   provisions_bought?: number;
   provisions_max?: number;
   provision_blocked?: string;

@@ -180,7 +180,8 @@ export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, 
         swatch(s.dominant, me),
         h('strong', {}, s.name),
         h('span', { class: 'muted small' }, ` · ${dietLabel(s.carnivory)} · ${r.status} · ${s.dominant_name} ${pct(s.dominant_share, 0)} of alleles`
-          + `${s.founder_name ? ` · founded by ${s.founder_name}` : ''} · detected on day ${s.founded_day + 1}`),
+          // A trailing space before the button (playtest 11: "detected on day 26Name it…" in the text).
+          + `${s.founder_name ? ` · founded by ${s.founder_name}` : ''} · detected on day ${s.founded_day + 1} `),
         onName && r.alive && s.namer === me && !s.named
           ? h('button', { class: 'link small name-species', 'data-action': 'name-species', title: 'It is called after a lineage for now: give it a name of its own (costs renown, once)', onclick: () => onName(s) }, 'Name it…')
           : null);

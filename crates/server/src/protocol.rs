@@ -1989,9 +1989,10 @@ pub struct ShopView {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub owed: u64,
     /// What re-founding after a retirement would cost now (the retire
-    /// dialog quotes it).
+    /// dialog quotes it); null before the player's first founding
+    /// (playtest 11: 100 quoted to a player with nothing to retire).
     #[serde(default)]
-    pub next_refound_fee: u64,
+    pub next_refound_fee: Option<u64>,
     #[serde(default)]
     pub provisions_bought: u32,
     #[serde(default)]
@@ -2037,8 +2038,13 @@ pub struct CompatibilityRow {
     pub wild: bool,
     /// Mean fertility over every pair of a sample of your adults (or a
     /// design's founders) and theirs, 0 (sterile) to 1: body plan
-    /// (`Balance::egg_hybrid` included) and whole-genome distance. Before
-    /// playtest 2 this was the best pair's body-plan fertility.
+    /// (`Balance::egg_hybrid` included) and whole-genome distance. Sterile
+    /// pairs count as 0, so this is at most `fertile_share`, and the mean
+    /// over the fertile pairs alone is `fertility / fertile_share`
+    /// (playtest 11: "fertility 0.1" beside "fertile_share 0.8" read as a
+    /// contradiction: most pairs can conceive, each rarely). The sample is
+    /// the lineage's adults as they are at the call: a later call can differ.
+    /// Before playtest 2 this was the best pair's body-plan fertility.
     #[serde(serialize_with = "crate::protocol::round::f2")]
     pub fertility: f32,
     /// The 10th and 90th percentile pair: what to expect from a random
@@ -2053,11 +2059,13 @@ pub struct CompatibilityRow {
     #[serde(default)]
     #[serde(serialize_with = "crate::protocol::round::f2")]
     pub best_fertility: f32,
-    /// Share of the pairs with any fertility.
+    /// Share of the pairs with any fertility (above 0), whatever how much:
+    /// not a fertility itself (see `fertility`).
     #[serde(default)]
     #[serde(serialize_with = "crate::protocol::round::f2")]
     pub fertile_share: f32,
-    /// At least half the pairs fertile.
+    /// At least half the pairs fertile (`fertile_share` ≥ 0.5), however
+    /// low each pair's chance.
     pub compatible: bool,
     /// `none`, `low` or `high`: how likely drift is to make the two (more)
     /// fertile: `high` when any pair is fertile or the closest pair is
@@ -2080,7 +2088,8 @@ pub struct DesignCompatView {
     pub day: u64,
     /// Individuals sampled on each side.
     pub sample: usize,
-    /// Lineages with any fertile pair.
+    /// Other players' and wild lineages with any fertile pair (`fertility`
+    /// above 0; the player's own lineage not counted).
     pub fertile_with: usize,
     /// Lineages sterile now but at drift risk (`low` or `high`).
     pub at_risk: usize,
@@ -2123,6 +2132,12 @@ pub struct DesignCompatView {
     /// (with the first-winter rule) or continued from the last founding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grace_note: Option<String>,
+    /// The design's point cost and the budget (playtest 11: only a
+    /// refused founding said the cost). Absent on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none", serialize_with = "crate::protocol::round::opt2")]
+    pub points: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<f32>,
 }
 
 /// `DesignCompatView::refound`.
@@ -3156,6 +3171,11 @@ pub mod round {
     /// `v` rounded to hundredths, as f64 (so 0.3 is written 0.3).
     pub fn hundredths(v: f32) -> f64 {
         (v as f64 * 100.0).round() / 100.0
+    }
+
+    /// `v` to hundredths, kept an f32 (it serializes as its shortest form).
+    pub fn c2(v: f32) -> f32 {
+        (v * 100.0).round() / 100.0
     }
 
     /// `v` rounded to tenths, as f64.

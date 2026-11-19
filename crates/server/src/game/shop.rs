@@ -216,7 +216,7 @@ impl Game {
             restores_bought: self.restores_bought(player),
             animal_name_price: economy::ANIMAL_NAME_PRICE,
             owed: self.economy.refound_debt.get(&player).copied().unwrap_or(0),
-            next_refound_fee: {
+            next_refound_fee: self.lineage_of(player).map(|_| {
                 let (today, window) = (self.world.day(), self.refound_window_days());
                 let n = self
                     .economy
@@ -224,7 +224,7 @@ impl Game {
                     .get(&player)
                     .map_or(0, |d| d.iter().filter(|&&x| x + window > today).count());
                 crate::game::refound_fee(n as u32)
-            },
+            }),
             reinforce_next_day: self.reinforce_next(player).map(|x| x.0),
             reinforce_next_minutes: self.reinforce_next(player).map(|x| x.1),
         }
@@ -402,11 +402,20 @@ impl Game {
         let price = quoted.unwrap_or_else(|| if others == 0 { self.quoted(player, now, |q| q.restore) } else { now });
         let food = self.world.restore_pasture(at, r, false);
         let per_food = price as f32 / food.max(1.0);
-        let hint = (food >= 1.0 && per_food > 1.0).then(|| {
-            format!(
-                "poor value now: about {per_food:.1} renown per food (a drought or the season holds the plants back)"
-            )
-        });
+        const NOTHING: &str =
+            "nothing would regrow there now (winter, a drought, or the plants are already as high as the season allows)";
+        let hint = if food < 1.0 {
+            // A preview of nothing says why and prices nothing (playtest 11:
+            // a winter preview quoted 1,242 for 0 food, no reason given).
+            Some(NOTHING.to_string())
+        } else {
+            (per_food > 1.0).then(|| {
+                format!(
+                    "poor value now: about {per_food:.1} renown per food (a drought or the season holds the plants back)"
+                )
+            })
+        };
+        let price = if food < 1.0 { 0 } else { price };
         let mut view = crate::protocol::RestoreView {
             group,
             x: at.x.round(),
@@ -422,15 +431,14 @@ impl Game {
             shop: None,
         };
         if preview {
-            self.restore_quotes.insert(player, (group, price, tick + quote_ticks));
+            if price > 0 {
+                self.restore_quotes.insert(player, (group, price, tick + quote_ticks));
+            }
             view.shop = Some(self.shop_view(player));
             return Ok(view);
         }
         if food < 1.0 {
-            return Err(ErrorInfo::new(
-                "nothing_to_restore",
-                "nothing would regrow there now (winter, a drought, or the plants are already as high as the season allows)",
-            ));
+            return Err(ErrorInfo::new("nothing_to_restore", NOTHING));
         }
         self.spend(
             player,
@@ -806,7 +814,12 @@ impl Game {
         if alive > max {
             return Err(ErrorInfo::new(
                 "too_large",
-                format!("reinforcements are for lineages of at most {max} (yours has {alive})"),
+                // Said as a count now, young included (playtest 11: "yours
+                // has 423" read as neither the count shown nor the peak).
+                format!(
+                    "reinforcements are for lineages of at most {max} alive (you have {} alive now, young included)",
+                    super::thousands(alive as u64)
+                ),
             ));
         }
         let peak = self.season_peak(player);
@@ -815,7 +828,7 @@ impl Game {
                 "too_large",
                 format!(
                     "reinforcements are for lineages of at most {max} alive at any time in the last {} days \
-                     (yours had {peak})",
+                     (you had {peak} at the most)",
                     self.cfg.season_days
                 ),
             ));
@@ -894,7 +907,12 @@ impl Game {
                  ground, {d:.0} tiles from it"
             )
         });
-        let site = ReinforceSite { at: [at.x, at.y], nearby_count: nearby, group, note };
+        let site = ReinforceSite {
+            at: [crate::protocol::round::c2(at.x), crate::protocol::round::c2(at.y)],
+            nearby_count: nearby,
+            group,
+            note,
+        };
         self.spend(
             player,
             price,
@@ -984,8 +1002,10 @@ impl Game {
         coarsen_rivals(&mut rows, player);
         // As the rows show it (playtest 10: `fertile_with: 2` beside rows all
         // at 0 once rivals' figures were rounded to tenths).
-        let fertile_with = rows.iter().filter(|r| r.fertility > 0.0).count();
-        let at_risk = rows.iter().filter(|r| r.fertile_share <= 0.0 && r.drift_risk != "none").count();
+        // Other lineages only (playtest 11: the player's own lineage counted).
+        let fertile_with = rows.iter().filter(|r| r.owner != player && r.fertility > 0.0).count();
+        let at_risk =
+            rows.iter().filter(|r| r.owner != player && r.fertile_share <= 0.0 && r.drift_risk != "none").count();
         // Shores the founders can drink from (steep banks stop non-climbers).
         let probe = evo_sim::organism::Organism::new(
             0,
@@ -1038,6 +1058,8 @@ impl Game {
                     reason: t.reason,
                 }
             }),
+            points: Some(design.point_cost()),
+            budget: Some(evo_sim::design::DESIGN_BUDGET),
             // With the founders that would land (a re-founding gives fewer).
             grace_note: self
                 .grace_preview(player, self.refound_terms(player).map_or(design.founders, |t| t.founders(design))),
