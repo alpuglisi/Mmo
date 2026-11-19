@@ -28,6 +28,16 @@ export const EYE_WEIGHT = 0.4;
 /** Weight of warm/cold blood in the gap for fertility (sim `1 − Balance::thermo_hybrid`, 0.7 by default):
  * warm × cold, 0.8 apart, counts 0.24, about a third as fertile, not sterile (playtest 5). */
 export const THERMO_WEIGHT = 0.3;
+/** A player's design against a wild species: the gap counts this many times (sim `1 + Balance::wild_isolation`,
+ * 0.6 by default), so body sizes 0.19 apart are sterile with a wild species (playtest 7: player herds were 50–90%
+ * fertile with a wild species at most sizes). */
+export const WILD_SCALE = 1.6;
+
+/** The gap scale against species `s`: `WILD_SCALE` for an all-wild species, 1 otherwise. */
+function wildScale(s: SpeciesView): number {
+  const wild = s.lineages.every((l) => l.owner === 0) && (s.lineages.length > 0 || s.dominant === 0);
+  return wild ? WILD_SCALE : 1;
+}
 
 /** A body plan as the interbreeding rule sees it. */
 export interface BodyPlan {
@@ -126,12 +136,16 @@ export function neighbours(d: DesignSpec, species: readonly SpeciesView[], me: P
       .map((l) => ({ player: l.owner, name: l.owner_name || (l.owner === s.dominant ? s.dominant_name : l.name) }));
     const mineOnly = s.lineages.length > 0 && s.lineages.every((l) => l.owner === me);
     if (mineOnly) continue;
-    const { gap, by } = gapBetween(plan, sp);
+    const scale = wildScale(s);
+    const raw = gapBetween(plan, sp);
+    const gap = raw.gap * scale;
+    const by = raw.by;
     if (gap >= GAP_STERILE + GAP_MARGIN) continue;
-    const wild = s.lineages.every((l) => l.owner === 0) && (s.lineages.length > 0 || s.dominant === 0);
+    const wild = scale > 1;
     out.push({
       species: s, gap, by, fertility: fertility(gap), possible: gap >= GAP_STERILE, wild,
-      wildShare: s.dominant === 0 ? s.dominant_share : 0, players, toSterile: Math.max(0, GAP_STERILE + GAP_MARGIN - gap),
+      wildShare: s.dominant === 0 ? s.dominant_share : 0, players,
+      toSterile: Math.max(0, GAP_STERILE + GAP_MARGIN - gap) / scale,
     });
   }
   return out.sort((a, b) => a.gap - b.gap || b.species.adults - a.species.adults);
@@ -154,11 +168,12 @@ export function sterileOptions(d: DesignSpec, s: SpeciesView): string[] {
   const sp = speciesPlan(s);
   if (!sp) return [];
   const out: string[] = [];
+  const safe = SAFE_GAP / wildScale(s);
   const axis = (label: string, gene: string, theirs: number) => {
-    const up = theirs + SAFE_GAP;
-    const down = theirs - SAFE_GAP;
+    const up = theirs + safe;
+    const down = theirs - safe;
     const mine = geneValue(d, gene);
-    if (Math.abs(mine - theirs) >= SAFE_GAP) return;
+    if (Math.abs(mine - theirs) >= safe) return;
     const opts: string[] = [];
     if (up <= 1) opts.push(`raise ${label} to ${up.toFixed(2)} or more`);
     if (down >= 0) opts.push(`lower ${label} to ${down.toFixed(2)} or less`);
@@ -169,8 +184,12 @@ export function sterileOptions(d: DesignSpec, s: SpeciesView): string[] {
   axis('diet (carnivory)', 'carnivory', sp.carnivory);
   axis('body size', 'body_size', sp.body_size);
   const births: [DesignSpec['birth'], string, number][] = [['live', 'live birth', 0.85], ['incubated_eggs', 'incubated eggs', 0.5], ['abandoned_eggs', 'abandoned eggs', 0.15]];
-  for (const [b, label, mode] of births) {
-    if (b !== d.birth && BIRTH_WEIGHT * Math.abs(mode - sp.birth_mode) >= SAFE_GAP) out.push(`choose ${label}`);
+  const mine = designPlan(d).birth_mode;
+  // Already far enough in birth: nothing to change there.
+  if (BIRTH_WEIGHT * Math.abs(mine - sp.birth_mode) < safe) {
+    for (const [b, label, mode] of births) {
+      if (b !== d.birth && BIRTH_WEIGHT * Math.abs(mode - sp.birth_mode) >= safe) out.push(`choose ${label}`);
+    }
   }
   return out;
 }

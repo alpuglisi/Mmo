@@ -1207,7 +1207,9 @@ pub struct Balance {
     pub flight_upkeep: f32,
     /// The most a predator lineage's learned avoidance of a toxic prey
     /// lineage reaches (`World::toxic_avoidance`): an honest signal is not
-    /// immunity, and hunters still try a bright toxic prey some days.
+    /// immunity, and hunters still try a bright toxic prey some days. 0.85
+    /// until playtest 7; 0.95 since `Balance::honest_signals` caps the whole
+    /// avoidance (at 0.85 the small bright toxic herds were hunted out).
     /// 0: uncapped (a fully learned, bright prey was never taken).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v56"))]
     pub avoid_cap: f32,
@@ -1341,6 +1343,24 @@ pub struct Balance {
     /// `predlong` seeds with the larder). 0: every plant eater counts.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v72"))]
     pub prey_floor: f32,
+    // Playtest 7 balance (version 73; off at 0, what snapshots before
+    // version 73 read, `serde_util::before_v73`).
+    /// Honest signals, whole: a hunter's avoidance of a bright prey (its
+    /// own aversion, the warning-colour group benefit and its lineage's
+    /// lesson together) is lowered by hunger (`Balance::hungry_hunters`)
+    /// and capped (`Balance::avoid_cap`), not only the lesson; an animal's
+    /// own aversion after a bite fades (half-life about 40 days); and
+    /// coloration from 0.6 counts as warning colours (it was above 0.6).
+    /// Playtest 7: a pack starved beside a bright toxic herd. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v73"))]
+    pub honest_signals: f32,
+    /// A player's lineage and a wild one are less fertile together than
+    /// their body plans alone say: the fertility gap between a player-owned
+    /// and a wild-owned animal counts `1 + wild_isolation` times (at 0.6,
+    /// body sizes 0.19 apart are sterile instead of 0.3), so player herds
+    /// of most sizes aren't diluted by a wild species. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v73"))]
+    pub wild_isolation: f32,
 }
 
 impl Balance {
@@ -1627,7 +1647,7 @@ impl Default for Balance {
             brood_care: 1.0,
             thermo_hybrid: 0.7,
             flight_upkeep: 0.25,
-            avoid_cap: 0.85,
+            avoid_cap: 0.95,
             cold_heat: 1.0,
             species_credit: 1.0,
             dry_beds: 1.0,
@@ -1642,12 +1662,14 @@ impl Default for Balance {
             founding_rivals: 1.0,
             winter_larder: 1.0,
             prey_floor: 40.0,
+            honest_signals: 1.0,
+            wild_isolation: 0.6,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 171;
+    pub const FIELD_COUNT: usize = 173;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1828,6 +1850,8 @@ impl Balance {
             ("founding_rivals", &mut self.founding_rivals),
             ("winter_larder", &mut self.winter_larder),
             ("prey_floor", &mut self.prey_floor),
+            ("honest_signals", &mut self.honest_signals),
+            ("wild_isolation", &mut self.wild_isolation),
         ]
     }
 

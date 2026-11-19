@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 
 use evo_sim::genome::Genome;
-use evo_sim::mating::{fertility_gap, fertility_with, plan_weights, Relief, BODY_PLAN_GENES, BODY_PLAN_STERILE};
+use evo_sim::mating::{fertility_gap, plan_weights, Relief, BODY_PLAN_GENES, BODY_PLAN_STERILE};
 use evo_sim::{PlayerId, WILD};
 
 use super::Game;
@@ -121,14 +121,16 @@ pub const CARNIVORE_EGG_WARNING: &str = "An egg-laying hunter leaves its clutch 
      are raided: expect several eggs lost for each one that hatches. Live birth suits a roaming carnivore; an egg layer \
      does better with a smaller range and a partner left at the nest.";
 
-/// [`Spread`] over the pairs of `a` × `b` (None when either is empty).
-pub fn spread(a: &[&Genome], b: &[&Genome], relief: Relief) -> Option<Spread> {
+/// [`Spread`] over the pairs of `a` × `b` (None when either is empty), the
+/// body-plan gap counted `scale` times (`mating::wild_gap_scale`: a player's
+/// design against a wild lineage).
+pub fn spread(a: &[&Genome], b: &[&Genome], relief: Relief, scale: f32) -> Option<Spread> {
     let mut fert: Vec<f32> = Vec::with_capacity(a.len() * b.len());
     let mut closest: Option<(f32, &Genome, &Genome)> = None;
     for &x in a {
         for &y in b {
-            let gap = fertility_gap(x, y, relief);
-            fert.push(fertility_with(x, y, relief));
+            let gap = fertility_gap(x, y, relief) * scale;
+            fert.push(evo_sim::mating::fertility_scaled(x, y, relief, scale));
             if closest.is_none_or(|(g, _, _)| gap < g) {
                 closest = Some((gap, x, y));
             }
@@ -143,7 +145,7 @@ pub fn spread(a: &[&Genome], b: &[&Genome], relief: Relief) -> Option<Spread> {
     let (gene, gene_gap) = BODY_PLAN_GENES
         .iter()
         .zip(weights)
-        .map(|(&g, w)| (g, (x.expr(g) - y.expr(g)).abs() * w))
+        .map(|(&g, w)| (g, (x.expr(g) - y.expr(g)).abs() * w * scale))
         .fold((BODY_PLAN_GENES[0], -1.0f32), |m, v| if v.1 > m.1 { v } else { m });
     let limiting = if gap > gene_gap + 1e-6 { "morphology".to_string() } else { gene_key(gene) };
     let margin = gap - BODY_PLAN_STERILE;
@@ -657,8 +659,10 @@ impl Game {
             .filter(|&l| Some(l) != skip)
             .filter_map(|l| {
                 let theirs = sample_of(self, l);
-                let s = spread(own, &theirs, relief)?;
                 let lin = &self.world.lineages[l as usize];
+                // `own` is a player's: against a wild lineage the gap counts more.
+                let scale = evo_sim::mating::wild_gap_scale(&self.world.config.balance, 1, lin.owner);
+                let s = spread(own, &theirs, relief, scale)?;
                 Some(CompatibilityRow {
                     lineage: l,
                     lineage_name: lin.name.clone(),
@@ -787,7 +791,8 @@ impl Game {
         let relief = Relief::of(&self.world.config.balance);
         for v in views {
             let Some(o) = self.world.organism(v.organism) else { continue };
-            if let Some(s) = spread(&own, &[&*o.genome], relief) {
+            let scale = evo_sim::mating::wild_gap_scale(&self.world.config.balance, player, o.owner);
+            if let Some(s) = spread(&own, &[&*o.genome], relief, scale) {
                 v.compatible = Some(compatible(&s));
                 v.body_plan_fertility = Some(s.mean);
             }
