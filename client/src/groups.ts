@@ -162,25 +162,33 @@ export function homeRangeGroup(groups: GroupView[]): GroupView | null {
  */
 export function homeRangeNote(g: GroupView): string {
   if (!g.home_range || !g.territory) return '';
-  const note = 'Home range: when you log off, members inside this territory are hunted less ' +
-    '(from 10 minutes after you leave, fading after 12 hours, sooner at a fast game clock). Hunger and thirst still bite.';
+  const note = 'Home range: when you log off, members inside this territory are hunted less, from 10 minutes after you leave until the protection runs out (then it fades). Hunger and thirst still bite.';
   const left = protectionLeft(g);
   return left ? `${note} ${left}` : note;
 }
 
+/** Real minutes as "1 h 12 min", "2 h" or "5 min". */
+function realTime(m: number): string {
+  const h = Math.floor(m / 60);
+  const min = Math.floor(m % 60);
+  return h > 0 ? (min > 0 ? `${h} h ${min} min` : `${h} h`) : `${min} min`;
+}
+
 /**
- * The offline protection left, for the home range's note: at most 12 hours
- * in any 24, however often the player reconnects. Empty when the server
- * doesn't say.
+ * The offline protection left, for the home range's note, in real time at
+ * the world's current speed (playtest 7: "12 hours", "1 h 12 min left" and
+ * "at most 12 h in any 24" side by side). Empty when the server doesn't say.
  */
 export function protectionLeft(g: GroupView): string {
   const m = g.protection_left_min;
   if (m === undefined || !Number.isFinite(m)) return '';
-  if (m <= 0) return 'Protection used up for now: it comes back over the next 24 hours.';
-  const h = Math.floor(m / 60);
-  const min = Math.floor(m % 60);
-  const time = h > 0 ? (min > 0 ? `${h} h ${min} min` : `${h} h`) : `${min} min`;
-  return `Protection left: ${time} (at most 12 hours in any 24).`;
+  const budget = g.protection_budget_min;
+  const window = g.protection_window_min;
+  const cap = budget !== undefined && window !== undefined && Number.isFinite(budget) && Number.isFinite(window)
+    ? ` of at most ${realTime(budget)} in any ${realTime(window)}`
+    : '';
+  if (m <= 0) return `Protection used up for now${cap ? ` (you get at most ${realTime(budget!)} in any ${realTime(window!)})` : ''}: it comes back as old spells leave that window.`;
+  return `Protection left: ${realTime(m)}${cap} (real time at this game speed).`;
 }
 
 /** Members of each group among the drawn organisms, by group id. */

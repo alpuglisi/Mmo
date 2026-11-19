@@ -886,6 +886,31 @@ fn survival_counts_in_the_season_the_catastrophe_fell_in() {
     assert!(now[4].rows.is_empty(), "not credited again in season 2: {:?}", now[4]);
 }
 
+/// A survivor is the lineage alive when the catastrophe began, keeping at
+/// least a quarter of its size then (playtest 7, M15): one that lost ~99%
+/// isn't, nor is a lineage re-founded during it.
+#[test]
+fn survivors_keep_a_quarter_of_the_lineage_they_started_with() {
+    let (mut g, _) = game();
+    g.world.schedule_catastrophe(evo_sim::chronicle::CatastropheKind::SevereWinter, 1, Some(4));
+    run_days(&mut g, 2);
+    let c = g.world.chronicle.active_catastrophe().expect("under way").id;
+    let (l, start) = *g.survival_starts.get(&c).and_then(|m| m.get(&1)).expect("player 1's size at the start");
+    assert_eq!(Some(l), g.lineage_of(1));
+    assert!(start > 4, "{start}");
+    assert!(g.survived(1, c));
+    // Down to under a quarter: not a survivor.
+    let keep = (start as f64 * crate::game::SURVIVAL_KEEP).ceil() as usize - 1;
+    for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1).skip(keep) {
+        o.alive = false;
+    }
+    assert!(!g.survived(1, c));
+    // A lineage founded during it (player 2, absent at the start): not a survivor.
+    g.set_name(2, "bo");
+    g.found(2, &design("B")).unwrap();
+    assert!(!g.survived(2, c));
+}
+
 /// The found reply (and an alert) says whether a lineage has a newcomer
 /// grace and why: a fresh one, or one continued from an earlier lineage,
 /// even when that one has run out (playtest 5).
@@ -909,6 +934,9 @@ fn founding_says_whether_grace_applies_and_why() {
     }
     let lineage = g.lineage_of(2).unwrap();
     g.command(20, 2, Some(1), ClientMsg::RetireLineage { lineage });
+    // The designer says so before founding (playtest 7: it promised the winter rule).
+    let preview = g.grace_preview(2, 20).unwrap();
+    assert!(preview.starts_with("If you found now: No newcomer grace: it continues the grace"), "{preview}");
     let again = g.found(2, &design("B2")).unwrap();
     let text = again.grace.unwrap();
     assert!(text.starts_with("No newcomer grace: it continues the grace of your earlier lineage"), "{text}");

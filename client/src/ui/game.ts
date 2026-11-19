@@ -16,6 +16,7 @@ import { buildFamilyTree, type FamilyModel } from '../familyTree';
 import { actionText, capInfo, graceText, grouped, LEGACY_EXPLAIN, migrationText, rampText } from '../lineageInfo';
 import { droughtNotice } from '../droughtInfo';
 import { markRetired, wasRetired } from '../retired';
+import { awaySummary, seenKey } from '../awaySummary';
 import { renderFamilyTree } from './familyTree';
 import { exposeCards, familyShareBar } from '../share/familyShare';
 import type { AlertPrefs, ClientMsg, CompatibilityView, LineageStats, PlayerId, MatingOutcome, MatingPreviewView, NearbyOrganism, OfferView, OrgId, OwnOrganism, ResultMsg, SeasonBoard, SpeciesView, StateView } from '../protocol';
@@ -1835,14 +1836,45 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     renderFeedPanel();
   }
 
+  // "While you were away" (playtest 7): the alerts since the last tick this
+  // device saw, once, when a returning player's feed arrives.
+  const awayKey = seenKey(deps.world ?? '', model.player);
+  let lastSeen = 0;
+  try { lastSeen = Number(localStorage.getItem(awayKey) ?? 0) || 0; } catch { /* storage off */ }
+  let awaySaid = !deps.returning || lastSeen === 0;
+  function sayAway(): void {
+    if (awaySaid || model.feed.length === 0) return;
+    awaySaid = true;
+    const text = awaySummary(model.feed, lastSeen);
+    if (text) model.toast('info', text);
+  }
+  let seenSaved = 0;
+  function rememberSeen(): void {
+    const tick = model.state?.clock.tick ?? 0;
+    const now = Date.now();
+    if (tick <= 0 || now - seenSaved < 10_000) return;
+    seenSaved = now;
+    try { localStorage.setItem(awayKey, String(tick)); } catch { /* storage off */ }
+  }
+  /** Alerts from before the current lineage's founding show only on request. */
+  let showEarlierFeed = false;
   function renderFeedPanel(): void {
-    const feed = model.visibleFeed();
-    seenFeed = feed.length;
+    const all = model.visibleFeed();
+    seenFeed = all.length;
     alertBadge.hidden = true;
-    keyed(feedEl, `${feed.length}|${feed[feed.length - 1]?.text ?? ''}|${model.prefs.hidden.join()}`, () => [renderFeed(feed, (id) => {
-      model.select(id);
-      showTab('organism');
-    })]);
+    // Alerts from before this lineage was founded (a retired or extinct one's)
+    // are folded away (playtest 7: the feed kept the retired lineage's attacks).
+    const since = stats && stats.lineage === model.state?.lineage ? stats.ramp?.founded_day : undefined;
+    const earlier = since === undefined ? 0 : all.filter((e) => e.day !== undefined && e.day < since).length;
+    const feed = earlier > 0 && !showEarlierFeed ? all.filter((e) => e.day === undefined || e.day >= since!) : all;
+    keyed(feedEl, `${all.length}|${all[all.length - 1]?.text ?? ''}|${model.prefs.hidden.join()}|${earlier}|${showEarlierFeed}`, () => [
+      earlier > 0 ? h('p', { class: 'muted small', id: 'feed-earlier' },
+        showEarlierFeed ? 'Showing alerts from before this lineage too. ' : `${earlier} alert${earlier === 1 ? '' : 's'} from before this lineage (day ${since! + 1}) hidden. `,
+        h('button', { type: 'button', class: 'secondary', onclick: () => { showEarlierFeed = !showEarlierFeed; renderFeedPanel(); } }, showEarlierFeed ? 'Hide them' : 'Show them')) : null,
+      renderFeed(feed, (id) => {
+        model.select(id);
+        showTab('organism');
+      })]);
   }
 
   function onAlerts(): void {
@@ -1860,14 +1892,24 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const listMore = h('p', { class: 'muted small', id: 'organism-list-more' });
   const groupsEl = h('div', { id: 'group-list' });
   const retireBtn = h('button', { type: 'button', id: 'retire-lineage', class: 'danger' }, 'Retire lineage');
+  const retireRule = h('p', { class: 'small', id: 'lineage-retire-rule' }, h('strong', {}, 'Not a free re-roll: '), 'founding again soon after retiring founds fewer founders and costs renown. A quick re-found also continues your last grace instead of starting a new one.');
   const retireEl = h('details', { id: 'lineage-retire', class: 'retire' },
     h('summary', {}, 'Retire this lineage'),
     h('p', { class: 'muted small' },
       'Start over: every animal and egg of your lineage leaves the world at once (they are removed, not killed and not left wild), ',
       'its orders end, and you can design and found a new lineage straight away. Your renown, records and titles stay. ',
       'A new lineage\'s legacy share counts toward the ranked season gradually over its first days.'),
+    retireRule,
     retireBtn);
   retireEl.hidden = true;
+  // The re-founding rule on the panel itself, not only in the confirm (playtest 7: it read as a free re-roll).
+  retireEl.addEventListener('toggle', () => {
+    if (!retireEl.open) return;
+    void api.world().then((w) => {
+      retireRule.replaceChildren(h('strong', {}, 'Not a free re-roll: '), w?.refound_rule ? `after retiring, ${w.refound_rule}.` : 'founding again soon after retiring founds fewer founders and costs renown.',
+        ' A quick re-found also continues your last grace instead of starting a new one.');
+    }).catch(() => undefined);
+  });
   retireBtn.addEventListener('click', async () => {
     const lineage = model.state?.lineage;
     if (lineage === null || lineage === undefined) return;
@@ -2004,7 +2046,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       lineageExtinct.querySelector('.extinct-text')?.replaceChildren(h('strong', {}, `You retired lineage #${s.lineage}.`), ' Its animals have left the world.');
     }
     retireEl.hidden = !(s.lineage !== null && s.population > 0);
-    endGraceEl.hidden = !s.grace;
+    // Nothing to end without a living lineage (playtest 7: it stayed after a retire).
+    endGraceEl.hidden = !s.grace || gone;
     if (!gone) renderGroups(s);
     const lb = s.leaderboard;
     keyed(boardEl, JSON.stringify(lb) + nameplatesKey(), () => lb.rows.length === 0
@@ -2161,6 +2204,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     model.on('offers', () => renderPanels()),
     model.on('conn', renderConn),
     model.on('alerts', onAlerts),
+    model.on('alerts', sayAway),
+    model.on('state', rememberSeen),
     model.on('toast', () => {
       renderToasts();
       if (toastTimer) clearTimeout(toastTimer);
@@ -2171,6 +2216,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     showState();
     renderGroupMenu();
   }
+  sayAway();
   renderConn();
   updateHint();
   ready = true;

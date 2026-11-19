@@ -112,8 +112,10 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   const founders = h('input', { id: 'design-founders', type: 'number', min: 2, max: 400, step: 1, value: spec.founders });
   founders.addEventListener('input', () => { spec.founders = Number(founders.value); update(); });
   const graceHint = h('p', { class: 'muted small', id: 'design-grace-winter' });
+  /** The server's word on the grace a founding now would get (a quick re-found continues the last one's). */
+  let serverGrace: string | null = null;
   const showGraceHint = (): void => {
-    graceHint.textContent = graceWinterText(spec.founders);
+    graceHint.textContent = serverGrace ?? graceWinterText(spec.founders);
   };
 
   // --- traits
@@ -436,6 +438,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       const warning = r?.water_warning;
       waterBox.hidden = !warning;
       if (warning) waterBox.replaceChildren(h('h2', {}, 'Drinking water'), h('p', { class: 'hybrid-headline' }, '⚠ ', serverText(warning)));
+      serverGrace = r?.grace_note ? serverText(r.grace_note) : null;
+      showGraceHint();
       const rf = r?.refound;
       const before = JSON.stringify(refoundNow?.terms ?? null);
       refoundNow = r && rf ? { design: JSON.stringify({ ...p, name: '' }), terms: rf } : null;
@@ -629,7 +633,7 @@ export const GRACE_WINTER_FOUNDERS = 40;
 
 /** The designer's line on the first-winter grace rule for `founders`. */
 export function graceWinterText(founders: number): string {
-  const rule = `Newcomer grace: a founding of ${GRACE_WINTER_FOUNDERS} or fewer founders whose grace would end in late autumn or winter keeps it until that winter ends.`;
+  const rule = `Newcomer grace: a founding of ${GRACE_WINTER_FOUNDERS} or fewer founders whose grace would end in late autumn or winter keeps it through that first winter (and in most worlds the spring after it). A founding soon after your last one continues that one's grace instead.`;
   return founders <= GRACE_WINTER_FOUNDERS
     ? `${rule} These ${founders} qualify.`
     : `${rule} ${founders} founders don't: their grace ends on time even at winter's start.`;

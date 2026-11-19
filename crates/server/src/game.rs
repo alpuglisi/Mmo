@@ -267,6 +267,9 @@ pub const DRIFT_FACTOR: f32 = 2.0;
 /// A migration route crossing at least this many tiles of open water draws
 /// a warning.
 pub const ROUTE_WATER_TILES: usize = 3;
+/// The share of its size at a catastrophe's start a lineage must keep to
+/// have survived it (playtest 7: one that lost ~99% was a "Survivor").
+pub const SURVIVAL_KEEP: f64 = 0.25;
 /// A migration given while at least this share of the group is dormant
 /// draws a warning.
 pub const DORMANT_WARN_SHARE: f32 = 0.3;
@@ -790,10 +793,14 @@ pub struct Game {
     /// catastrophe whether its start and end were.
     seen_achievements: usize,
     seen_eras: usize,
-    /// Era standings by mean share (`eras::EraScores`).
     /// Survival credits given (player, catastrophe): once each, in the
     /// season the catastrophe mostly fell in (`credit_survival`).
     survival_credited: BTreeSet<(PlayerId, u32)>,
+    /// Each player's lineage and its living members when a catastrophe
+    /// began (`note_catastrophe_starts`): a survivor is that lineage still
+    /// holding [`SURVIVAL_KEEP`] of it at the end.
+    survival_starts: BTreeMap<u32, BTreeMap<PlayerId, (u32, usize)>>,
+    /// Era standings by mean share (`eras::EraScores`).
     era_scores: eras::EraScores,
     seen_catastrophes: Vec<(bool, bool)>,
     /// A drought warning is out (`DROUGHT_WARN`); cleared below
@@ -952,9 +959,11 @@ pub struct SavedGame {
     focused: BTreeSet<PlayerId>,
     seen_achievements: usize,
     seen_eras: usize,
-    /// Era standings by mean share (absent in older saves).
     /// Survival credits given (absent in older saves).
     survival_credited: BTreeSet<(PlayerId, u32)>,
+    /// Lineage sizes at catastrophe starts (absent in older saves).
+    survival_starts: BTreeMap<u32, BTreeMap<PlayerId, (u32, usize)>>,
+    /// Era standings by mean share (absent in older saves).
     era_scores: eras::EraScores,
     seen_catastrophes: Vec<(bool, bool)>,
     /// Version 2 on.
@@ -1139,6 +1148,7 @@ impl Game {
             seen_eras: 0,
             era_scores: eras::EraScores::default(),
             survival_credited: BTreeSet::new(),
+            survival_starts: BTreeMap::new(),
             seen_catastrophes: Vec::new(),
             drought_warned: false,
             flood_warned: false,
@@ -1240,7 +1250,7 @@ impl Game {
         let ended: Vec<PlayerId> = self.graced.difference(&now).copied().collect();
         self.graced = now;
         for p in ended {
-            let text = "Your newcomer grace has ended: other players' animals can now attack yours, and yours theirs"
+            let text = "Your newcomer grace has ended: other players' animals can now attack yours, and yours theirs."
                 .to_string();
             self.alert(p, AlertKind::Attack, text, None, out);
         }
@@ -1314,6 +1324,7 @@ impl Game {
             seen_eras: self.seen_eras,
             era_scores: self.era_scores.clone(),
             survival_credited: self.survival_credited.clone(),
+            survival_starts: self.survival_starts.clone(),
             seen_catastrophes: self.seen_catastrophes.clone(),
             economy: Some(self.economy.clone()),
             season: Some(self.season.clone()),
@@ -1387,6 +1398,7 @@ impl Game {
         g.seen_eras = saved.seen_eras;
         g.era_scores = saved.era_scores;
         g.survival_credited = saved.survival_credited;
+        g.survival_starts = saved.survival_starts;
         g.seen_catastrophes = saved.seen_catastrophes;
         match saved.economy {
             Some(e) if saved.version >= 2 => {
@@ -4407,13 +4419,12 @@ impl Game {
     /// ending season is credited there to the players alive through it so
     /// far (its later achievement doesn't credit the next season again).
     fn credit_survival(&mut self, record_day: u64) {
+        self.note_catastrophe_starts();
         let ch = &self.world.chronicle;
-        let founded_before = |p: PlayerId, start: u64| self.founded_day.get(&p).is_none_or(|&f| f < start);
         let mut credits: Vec<(PlayerId, u32)> = Vec::new();
         for a in &ch.achievements[self.seen_achievements.min(ch.achievements.len())..] {
             if let AchievementKind::SurvivedCatastrophe { catastrophe } = a.kind {
-                let start = ch.catastrophes.iter().find(|c| c.id == catastrophe).map_or(0, |c| c.start_day);
-                if a.player != WILD && founded_before(a.player, start) {
+                if a.player != WILD && self.survived(a.player, catastrophe) {
                     credits.push((a.player, catastrophe));
                 }
             }
@@ -4424,10 +4435,8 @@ impl Game {
                 let total = c.end_day.saturating_sub(c.start_day).max(1);
                 let inside = c.end_day.min(s1).saturating_sub(c.start_day.max(s0));
                 if 2 * inside > total {
-                    let counts = self.world.population_counts();
-                    for (&p, &l) in &self.lineage_of {
-                        let alive = counts.get(l as usize).is_some_and(|x| x.alive > 0);
-                        if alive && founded_before(p, c.start_day) {
+                    for &p in self.lineage_of.keys() {
+                        if self.survived(p, c.id) {
                             credits.push((p, c.id));
                         }
                     }
@@ -4437,6 +4446,46 @@ impl Game {
         for (p, id) in credits {
             if self.survival_credited.insert((p, id)) {
                 self.season.add_survival(p, id);
+            }
+        }
+    }
+
+    /// Record each player's lineage and its size when a catastrophe begins
+    /// (once per catastrophe).
+    fn note_catastrophe_starts(&mut self) {
+        let Some(c) = self.world.chronicle.active_catastrophe() else { return };
+        if self.survival_starts.contains_key(&c.id) {
+            return;
+        }
+        let counts = self.world.population_counts();
+        let sizes = self
+            .lineage_of
+            .iter()
+            .filter_map(|(&p, &l)| {
+                let alive = counts.get(l as usize).map_or(0, |x| x.alive);
+                (p != WILD && alive > 0).then_some((p, (l, alive)))
+            })
+            .collect();
+        self.survival_starts.insert(c.id, sizes);
+    }
+
+    /// Whether `player` survived `catastrophe` (playtest 7, M15): the lineage
+    /// it had when the catastrophe began is still its lineage and holds at
+    /// least [`SURVIVAL_KEEP`] of its size then. A lineage re-founded during
+    /// one, or one that lost nearly everything, didn't. A catastrophe begun
+    /// before sizes were recorded (an older save) falls back to the founding
+    /// day.
+    fn survived(&self, player: PlayerId, catastrophe: u32) -> bool {
+        let Some(&now) = self.lineage_of.get(&player) else { return false };
+        let alive = self.world.population_counts().get(now as usize).map_or(0, |x| x.alive);
+        match self.survival_starts.get(&catastrophe) {
+            Some(starts) => starts
+                .get(&player)
+                .is_some_and(|&(l, size)| l == now && alive > 0 && alive as f64 >= SURVIVAL_KEEP * size as f64),
+            None => {
+                let start =
+                    self.world.chronicle.catastrophes.iter().find(|c| c.id == catastrophe).map_or(0, |c| c.start_day);
+                alive > 0 && self.founded_day.get(&player).is_none_or(|&f| f < start)
             }
         }
     }
@@ -4965,7 +5014,17 @@ impl Game {
             let n = |c: &str| e.deaths.get(c).copied().unwrap_or(0);
             let (starved, thirst) = (n("starved"), n("thirst"));
             let died = starved + thirst;
-            let base = e.alive as u64 + e.deaths.values().sum::<u64>();
+            // Against the lineage's size as the day began (the record before),
+            // not what was left at its end: a retire that day removed most of
+            // it (playtest 7: 53 of ~2,000 read as "90% of it").
+            let before = self
+                .history
+                .iter()
+                .rev()
+                .nth(1)
+                .and_then(|p| p.lineages.iter().find(|x| x.lineage == lineage))
+                .map_or(0, |x| x.alive as u64);
+            let base = (e.alive as u64 + e.deaths.values().sum::<u64>()).max(before);
             if died >= STARVING_MIN
                 && base > 0
                 && (died >= STARVING_FLOOR || died as f64 >= STARVING_SHARE * base as f64)
@@ -5167,13 +5226,38 @@ impl Game {
     /// continues the old grace (even one already over) rather than starting
     /// a new one. None on worlds without a grace.
     fn grace_at_founding(&self, player: PlayerId, lineage: u32) -> Option<String> {
+        let start = self.world.lineage_grace_start(lineage)?;
+        let founders = self.world.lineages.get(lineage as usize).map_or(0, |l| l.founders);
+        self.grace_words(player, founders, start, false)
+    }
+
+    /// The newcomer grace a founding of `founders` by `player` would get
+    /// now, for the designer (playtest 7: it promised the winter rule to a
+    /// quick re-found whose grace was continued instead).
+    pub fn grace_preview(&self, player: PlayerId, founders: u32) -> Option<String> {
+        let start = self.world.grace_start_for(player, self.world.tick());
+        self.grace_words(player, founders, start, true).map(|t| format!("If you found now: {t}"))
+    }
+
+    /// How the winter rule extends a small founding's grace, in words.
+    fn grace_winter_words(&self) -> &'static str {
+        if self.world.config.balance.founding_drought > 0.0 {
+            "keeps it through that winter and the spring after it, while its first young grow up"
+        } else {
+            "keeps it until that winter ends"
+        }
+    }
+
+    /// The grace of a founding of `founders` by `player` whose grace starts
+    /// at `start` (a continued one when before now), in words; `preview`
+    /// for one not made yet.
+    fn grace_words(&self, player: PlayerId, founders: u32, start: u64, preview: bool) -> Option<String> {
         let w = &self.world;
         if w.config.balance.attack_grace <= 0.0 {
             return None;
         }
         let tpd = w.config.ticks_per_day.max(1) as f64;
-        let founded = w.tick();
-        let start = w.lineage_grace_start(lineage)?;
+        let now = w.tick();
         let soon = (2.0 * w.grace_length() as f64 / tpd).round();
         let days = |t: u64| t as f64 / tpd;
         let real = |t: u64| {
@@ -5185,40 +5269,44 @@ impl Game {
             }
         };
         let max = evo_sim::world::commands::GRACE_WINTER_FOUNDERS;
-        let founders = w.lineages.get(lineage as usize).map_or(0, |l| l.founders);
-        let winter = if w.grace_end(lineage, start) > start + w.grace_length() {
-            format!(" It lasts through your first winter: a founding of {max} or fewer whose grace would end in late autumn or winter keeps it until that winter ends.")
+        let rule = self.grace_winter_words();
+        let end = w.grace_end_for(founders, start);
+        let winter = if end > start + w.grace_length() {
+            format!(" It lasts through your first winter: a founding of {max} or fewer whose grace would end in late autumn or winter {rule}.")
         } else if founders <= max {
-            format!(" (A founding of {max} or fewer whose grace would end in late autumn or winter keeps it until that winter ends; this one ends before then.)")
+            format!(" (A founding of {max} or fewer whose grace would end in late autumn or winter {rule}; this one ends before then.)")
         } else {
             format!(" (Only a founding of {max} or fewer keeps its grace through its first winter; this one has {founders}.)")
         };
-        let text = match w.lineage_grace_ticks(lineage) {
-            Some(left) if start >= founded => format!(
+        let waived = w.grace_waived().get(&player).is_some_and(|&t| t >= start);
+        let left = end.saturating_sub(now);
+        let from_day = start / w.config.ticks_per_day.max(1) as u64 + 1;
+        let text = if start == 0 && !preview {
+            return None;
+        } else if waived {
+            "No newcomer grace: you ended it, and founding again soon doesn't bring it back. Other players' animals \
+             can attack yours from then on."
+                .to_string()
+        } else if start >= now {
+            format!(
                 "Newcomer grace: {:.0} days ({} of real time). Other players can't order attacks on your animals, \
                  nor yours on theirs, until it ends.{winter}",
                 days(left),
                 real(left)
-            ),
-            Some(left) => format!(
-                "Newcomer grace: {:.1} days left ({}). It continues the grace of your earlier lineage (from day {}): \
+            )
+        } else if left > 0 {
+            format!(
+                "Newcomer grace: {:.1} days left ({}). It continues the grace of your earlier lineage (from day {from_day}): \
                  founding again within {soon:.0} days of your last founding carries a grace on instead of starting a new one.",
                 days(left),
                 real(left),
-                start / w.config.ticks_per_day.max(1) as u64 + 1
-            ),
-            None if start == 0 => return None,
-            None if w.grace_waived().get(&player).is_some_and(|&t| t >= start) => {
-                "No newcomer grace: you ended it, and founding again soon doesn't bring it back. Other players' animals \
-                 can attack yours from now on."
-                    .to_string()
-            }
-            None => format!(
-                "No newcomer grace: it continues the grace of your earlier lineage (from day {}), which has run out. \
+            )
+        } else {
+            format!(
+                "No newcomer grace: it continues the grace of your earlier lineage (from day {from_day}), which has run out. \
                  Founding again within {soon:.0} days of your last founding carries a grace on rather than starting \
-                 a fresh one; other players' animals can attack yours now.",
-                start / w.config.ticks_per_day.max(1) as u64 + 1
-            ),
+                 a fresh one; other players' animals can attack yours then."
+            )
         };
         Some(text)
     }
@@ -5959,17 +6047,12 @@ impl Game {
                     }
                     push = Some(PushKind::Species);
                 }
-                AchievementKind::SurvivedCatastrophe { catastrophe } => {
-                    // Only a lineage founded before the catastrophe began
-                    // survived it: re-founding during one used to earn the
-                    // bonus and the season's survival count.
-                    let start = ch.catastrophes.iter().find(|c| c.id == catastrophe).map(|c| c.start_day);
-                    let founded = self.founded_day.get(&a.player).copied();
-                    paid = match (start, founded) {
-                        (Some(s), Some(f)) => f < s,
-                        _ => true,
-                    };
-                    // The season's credit was given before the rollover (`credit_survival`).
+                // Only the lineage alive at its start, keeping a quarter of
+                // itself (`survived`): re-founding during one, or losing ~99%,
+                // used to earn the title, bonus and alert. (The season's credit
+                // was given before the rollover: `credit_survival`.)
+                AchievementKind::SurvivedCatastrophe { catastrophe } if !self.survived(a.player, catastrophe) => {
+                    continue;
                 }
                 _ => {}
             }
@@ -6826,7 +6909,7 @@ fn achievement_text(w: &World, k: &AchievementKind) -> String {
                 .get(*catastrophe as usize)
                 .map_or("a catastrophe", |c| catastrophe_text(c.kind));
             // Factual, not a cheer: it can come after heavy losses (playtest 3: after a 70% loss).
-            format!("Survivor: your lineage is still alive after {what}, whatever it lost.")
+            format!("Survivor: your lineage came through {what} with at least a quarter of its animals.")
         }
     }
 }
