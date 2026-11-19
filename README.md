@@ -9046,6 +9046,70 @@ around it.
 
 
 
+### Playtest 10: balance
+
+Playtest 10 (`docs/playtest-10.md`, findings 7 and 8) had no runaway, with
+era-2 means from 2.1% to 7.1% and the wild at about 70%. The pack peaked at
+112 (playtest 9: 261). Four of six players ran near-identical warm egg herds,
+and the era-1 winner went from 1,372 to extinct in about 130 days.
+
+What the replay (`dominance --only Herd,Sleepers,Cold,Pack,LoopHerd,Broker
+--trace`) showed:
+- With the wild refuge, a replayed pack (40 founders, day 37) still peaks
+  near 250: 244 against 258 with the refuge off. The refuge costs a pack
+  little once the wild has grown.
+- In a fresh world, though, every wild species starts far below its cap.
+  The playtest's antelope were 150 on day 14, so a pack founded then found
+  most prey under the refuge.
+- The pack's other larder, the warm egg herds, is toxic and bright. Their
+  clutches carried no toxin, but no hunter went looking for them: eggs were
+  raided only when a hungry carnivore happened to step on the nest.
+- The leader's crash: crowding by share of the world made a lineage past
+  its share hungrier, not only slower to breed. The world's count falls
+  every winter with the wild, so the share tightened just when food did.
+
+Three rules, version 89 (each off at 0):
+
+- **Nest raids** (`Balance::nest_raids`, 1). A hungry hunter (carnivory
+  above 0.7) with no prey in sight goes for the nearest rival clutch it
+  smells, within `nest_raids × carcass_scent × (0.5 + nose)` tiles, and
+  raids it on arrival (`World::scent_clutch`). This skips its own
+  lineage's clutches and those of species it has given up on. An egg
+  herd, toxic or not, now feeds a pack through its nests: a counter to the
+  warm egg class.
+- **Share slows breeding only** (`Balance::share_litters`, 1). Past its
+  share of the world a lineage's litters shrink as before, but hunger comes
+  from the soft cap alone. The brake limits growth and no longer starves a
+  leader through its winter.
+- **Refuge ramp** (`Balance::refuge_ramp`, 1). The wild refuge comes in
+  over the world's first year, from none on day 0 to full on day 360.
+
+**Replay** (seeds 1–4, 840 days, two eras; "era mean" is the highest mean
+share over a whole era on any seed):
+
+| Player | Playtest 10 rules (v89 tunables off): era mean, peak alive, final alive, extinct | v89 rules |
+| --- | --- | --- |
+| LoopHerd (warm egg herd) | 23.6%, 904, 376, 0 | 24.0%, 1,028, 446, 0 |
+| Herd (warm egg herd) | 20.9%, 1,652, 446, 0 | 17.5%, 812, 73, 0 |
+| Cold (cold flier) | 5.3%, 288, 167, 0 | 16.8%, 605, 442, 0 |
+| Broker (live grazer) | 13.3%, 944, 20, 2 | 11.8%, 846, 11, 1 |
+| Pack | 5.9%, 217, 164, 0 | 12.3%, 236, 175, 0 |
+| Sleepers (re-found) | 2.0%, 141, 12, 2 | 3.2%, 172, 4, 1 |
+
+(Peak and final alive are means over the seeds.)
+
+The era means spread more evenly: the cold flier and the pack roughly
+double or triple, the herd falls, and no leader dies out. The pack peaks at
+236 on average and reaches 264 on seed 1 (target 200–300). The 12-seed sweep scores 11.90 (11.88 before). The wild in the
+trace (seed 1) keeps 1,900–3,300, with antelope at 150–205. Late in that
+seed the 260-strong pack raids the egg herds' nests hard. Herd's
+second-winter crashes (838 → 247, 857 → 99) were winter's, as before, but
+it then failed to breed back (12 alive at day 840). A pack this size is now
+a real threat to an egg herd. Packs still scatter (`pack_cohesion` stays
+off), and the replay's pack doesn't reproduce the playtest's 112: a played
+pack also starved through its first autumn. The ramp is aimed at that
+fresh-world start.
+
 ### Playtest 9: balance
 
 Playtest 9 (`docs/playtest-9.md`, findings 1, 6 and part of 12 here).

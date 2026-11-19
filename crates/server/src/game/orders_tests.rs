@@ -1481,6 +1481,29 @@ fn a_newcomer_is_warned_before_its_grace_ends_with_the_hunters_near() {
     assert!(t[0].contains("of ann's hunters") && t[0].contains("within 30 tiles"), "{}", t[0]);
 }
 
+/// Merging a group into another, or retiring, isn't a group dying out
+/// (playtest 10: both said "Group X has died out").
+#[test]
+fn a_merged_or_retired_group_does_not_die_out() {
+    let (mut g, _) = game();
+    let d = run(&mut g, ClientMsg::SplitGroup { group: 0, organisms: None }).unwrap();
+    let b = d["group"].as_u64().unwrap() as u8;
+    let record = g.daily_record();
+    let mut out = Outbox::new();
+    g.daily_group_checks(&record, &mut out); // the baseline
+    run(&mut g, ClientMsg::MergeGroups { from: b, into: 0 }).unwrap();
+    g.daily_group_checks(&record, &mut out);
+    let died = |g: &Game| alerts(g, AlertKind::Group).into_iter().filter(|t| t.contains("has died out")).count();
+    assert_eq!(died(&g), 0, "{:?}", alerts(&g, AlertKind::Group));
+    let d = run(&mut g, ClientMsg::SplitGroup { group: 0, organisms: None }).unwrap();
+    assert!(d["group"].as_u64().is_some());
+    g.daily_group_checks(&record, &mut out);
+    let lineage = g.lineage_of(1).unwrap();
+    g.retire(1, lineage).unwrap();
+    g.daily_group_checks(&record, &mut out);
+    assert_eq!(died(&g), 0, "{:?}", alerts(&g, AlertKind::Group));
+}
+
 /// Playtest 9 (M15): a satellite group dwindling or dying says so; a claim
 /// for a starving group says the hold loosens (and the sim's alert just
 /// after doesn't repeat it).

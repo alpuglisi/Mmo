@@ -1552,11 +1552,20 @@ impl World {
     /// The chance a player's hunter passes wild lineage `l` up for the day
     /// (`Balance::wild_refuge`): `1 − r⁴`, with `r` its head count over
     /// `wild_refuge` times its wild cap, capped at 1; 0 for a player's
-    /// lineage or with the refuge off. Playtest 9's replay: a player pack
+    /// lineage or with the refuge off. The share comes in over
+    /// `Balance::refuge_ramp` years from the world's first day. Playtest 9's replay: a player pack
     /// hunted the wild antelope from 988 to 3 and the newts from 1,400 to
     /// 50 in seven years, and the shrinking wild let a herd run away.
     pub(crate) fn wild_refuge_skip(&self, l: u32) -> f32 {
-        let refuge = self.config.balance.wild_refuge;
+        let bal = &self.config.balance;
+        let mut refuge = bal.wild_refuge;
+        // Coming in over `Balance::refuge_ramp` years: a fresh world's wild
+        // starts far below its caps (playtest 10: antelope 150 on day 14).
+        if bal.refuge_ramp > 0.0 {
+            let year = 4.0 * self.config.days_per_season() as f32;
+            let days = (self.tick / self.config.ticks_per_day.max(1) as u64) as f32;
+            refuge *= (days / (bal.refuge_ramp * year)).min(1.0);
+        }
         if refuge <= 0.0 || self.lineages.get(l as usize).is_none_or(|x| x.owner != crate::WILD) {
             return 0.0;
         }
@@ -1657,6 +1666,13 @@ impl World {
                     return;
                 }
             }
+            // A rival's clutch it smells (`Balance::nest_raids`): eggs are
+            // food a toxic herd can't refuse a pack.
+            if let Some(t) = self.scent_clutch(o) {
+                intent.action = Action::Scavenge;
+                intent.target = Some(t);
+                return;
+            }
             // Carnivore with nothing in sight: look for carcasses, else roam.
             if let Some(t) = self.find_tile(o, rng, 1.0, |_, t, _| t.meat * c) {
                 intent.action = Action::Scavenge;
@@ -1753,6 +1769,41 @@ impl World {
     /// kill within three times the scent range (he leads her to it), else
     /// the best by meat over distance within `Balance::carcass_scent` times
     /// (0.5 + nose) tiles. None with the scent off.
+    /// The nearest clutch of eggs a hungry hunter `o` smells
+    /// (`Balance::nest_raids`): within `nest_raids × carcass_scent × (0.5 +
+    /// nose)` tiles, another owner's, with eggs, inside its foraging bound,
+    /// not of a species it has given up on (prey switching, the wild
+    /// refuge). Raided on arrival (`apply::raid_clutch`). Playtest 10: a pack
+    /// starved beside a toxic egg herd whose clutches lay unguarded.
+    pub(crate) fn scent_clutch(&self, o: &Organism) -> Option<Vec2> {
+        let bal = &self.config.balance;
+        if bal.nest_raids <= 0.0 || o.needs.hunger < 35.0 || !o.matured || self.clutches.is_empty() {
+            return None;
+        }
+        let r = (bal.nest_raids * bal.carcass_scent.max(1.0) * (0.5 + o.pheno[Gene::Nose])).round() as i64;
+        let (x0, y0) = self.map.tile_coords(o.pos);
+        let bound = self.forage_bound(o);
+        let mut best: Option<(f32, Vec2)> = None;
+        for y in (y0 as i64 - r).max(0)..=(y0 as i64 + r).min(self.map.height as i64 - 1) {
+            for x in (x0 as i64 - r).max(0)..=(x0 as i64 + r).min(self.map.width as i64 - 1) {
+                let Some(&k) = self.clutch_at.get(&(x as usize, y as usize)) else { continue };
+                let Some(cl) = self.clutches.get(k) else { continue };
+                if cl.eggs.is_empty() || cl.owner == o.owner {
+                    continue;
+                }
+                let d = o.pos.dist(cl.pos);
+                if best.is_some_and(|(bd, _)| bd <= d) || self.confine(cl.pos, bound) != cl.pos {
+                    continue;
+                }
+                if self.gives_up_on(o, cl.lineage) {
+                    continue;
+                }
+                best = Some((d, cl.pos));
+            }
+        }
+        best.map(|(_, p)| p)
+    }
+
     pub(crate) fn scent_carcass(&self, o: &Organism, c: f32) -> Option<Vec2> {
         let bal = &self.config.balance;
         let min = 25.0 * o.food_per_hunger();

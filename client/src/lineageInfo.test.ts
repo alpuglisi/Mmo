@@ -38,7 +38,7 @@ describe('the population cap row', () => {
     const c = { soft_cap: 1500, hard_cap: 2100, count: 900, juvenile_weight: 0.25, litter: 0.2, hunger: 1.3, world_cap: 640, world_share: 0.2 };
     const info = capInfo(1000, 1500, c);
     expect(info.status).toBe("past its share of the world: litters ×0.2, hunger ×1.30");
-    expect(info.explain).toMatch(/20% of the world's animals \(wild included\): at today's numbers from 640/);
+    expect(info.explain).toMatch(/20% of the world's animals \(wild included; breeding only, not hunger\): at today's numbers from 640/);
     // Below it: no world note in the status.
     expect(capInfo(500, 1500, { ...c, count: 450, litter: 0.9, hunger: 1 }).status).toBe('breeding slowing: litters ×0.9');
   });
