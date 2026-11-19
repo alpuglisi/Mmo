@@ -236,6 +236,8 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
    (playtest 9: at 1280×900 the stack lay over the second row of tools and clicks failed). */
 .toasts { position: absolute; bottom: 44px; right: 10px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: min(380px, 40%); pointer-events: none; z-index: 4; }
 .toast { pointer-events: none; }
+/* Possessing: above the possession bar (playtest 10: the stack covered Release at 1280×800). */
+.possessing .toasts { bottom: calc(44px + var(--possess-h, 44px) + 8px); }
 .toast { padding: 6px 10px; border-radius: 6px; background: rgba(22, 27, 34, 0.94); border-left: 3px solid var(--accent); }
 .toast.error { border-left-color: var(--bad); }
 .toast.warn { border-left-color: var(--warn); }
@@ -553,7 +555,9 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .vision-swatch.blind { background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--vision-blind) 60%, transparent) 0 1.3px, color-mix(in srgb, var(--vision-blind) 20%, transparent) 1.3px 4.2px); border-color: var(--vision-blind); }
 
 /* A catastrophe or drought under way: pinned over the map under the toolbar, never truncated (they wrap). */
-.map-notices { position: absolute; z-index: 6; left: 50%; transform: translateX(-50%); top: 52px; width: min(640px, calc(100% - 16px)); display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
+/* Below the toolbar however many rows it wraps to (--toolbar-h, measured): at 1280×900 the second
+   row (View group, Pin view, Food layer) lay under a drought notice that said to use the Food layer (playtest 10). */
+.map-notices { position: absolute; z-index: 6; left: 50%; transform: translateX(-50%); top: calc(var(--toolbar-h, 44px) + 8px); width: min(640px, calc(100% - 16px)); display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
 .map-notices > * { pointer-events: auto; }
 .catastrophe-alert { display: flex; gap: 8px; align-items: flex-start;
   background: color-mix(in srgb, #3a1515 92%, transparent); border: 1px solid var(--bad); border-radius: 8px; padding: 8px 10px; color: var(--text); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4); font-size: 0.92em; }

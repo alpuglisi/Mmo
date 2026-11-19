@@ -2373,6 +2373,10 @@ pub struct ListingView {
     /// meets it (playtest 7: listings outlived old animals unwarned).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub aging: bool,
+    /// Its expected lifespan in days, beside `age_days` (playtest 10: an
+    /// age with nothing to read it against); absent on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifespan_days: Option<f32>,
     /// Asleep (hibernating, brumating, estivating): it walks to no meeting
     /// until it wakes (the agreement's deadline waits).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

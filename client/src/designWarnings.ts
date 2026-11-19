@@ -50,7 +50,8 @@ export function designWarnings(d: DesignSpec, world: Pick<WorldSummary, 'weather
   const today = world?.clock.day ?? 0;
   const left = cat ? cat.end_day - today : 0;
   // Only while it lasts: `end_day` is the first day after it (playtest 4: "1 days left" after it ended).
-  if (cat && cat.active && left > 0 && catastropheBanner(cat, today)) {
+  // Only once it has begun (playtest 10: a severe winter announced before its first day).
+  if (cat && cat.active && left > 0 && today >= (cat.start_day ?? 0) && catastropheBanner(cat, today)) {
     const effect = catastropheEffect(cat.kind);
     const days = left === 1 ? 'its last day' : `${left} days left`;
     out.push({
