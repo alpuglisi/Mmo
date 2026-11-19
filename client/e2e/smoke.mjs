@@ -850,6 +850,15 @@ async function main() {
       if (entry(annLedger, 'sale')?.delta !== net) throw new Error(`completed but ann not paid ${net}: ${JSON.stringify(annLedger.entries.slice(0, 5))}`);
       if (entry(bobLedger, 'refund')) throw new Error('completed and refunded');
       step(`market mating completed (${fin.outcome?.conceived ? 'conceived' : 'not conceived'}): ann paid ${fee - Math.floor((fee * 10) / 100)} of ${fee} renown from escrow`);
+    } else if (fin.status === 'cancelled') {
+      // Bob (the buyer) cancelled an accepted purchase: he pays the hold fee
+      // (25%, at least 5, at most the price; LAPSE_FEE_*) to ann, the rest
+      // comes back. Below 10 renown no market fee is taken from it.
+      const hold = Math.min(fee, Math.max(5, Math.floor((fee * 25) / 100)));
+      const holdNet = hold - (hold < 10 ? 0 : Math.floor((hold * 10 + 50) / 100));
+      if (entry(bobLedger, 'refund')?.delta !== fee - hold) throw new Error(`cancelled but bob not refunded ${fee - hold}: ${JSON.stringify(bobLedger.entries.slice(0, 5))}`);
+      if (entry(annLedger, 'sale')?.delta !== holdNet) throw new Error(`cancelled but ann not paid the hold fee ${holdNet}: ${JSON.stringify(annLedger.entries.slice(0, 5))}`);
+      step(`market agreement cancelled by the buyer: bob refunded ${fee - hold} renown, ann paid the ${hold} renown hold fee`);
     } else {
       if (entry(bobLedger, 'refund')?.delta !== fee) throw new Error(`${fin.status} but bob not refunded: ${JSON.stringify(bobLedger.entries.slice(0, 5))}`);
       if (entry(annLedger, 'sale')) throw new Error(`${fin.status} and paid`);
