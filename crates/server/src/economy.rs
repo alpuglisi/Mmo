@@ -14,7 +14,9 @@
 //!   lineage has living members, plus one renown per percentage point of the
 //!   mean of the player's raw and weighted legacy share, rounded:
 //!   `income = 2 + round(100 · (share + weighted_share) / 2)` (a lineage with
-//!   10% raw and 6% weighted share earns 10 a day; an extinct one nothing);
+//!   10% raw and 6% weighted share earns 10 a day; an extinct one nothing),
+//!   tapered on a balance above [`INCOME_TAPER_FROM`] ([`tapered_income`]:
+//!   half at twice it, a quarter at four times);
 //! - achievements: species founded 100, niche dominance 40, survived a
 //!   catastrophe 25, each year of lineage longevity 20.
 //!
@@ -208,6 +210,22 @@ pub fn daily_income(share: f64, weighted_share: f64, alive: bool) -> u64 {
     }
     let points = (100.0 * (share.clamp(0.0, 1.0) + weighted_share.clamp(0.0, 1.0)) / 2.0).round();
     DAILY_STIPEND + points as u64
+}
+
+/// The balance above which daily income tapers ([`tapered_income`]).
+pub const INCOME_TAPER_FROM: u64 = 1_000;
+
+/// Daily income on a balance of `balance`: in full up to `from`, then scaled
+/// by `from / balance` (half at twice `from`, a quarter at four times),
+/// never below the stipend while anything is earned; `from` 0 is no taper.
+/// Saved renown keeps its worth, but hoarding stops paying: spending (the
+/// shop, studs, auctions) is how a leader keeps earning in full.
+pub fn tapered_income(income: u64, balance: u64, from: u64) -> u64 {
+    if from == 0 || balance <= from || income == 0 {
+        return income;
+    }
+    let scaled = (income as u128 * from as u128 / balance as u128) as u64;
+    scaled.max(DAILY_STIPEND.min(income))
 }
 
 /// Renown for an achievement (`AchievementKind::label`).
@@ -525,6 +543,17 @@ mod tests {
         assert_eq!(daily_income(1.0, 1.0, true), 102);
         // Out-of-range shares are clamped.
         assert_eq!(daily_income(3.0, -1.0, true), 2 + 50);
+    }
+
+    #[test]
+    fn income_tapers_above_the_threshold() {
+        assert_eq!(tapered_income(40, 500, 1_000), 40);
+        assert_eq!(tapered_income(40, 1_000, 1_000), 40);
+        assert_eq!(tapered_income(40, 2_000, 1_000), 20);
+        assert_eq!(tapered_income(40, 4_000, 1_000), 10);
+        assert_eq!(tapered_income(40, 1_000_000, 1_000), DAILY_STIPEND);
+        assert_eq!(tapered_income(40, 4_000, 0), 40, "0 is no taper");
+        assert_eq!(tapered_income(0, 4_000, 1_000), 0);
         assert_eq!(achievement_bonus("species_founded"), 100);
         assert_eq!(achievement_bonus("unknown"), 0);
     }

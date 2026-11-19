@@ -747,9 +747,10 @@ impl Game {
                     self.cfg.season_days,
                     self.reinforce_max_alive(),
                     self.reinforce_next(player).map_or(String::new(), |(d, m)| format!(
-                        ": the next is possible in {} game day{} (about {m} real minutes)",
+                        ": the next is possible in {} game day{} ({})",
                         d.saturating_sub(self.world.day()),
-                        if d.saturating_sub(self.world.day()) == 1 { "" } else { "s" }
+                        if d.saturating_sub(self.world.day()) == 1 { "" } else { "s" },
+                        super::real_minutes(m as f64)
                     ))
                 ),
             ));
@@ -885,7 +886,12 @@ impl Game {
                     fertility_high: s.high,
                     best_fertility: s.best,
                     fertile_share: s.fertile_share,
-                    drift_risk: s.drift_risk.to_string(),
+                    // Only a sterile wild lineage can drift into fertility:
+                    // genes cross between players only by agreement now, and
+                    // a fertile one already breeds (playtest 10: "sterile …
+                    // drift risk high", and drift risks for players).
+                    drift_risk: if lin.owner != WILD || s.fertile_share > 0.0 { "none" } else { s.drift_risk }
+                        .to_string(),
                     limiting: s.limiting,
                     gap: s.gap,
                 })
@@ -922,7 +928,9 @@ impl Game {
         let own: Vec<&Genome> = founders.iter().collect();
         let mut rows = self.compat_rows(&own, None);
         coarsen_rivals(&mut rows, player);
-        let fertile_with = rows.iter().filter(|r| r.fertile_share > 0.0).count();
+        // As the rows show it (playtest 10: `fertile_with: 2` beside rows all
+        // at 0 once rivals' figures were rounded to tenths).
+        let fertile_with = rows.iter().filter(|r| r.fertility > 0.0).count();
         let at_risk = rows.iter().filter(|r| r.fertile_share <= 0.0 && r.drift_risk != "none").count();
         // Shores the founders can drink from (steep banks stop non-climbers).
         let probe = evo_sim::organism::Organism::new(
@@ -1154,8 +1162,10 @@ pub(super) struct ReinforceSite {
     pub group: u8,
 }
 
-/// Real seconds a shop price quoted to a player holds (`Game::quote_shop`).
-pub const QUOTE_SECONDS: f64 = 10.0;
+/// Real seconds a shop price quoted to a player holds (`Game::quote_shop`):
+/// long enough for the confirm dialog the client opens with it (playtest 10:
+/// a survey confirmed after 10 seconds cost more than it said).
+pub const QUOTE_SECONDS: f64 = 60.0;
 
 /// The head-count prices last shown to a player (`Game::quote_shop`).
 #[derive(Clone, Copy, Debug)]
