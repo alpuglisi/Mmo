@@ -39,6 +39,42 @@ server gene defaults changed; the client applies the starter
 (`client/src/designMorph.ts` `STARTER_TRAITS`), and "Reset traits" goes
 back to it.
 
+## Round 12: among rivals
+
+Playtests 10 and 11: every newcomer who founded the starter above stalled
+near 40 animals and retired it. It survived, but among rival herds and
+packs it never grew: its deaths were mostly predation, then starvation.
+The starter is now that design plus toxins 0.5, coloration 0.6 (bright:
+hunters that learn the toxin pass it up, `Balance::honest_signals`),
+foraging range 0.6 and group tolerance 0.95, with 30 founders: about 33 of
+the 100 points (`client/src/designMorph.ts` `STARTER_TRAITS`,
+`STARTER_FOUNDERS`). The designer's unspent-points line says it is a safe
+first lineage, not the strongest. No tunables changed.
+
+`crates/server/examples/starter_rivals.rs` founds the playtests' strong
+designs on day 0 (Herdmaster6's toxic bright egg herd, PocketNomad7's
+sleepers, a predator pack), then a newcomer's candidate on day 60, on the
+128×128 standard world, and follows the newcomer for a year. Medians of
+its population 60, 120, 240 and 360 days after founding (8 seeds each):
+
+| Candidate | Points | Seeds 1–8 | Alive | Seeds 9–16 | Alive |
+| --- | --- | --- | --- | --- | --- |
+| old starter | 14.0 | 20, 20, 5, 2 | 5/8 | 20, 67, 17, 4 | 6/8 |
+| + burrowing 0.5 | 18.0 | 20, 38, 7, 2 | 7/8 | | |
+| + vigilance 0.6, ears 0.5 | 18.4 | 19, 34, 8, 5 | 4/8 | | |
+| + toxins 0.5 | 23.0 | 20, 54, 26, 13 | 7/8 | | |
+| + toxins 0.5, coloration 0.6 | 26.0 | 20, 47, 42, 12 | 7/8 | | |
+| the same, 5 eggs a clutch | 31.0 | 18, 60, 22, 14 | 7/8 | | |
+| the same, 30 founders | 33.0 | 30, 75, 38, 25 | 8/8 | 30, 118, 63, 53 | 8/8 |
+| the same, foraging 0.6, tolerance 0.95 | 26.0 | 18, 54, 28, 14 | 8/8 | | |
+| **new starter** (all of the last two) | 33.0 | 30, 87, 83, 24 | 8/8 | 30, 105, 125, 111 | 8/8 |
+| the strong herd itself, as the newcomer | 67.2 | 36, 66, 164, 97 | 8/8 | 46, 261, 330, 90 | 8/8 |
+
+```
+cargo run --release -p evo-server --example starter_rivals -- \
+  [--seeds N] [--first-seed N] [--size N] [--join DAY] [--days DAYS] [--only NAME,..]
+```
+
 ## How it was measured
 
 `crates/server/examples/starter_survival.rs` founds a design through the
