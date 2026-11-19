@@ -648,6 +648,14 @@ fn playtest11_off(b: &mut crate::Balance) {
 fn raids_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v93::OLD_VALUE;
     (b.raid_rules, b.animal_clear) = (old, old);
+    playtest12_off(b);
+}
+
+/// The playtest 12 balance tunables as snapshots before version 94 read
+/// them.
+fn playtest12_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v94::OLD_VALUE;
+    (b.share_peak, b.share_cap, b.niche_cap, b.sleeper_cover) = (old, old, old, old);
     packs12_off(b);
 }
 
@@ -655,6 +663,26 @@ fn raids_off(b: &mut crate::Balance) {
 fn packs12_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v95::OLD_VALUE;
     (b.pack_nursing, b.instinct_grace) = (old, old);
+}
+
+/// Version 93 snapshots (before the playtest 12 balance rules) restore with
+/// them off, and are otherwise the same world.
+#[test]
+fn version_93_snapshots_restore_without_playtest12_balance() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v93();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 93);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.share_cap, crate::serde_util::before_v94::OLD_VALUE);
+    assert!(r.snapshot_v93() == old);
+    playtest12_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.share_cap, r.config.balance.niche_cap), (0.25, 2.0));
 }
 
 /// Version 90 snapshots (before the playtest 11 balance rules) restore with
@@ -2285,18 +2313,18 @@ fn version_92_snapshots_restore_without_raid_rules() {
     assert_eq!((r.config.balance.raid_rules, r.config.balance.animal_clear), (1.0, 1.0));
 }
 
-/// Version 93 snapshots (before the playtest 12 pack rules) restore with
+/// Version 94 snapshots (before the playtest 12 pack rules) restore with
 /// them off, and are otherwise the same world.
 #[test]
-fn version_93_snapshots_restore_without_pack_nursing() {
+fn version_94_snapshots_restore_without_pack_nursing() {
     let mut w = fixture_world();
-    let old = w.snapshot_v93();
+    let old = w.snapshot_v94();
     let h = SnapshotHeader::read(&old).unwrap();
-    assert_eq!(h.version, 93);
+    assert_eq!(h.version, 94);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!((r.config.balance.pack_nursing, r.config.balance.instinct_grace), (0.0, 0.0));
-    assert!(r.snapshot_v93() == old);
+    assert!(r.snapshot_v94() == old);
     packs12_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());

@@ -1535,6 +1535,38 @@ pub struct Balance {
     /// rival herd, "0 tiles away"). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v93"))]
     pub animal_clear: f32,
+    /// The legacy share's remembered world size (`share_memory`) is a
+    /// recent peak, rising at once and halving over `share_memory` days,
+    /// not a running mean (version 94, off at 0, `serde_util::before_v94`).
+    /// Playtest 12: the mean of a young or just-boomed world sat below its
+    /// size and never engaged.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v94"))]
+    pub share_peak: f32,
+    /// A player's litters shrink as at the soft cap once its legacy share
+    /// passes this (half size at it, `World::crowding_effect_shared`;
+    /// version 94, off at 0, `serde_util::before_v94`). Playtest 12: the
+    /// leader's share rose 16% → 29% through a winter while its head count
+    /// fell.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v94"))]
+    pub share_cap: f32,
+    /// At most this many niche prizes per player an era, each niche going
+    /// to the best-placed player not yet at it (`World::capped_niche_leaders`;
+    /// version 94, off at 0, `serde_util::before_v94`). Playtest 12: the
+    /// biggest herd covered every biome and took four of six.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v94"))]
+    pub niche_cap: f32,
+    /// A warm-blooded deep sleeper (hibernating, estivating) lies hidden
+    /// in its den: each hunter misses it on a day with this chance (a
+    /// brumator lies out, and wakes to bask)
+    /// (`World::sleeper_hidden`; version 94, off at 0,
+    /// `serde_util::before_v94`). Playtest 12: warm herds lost 420–580
+    /// sleepers a winter to predators, and the cold flier won both eras.
+    /// Ships off: in the six-player replay (seeds 1–4) it didn't lift the
+    /// warm herds, and at 0.6 for every sleeper the cold fliers gained
+    /// most (a late copy's era mean 12.9% → 25.1%; warm sleepers only,
+    /// Cold 12.7% → 19.4%).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v94"))]
+    pub sleeper_cover: f32,
     // Playtest 12 packs (version 95; *Playtest 12: packs* in the README).
     // Off at 0, what snapshots before version 95 read
     // (`serde_util::before_v95`).
@@ -1875,6 +1907,10 @@ impl Default for Balance {
             wild_rebound: 1.0,
             raid_rules: 1.0,
             animal_clear: 1.0,
+            share_peak: 1.0,
+            share_cap: 0.25,
+            niche_cap: 2.0,
+            sleeper_cover: 0.0,
             pack_nursing: 1.0,
             instinct_grace: 1.0,
         }
@@ -1882,7 +1918,7 @@ impl Default for Balance {
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 195;
+    pub const FIELD_COUNT: usize = 199;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -2085,6 +2121,10 @@ impl Balance {
             ("wild_rebound", &mut self.wild_rebound),
             ("raid_rules", &mut self.raid_rules),
             ("animal_clear", &mut self.animal_clear),
+            ("share_peak", &mut self.share_peak),
+            ("share_cap", &mut self.share_cap),
+            ("niche_cap", &mut self.niche_cap),
+            ("sleeper_cover", &mut self.sleeper_cover),
             ("pack_nursing", &mut self.pack_nursing),
             ("instinct_grace", &mut self.instinct_grace),
         ]

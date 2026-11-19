@@ -258,9 +258,12 @@
 //! Version 93 adds the playtest 11 raid and placement tunables
 //! (`Balance::raid_rules`, `animal_clear`); versions 10 to 92 read them as
 //! 0 (off, `serde_util::before_v93`).
-//! Version 95 (94 unused) adds the playtest 12 pack tunables
-//! (`Balance::pack_nursing`, `instinct_grace`); versions 10 to 94 read them
-//! as 0 (off, `serde_util::before_v95`).
+//! Version 94 adds the playtest 12 balance tunables (`Balance::share_peak`,
+//! `share_cap`, `niche_cap`, `sleeper_cover`); versions 10 to 93 read them as 0 (off,
+//! `serde_util::before_v94`).
+//! Version 95 adds the playtest 12 pack tunables (`Balance::pack_nursing`,
+//! `instinct_grace`); versions 10 to 94 read them as 0 (off,
+//! `serde_util::before_v95`).
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
 //! ([`TERRAIN_VERSION`], u32), flags (u32, bit 0 LZ4), content hash, width,
@@ -477,6 +480,10 @@ const PLAYTEST11_VERSION: u32 = 92;
 /// The first version with the playtest 11 raid and placement tunables
 /// (`Balance::raid_rules`, `animal_clear`, `serde_util::before_v93`).
 const PLAYTEST11_RAIDS_VERSION: u32 = 93;
+/// The first version with the playtest 12 balance tunables
+/// (`Balance::share_peak`, `share_cap`, `niche_cap`, `sleeper_cover`,
+/// `serde_util::before_v94`).
+const PLAYTEST12_VERSION: u32 = 94;
 /// The first version with the playtest 12 pack tunables
 /// (`Balance::pack_nursing`, `instinct_grace`, `serde_util::before_v95`).
 const PLAYTEST12_PACKS_VERSION: u32 = 95;
@@ -909,6 +916,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let raw = payload_options().serialize(self).expect("world serializes");
@@ -971,6 +979,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         // The header's layout is unchanged since version 6: only the version
@@ -1036,6 +1045,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1097,6 +1107,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1157,6 +1168,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1216,6 +1228,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1274,6 +1287,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1332,6 +1346,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1389,6 +1404,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1444,6 +1460,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1499,6 +1516,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1552,6 +1570,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1604,6 +1623,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1655,6 +1675,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1705,6 +1726,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1754,6 +1776,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1803,6 +1826,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1850,6 +1874,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1896,6 +1921,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1942,6 +1968,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -1986,6 +2013,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -2030,6 +2058,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -2072,6 +2101,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -2114,6 +2144,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let _old41 = crate::serde_util::before_v41::Guard::new();
         let mut out = self.snapshot();
@@ -2155,6 +2186,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&GROUP_PLANS_VERSION.to_le_bytes());
@@ -2194,6 +2226,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&SPECIES_HYSTERESIS_VERSION.to_le_bytes());
@@ -2233,6 +2266,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&COMPETITIVE_BALANCE_VERSION.to_le_bytes());
@@ -2270,6 +2304,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&PLAYTEST2_VERSION.to_le_bytes());
@@ -2306,6 +2341,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MIGRATION_HEADWAY_VERSION.to_le_bytes());
@@ -2341,6 +2377,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&WINTER_RULES_VERSION.to_le_bytes());
@@ -2376,6 +2413,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&FOUNDING_FIXES_VERSION.to_le_bytes());
@@ -2409,6 +2447,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&PENDING_PLANS_VERSION.to_le_bytes());
@@ -2441,6 +2480,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&BALANCE_PT4_VERSION.to_le_bytes());
@@ -2473,6 +2513,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&FOUNDING_SAFETY_VERSION.to_le_bytes());
@@ -2503,6 +2544,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&PLAYTEST4_PREDATORS_VERSION.to_le_bytes());
@@ -2532,6 +2574,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&BROOD_CARE_VERSION.to_le_bytes());
@@ -2560,6 +2603,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&BALANCE_PT5_VERSION.to_le_bytes());
@@ -2587,6 +2631,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&PLAYTEST5_SURVIVAL_VERSION.to_le_bytes());
@@ -2613,6 +2658,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&NICHE_MEANS_VERSION.to_le_bytes());
@@ -2638,6 +2684,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&FOUNDING_DROUGHT_VERSION.to_le_bytes());
@@ -2662,6 +2709,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&BALANCE_PT6_VERSION.to_le_bytes());
@@ -2685,6 +2733,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&PLAYTEST6_PREDATORS_VERSION.to_le_bytes());
@@ -2707,6 +2756,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&HOLD_PLANS_VERSION.to_le_bytes());
@@ -2728,6 +2778,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&FOUNDING_RIVALS_VERSION.to_le_bytes());
@@ -2748,6 +2799,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&PLAYTEST7_PREDATORS_VERSION.to_le_bytes());
@@ -2767,6 +2819,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&BALANCE_PT7_VERSION.to_le_bytes());
@@ -2785,6 +2838,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&PLAYTEST8_EGGS_VERSION.to_le_bytes());
@@ -2802,6 +2856,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&FOUNDER_YOUTH_VERSION.to_le_bytes());
@@ -2818,6 +2873,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&RIVAL_REACH_VERSION.to_le_bytes());
@@ -2834,6 +2890,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&PLAYTEST9_VERSION.to_le_bytes());
@@ -2848,6 +2905,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&PLAYTEST9_PLACEMENT_VERSION.to_le_bytes());
@@ -2861,6 +2919,7 @@ impl World {
         let _old90 = crate::serde_util::before_v90::Guard::new();
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&PLAYTEST10_VERSION.to_le_bytes());
@@ -2873,6 +2932,7 @@ impl World {
     fn snapshot_v90(&self) -> Vec<u8> {
         let _old92 = crate::serde_util::before_v92::Guard::new();
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&PLAYTEST10_PLACEMENT_VERSION.to_le_bytes());
@@ -2885,19 +2945,31 @@ impl World {
     #[cfg(test)]
     fn snapshot_v92(&self) -> Vec<u8> {
         let _old93 = crate::serde_util::before_v93::Guard::new();
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&PLAYTEST11_VERSION.to_le_bytes());
         out
     }
 
-    /// A version 93 snapshot (no playtest 12 pack tunables), as the builds
-    /// before version 95 wrote, to test that they still restore.
+    /// A version 93 snapshot (no playtest 12 balance tunables), as the
+    /// builds before version 94 wrote, to test that they still restore.
     #[cfg(test)]
     fn snapshot_v93(&self) -> Vec<u8> {
+        let _old94 = crate::serde_util::before_v94::Guard::new();
         let _old95 = crate::serde_util::before_v95::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&PLAYTEST11_RAIDS_VERSION.to_le_bytes());
+        out
+    }
+
+    /// A version 94 snapshot (no playtest 12 pack tunables), as the builds
+    /// before version 95 wrote, to test that they still restore.
+    #[cfg(test)]
+    fn snapshot_v94(&self) -> Vec<u8> {
+        let _old95 = crate::serde_util::before_v95::Guard::new();
+        let mut out = self.snapshot();
+        out[8..12].copy_from_slice(&PLAYTEST12_VERSION.to_le_bytes());
         out
     }
 
@@ -2965,6 +3037,7 @@ impl World {
         let _old90 = (h.version < PLAYTEST10_PLACEMENT_VERSION).then(crate::serde_util::before_v90::Guard::new);
         let _old92 = (h.version < PLAYTEST11_VERSION).then(crate::serde_util::before_v92::Guard::new);
         let _old93 = (h.version < PLAYTEST11_RAIDS_VERSION).then(crate::serde_util::before_v93::Guard::new);
+        let _old94 = (h.version < PLAYTEST12_VERSION).then(crate::serde_util::before_v94::Guard::new);
         let _old95 = (h.version < PLAYTEST12_PACKS_VERSION).then(crate::serde_util::before_v95::Guard::new);
         let _old41 = (h.version < GROUP_PLANS_VERSION).then(crate::serde_util::before_v41::Guard::new);
         let body = &bytes[h.len()..];

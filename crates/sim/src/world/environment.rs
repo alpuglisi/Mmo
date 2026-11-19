@@ -135,7 +135,17 @@ impl World {
         }
         let raw = s.total_alleles;
         let prev = self.legacy.last().map_or(0.0, |l| l.world_alleles);
-        let mean = if prev > 0.0 { prev + (raw - prev) / memory.max(1.0) as f64 } else { raw };
+        // With `Balance::share_peak` a recent peak, rising at once and
+        // falling by half over `share_memory` days (playtest 12: the mean
+        // of a young or just-boomed world sat below its size and never
+        // engaged); else the running mean.
+        let mean = if self.config.balance.share_peak > 0.0 {
+            raw.max(prev * 0.5f64.powf(1.0 / memory.max(1.0) as f64))
+        } else if prev > 0.0 {
+            prev + (raw - prev) / memory.max(1.0) as f64
+        } else {
+            raw
+        };
         s.world_alleles = mean;
         if mean > raw {
             let scale = mean / raw;

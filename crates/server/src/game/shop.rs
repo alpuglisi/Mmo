@@ -1312,7 +1312,10 @@ impl Game {
         let counts = self.world.crowding_counts();
         let count = counts.get(&player).copied().unwrap_or(0.0);
         let total: f32 = counts.values().sum();
-        let [litter, hunger] = self.world.crowding_effect_in(count, total);
+        let legacy_share = self.world.latest_legacy().map_or(0.0, |l| l.share(player)) as f32;
+        let [litter, hunger] = self.world.crowding_effect_shared(count, total, legacy_share);
+        let share_cap = Some(self.world.config.balance.share_cap)
+            .filter(|&c| c > 0.0 && count >= evo_sim::world::SHARE_CAP_FLOOR * self.world.config.lineage_cap as f32);
         let soft = self.world.config.lineage_cap as f32;
         let share = self.world.config.balance.world_crowding;
         let world_cap = Some(share * total.max(soft)).filter(|&c| share > 0.0 && c < soft);
@@ -1325,6 +1328,8 @@ impl Game {
             hunger,
             world_cap,
             world_share: share,
+            share_cap,
+            legacy_share,
         })
     }
 }

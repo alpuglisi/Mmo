@@ -2105,6 +2105,15 @@ mod tests {
         assert!((at - 0.5).abs() < 1e-4, "{at}");
         // A small lineage in a small world: the world counts as the soft cap.
         assert!(w.crowding_effect_in(150.0, 150.0)[0] > 0.98);
+        // Playtest 12: past `share_cap` of the legacy a lineage's litters
+        // shrink whatever its numbers (half at the cap); hunger doesn't rise.
+        assert_eq!(w.config.balance.share_cap, 0.25);
+        let [l0, _] = w.crowding_effect_shared(320.0, 10_000.0, 0.1);
+        let [l1, h1] = w.crowding_effect_shared(320.0, 10_000.0, 0.25);
+        let [l2, _] = w.crowding_effect_shared(320.0, 10_000.0, 0.3);
+        // A small lineage (under a fifth of the soft cap) isn't slowed.
+        assert!(w.crowding_effect_shared(100.0, 10_000.0, 0.5)[0] > 0.99);
+        assert!(l0 > 0.99 && (l1 - 0.5).abs() < 1e-4 && l2 < 0.26 && h1 == 1.0, "{l0} {l1} {l2} {h1}");
         let mut off = w.clone();
         off.config.balance.world_crowding = 0.0;
         assert_eq!(off.crowding_effect_in(600.0, 2000.0), off.crowding_effect(600.0));

@@ -633,6 +633,10 @@ pub struct EggCounts {
     pub overheated: u64,
 }
 
+/// The share of the soft cap a lineage's crowding count must reach before
+/// `Balance::share_cap` slows it (`World::crowding_effect_shared`).
+pub const SHARE_CAP_FLOOR: f32 = 0.2;
+
 /// Cumulative event counters.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -1358,6 +1362,17 @@ impl World {
     /// cap, so only a lineage past `world_crowding` of the soft cap (300 of
     /// 1,500) crowds by its share. `total` 0: the soft cap alone.
     pub fn crowding_effect_in(&self, count: f32, total: f32) -> [f32; 2] {
+        self.crowding_effect_shared(count, total, 0.0)
+    }
+
+    /// [`World::crowding_effect_in`] for a lineage whose owner holds
+    /// `share` of the legacy: with `Balance::share_cap` its litters also
+    /// shrink as at the soft cap once that share passes the cap (half size
+    /// at it), whatever its numbers (playtest 12: the leader's share rose
+    /// 16% → 29% through a winter while its head count fell, as its autumn
+    /// young matured and the wild's adults died). Breeding only, and only
+    /// for a lineage past [`SHARE_CAP_FLOOR`] of the soft cap.
+    pub fn crowding_effect_shared(&self, count: f32, total: f32, share: f32) -> [f32; 2] {
         let bal = &self.config.balance;
         if bal.lineage_crowding <= 0.0 {
             return [1.0, 1.0];
@@ -1369,6 +1384,11 @@ impl World {
             // The world's count taken as at least the soft cap: a small
             // lineage in a small world isn't crowded by its share.
             x = x.max(count / (bal.world_crowding * total.max(cap)));
+        }
+        // Only a big lineage (past a fifth of the soft cap): in a small
+        // world two small players hold half the legacy each.
+        if bal.share_cap > 0.0 && share > 0.0 && count >= SHARE_CAP_FLOOR * cap {
+            x = x.max(share / bal.share_cap);
         }
         // With `Balance::share_litters` the share slows breeding only: the
         // world's count falls every winter with the wild, and hunger from
@@ -1416,11 +1436,15 @@ impl World {
         }
         let counts = self.crowding_counts();
         let total: f32 = counts.values().sum();
+        let legacy = self.latest_legacy();
         let crowding: Vec<[f32; 2]> = self
             .lineages
             .iter()
             .map(|l| match counts.get(&l.owner) {
-                Some(&n) if l.owner != crate::WILD => self.crowding_effect_in(n, total),
+                Some(&n) if l.owner != crate::WILD => {
+                    let share = legacy.map_or(0.0, |s| s.share(l.owner)) as f32;
+                    self.crowding_effect_shared(n, total, share)
+                }
                 _ => [1.0, 1.0],
             })
             .collect();
@@ -2490,6 +2514,8 @@ mod tests {
     #[test]
     fn shares_count_against_the_world_as_big_as_it_has_been() {
         let mut w = small_world(3);
+        // The running mean (`share_peak` off); the peak is checked below.
+        w.config.balance.share_peak = 0.0;
         let snap = |total: f64| crate::legacy::LegacySnapshot {
             total_alleles: total,
             weighted_total: total / 2.0,
@@ -2512,6 +2538,20 @@ mod tests {
         let mut grown = snap(2000.0);
         w.smooth_legacy(&mut grown);
         assert_eq!(grown.total_alleles, 2000.0);
+        // Playtest 12: a young or just-boomed world's mean sat below its
+        // size. With `share_peak` the remembered size is a recent peak:
+        // it rises at once and halves over `share_memory` days.
+        w.config.balance.share_peak = 1.0;
+        w.legacy.clear();
+        let mut boom = snap(2000.0);
+        w.smooth_legacy(&mut boom);
+        assert_eq!(boom.world_alleles, 2000.0);
+        w.legacy.push(boom);
+        let mut next = snap(1000.0);
+        w.smooth_legacy(&mut next);
+        let kept = 2000.0 * 0.5f64.powf(1.0 / 120.0);
+        assert!((next.world_alleles - kept).abs() < 1e-9 && (next.total_alleles - kept).abs() < 1e-9);
+        assert!(next.share(1) < 0.126, "{}", next.share(1));
         // Off: today's world.
         w.config.balance.share_memory = 0.0;
         let mut off = snap(500.0);
