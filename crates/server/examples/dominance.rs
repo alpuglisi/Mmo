@@ -284,7 +284,10 @@ fn sleepers() -> FounderDesign {
 /// Herdmaster6's design with estivation 0.35 and sociability 0.9, 40
 /// founders, founded on day 34.
 fn loopherd() -> FounderDesign {
-    herd().with(Gene::Estivation, 0.35).with(Gene::GroupTolerance, 0.9).founders(40)
+    let mut d = herd().with(Gene::Estivation, 0.35).with(Gene::GroupTolerance, 0.9).founders(40);
+    // Its own lineage name (the server refuses another player's).
+    d.name = "Rolling Copies".into();
+    d
 }
 
 /// Rulebender5's "Loophole Fliers" (`docs/playtest-5-logs/Rulebender5.md`):
