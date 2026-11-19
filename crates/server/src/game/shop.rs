@@ -834,7 +834,9 @@ impl Game {
             let scale = evo_sim::mating::wild_gap_scale(&self.world.config.balance, player, o.owner);
             if let Some(s) = spread(&own, &[&*o.genome], relief, scale) {
                 v.compatible = Some(compatible(&s));
-                v.body_plan_fertility = Some(s.mean);
+                // Tenths: exact means over a rival's animal solved its body
+                // plan (playtest 8).
+                v.body_plan_fertility = Some((s.mean * 10.0).round() / 10.0);
             }
         }
     }

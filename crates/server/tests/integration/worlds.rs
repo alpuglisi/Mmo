@@ -235,11 +235,17 @@ async fn assign_keeps_lineages_and_fills_worlds() {
     let dan = register(srv.addr, "dan").await;
     assert_eq!(found(srv.addr, "main", &dan, "Dan's").await.0, StatusCode::CREATED);
     srv.step(1).await;
-    for (q, token) in [("", Some(dan.clone())), ("?name=dan", None)] {
-        let (_, v) = assign(q, token).await;
-        assert_eq!((v["world"].as_str(), v["reason"].as_str()), (Some("main"), Some("lineage")), "{v}");
-        assert_eq!(v["has_account"], true);
-    }
+    let (_, v) = assign("", Some(dan.clone())).await;
+    assert_eq!((v["world"].as_str(), v["reason"].as_str()), (Some("main"), Some("lineage")), "{v}");
+    assert_eq!(v["has_account"], true);
+    // By name the world is the same, but neither the account nor the
+    // lineage is told (playtest 8: account enumeration).
+    let (_, v) = assign("?name=dan", None).await;
+    assert_eq!(
+        (v["world"].as_str(), v["reason"].as_str(), v["has_account"].as_bool()),
+        (Some("main"), Some("fill"), Some(false)),
+        "{v}"
+    );
     // The isle fills too (3 online): every world is full.
     for name in ["eve", "fay", "gus"] {
         let t = register(srv.addr, name).await;
