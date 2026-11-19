@@ -142,9 +142,13 @@ impl World {
         } else {
             0.0
         };
-        let heed = 1.0 - HUNGRY_HEED * bal.hungry_hunters * ((o.needs.hunger - 60.0) / 40.0).clamp(0.0, 1.0);
+        let hunger = ((o.needs.hunger - 60.0) / 40.0).clamp(0.0, 1.0);
+        let heed = 1.0 - HUNGRY_HEED * bal.hungry_hunters * hunger;
         if bal.honest_signals > 0.0 {
-            let avoid = colour.max(self.toxic_avoidance(o.lineage, q)) * heed;
+            // The colour's pull weakens with hunger by `honest_signals` of
+            // the lesson's (at 1, as much).
+            let colour_heed = 1.0 - HUNGRY_HEED * bal.hungry_hunters * bal.honest_signals.min(1.0) * hunger;
+            let avoid = (colour * colour_heed).max(self.toxic_avoidance(o.lineage, q) * heed);
             if bal.avoid_cap > 0.0 {
                 avoid.min(bal.avoid_cap)
             } else {
