@@ -978,6 +978,9 @@ fn big_herd(seed: u64, n: usize) -> World {
 #[test]
 fn a_big_held_herd_eats_what_the_food_check_says() {
     let mut w = big_herd(7, 600);
+    // Calibrated with the share making the herd hungrier too (a big herd in a
+    // small world): `Balance::share_litters` off.
+    w.config.balance.share_litters = 0.0;
     let c = w.group_middle(HERD, 0).unwrap();
     let t = w.claim_territory(HERD, 0, c, 30.0).unwrap();
     // A day in: the herd has felt its crowd.

@@ -846,3 +846,41 @@ fn a_refounding_right_after_an_old_lineage_ends_gets_no_fresh_grace() {
     assert_eq!(w.lineage_grace_ticks(w.organisms[b].lineage), None, "continues the old, run-out grace");
     assert_eq!(w.grace_start_for(HUNTER, w.tick), 5);
 }
+
+/// The preview of a founding now assumes the living lineage ends now, as
+/// retiring it would (playtest 10: a living lineage older than the window
+/// was promised a fresh grace that retiring then didn't give).
+#[test]
+fn the_grace_preview_treats_a_living_lineage_as_ending_now() {
+    let mut w = flat_world(1500.0);
+    w.config.balance.attack_grace = 2.0;
+    let tpd = w.config.ticks_per_day as u64;
+    w.set_grace_carry_min_ticks(10 * tpd);
+    w.tick = 5;
+    place(&mut w, HUNTER, &hunter(), Vec2::new(10.5, 10.5));
+    w.tick += 40 * tpd;
+    assert_eq!(w.grace_start_for(HUNTER, w.tick), 5, "continues, not fresh");
+}
+
+/// A continued grace ends when the founding that started it would have:
+/// a small re-found doesn't stretch a big lineage's grace through winter
+/// (playtest 10: a run-out grace came back at 12 days).
+#[test]
+fn a_continued_grace_never_runs_past_its_original_end() {
+    let mut w = flat_world(1500.0);
+    w.config.balance.attack_grace = 2.0;
+    let tpd = w.config.ticks_per_day as u64;
+    let dpy = w.config.days_per_year as u64;
+    // A big founding whose grace ends in late autumn.
+    w.tick = (3 * dpy / 4 - 2) * tpd;
+    let mut big = hunter();
+    big.founders = crate::world::commands::GRACE_WINTER_FOUNDERS + 10;
+    let a = place(&mut w, HUNTER, &big, Vec2::new(10.5, 10.5));
+    let la = w.organisms[a].lineage;
+    w.lineages[la as usize].founders = big.founders;
+    let start = w.lineage_grace_start(la).unwrap();
+    let original = w.grace_end(la, start);
+    assert_eq!(original, start + w.grace_length());
+    // A small re-found continuing it: the same end.
+    assert_eq!(w.grace_end_for(10, start), original);
+}
