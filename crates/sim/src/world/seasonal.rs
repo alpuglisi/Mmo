@@ -4,7 +4,7 @@
 //! | --- | --- |
 //! | Hibernation / brumation | Fatten in autumn; dormant while the seasonal mean is below `dormancy_temp` in autumn and winter: near-zero hunger and thirst, safe from weather, no breeding, found in its den only by a hunter that comes close. Warm hibernators sleep until spring (rousing early only when parched, or starving with no fat left); brumators wake with the weather. Mismatches: a cold-blooded hibernator may never wake, a warm-blooded brumator burns fat. |
 //! | Migration | Summer range at its founding spot (young inherit their mother's), winter range `migration_range` of the map further south; heads for the best pasture near water on that latitude once its summer pasture has nearly stopped growing in autumn (`migration_onset`; in winter regardless) and back in spring, with a death risk per tile travelled. |
-//! | Estivation | Fatten in spring; dormant while the summer seasonal mean is above `estivation_temp`, or through a summer drought (`Map::dryness_at` past the drought line). |
+//! | Estivation | Fatten in spring; dormant while the summer seasonal mean is above `estivation_temp`, or through a drought (`Map::dryness_at` past the drought line) in summer, and with `Balance::founding_rivals` in spring and autumn too. |
 //! | Food caching | Gathers plant food into a cache in summer and autumn, eats from it in winter and spring. Anyone else can raid it. |
 //! | Torpor | On cold nights while resting: cheaper metabolism, cold costs nothing extra, but still exposed and slow to react until morning. |
 //! | Seasonal coat | Molts into a winter coat over the first days of autumn and back in spring, each full molt costing `molt_cost` hunger points: more insulation in the cold, but the comfort ceiling drops with it, so a late warm spell is hot. A cold-blooded body can't use it: the coat blocks basking like fur, worst in winter. |
@@ -417,6 +417,15 @@ impl World {
             && (temp > bal.estivation_temp || self.map.dryness_at(o.pos) > ESTIVATION_DRYNESS)
         {
             Some(Dormancy::Summer)
+        } else if s.estivation > 0.0
+            && bal.founding_rivals > 0.0
+            && season != Season::Winter
+            && self.map.dryness_at(o.pos) > ESTIVATION_DRYNESS
+        {
+            // A drought in spring or autumn too (`Balance::founding_rivals`):
+            // playtest 7's drought founding with estivation never slept in
+            // an autumn drought, and starved.
+            Some(Dormancy::Summer)
         } else {
             None
         }
@@ -620,7 +629,11 @@ impl World {
             }
             Dormancy::Summer => {
                 let relieved = temp <= bal.estivation_temp - WAKE_MARGIN && dry <= ESTIVATION_DRYNESS - DRYNESS_MARGIN;
-                if season != Season::Summer || relieved || can_rouse(o) {
+                // Out of summer only a drought keeps it asleep
+                // (`Balance::founding_rivals`), and never into winter.
+                let drought_sleep =
+                    bal.founding_rivals > 0.0 && season != Season::Winter && dry > ESTIVATION_DRYNESS - DRYNESS_MARGIN;
+                if (season != Season::Summer && !drought_sleep) || relieved || can_rouse(o) {
                     o.dormancy = Dormancy::Awake;
                 }
             }
@@ -1501,6 +1514,29 @@ mod tests {
         set_wetness(&mut w, 0.8);
         w.step();
         assert!(est.iter().all(|&k| w.organisms[k].dormancy == Dormancy::Awake));
+    }
+
+    /// Playtest 7: a drought founding with estivation never slept through
+    /// an autumn drought, and starved. With `Balance::founding_rivals` an
+    /// estivator sleeps through a drought in spring and autumn too, and
+    /// wakes for winter.
+    #[test]
+    fn estivators_sleep_through_an_autumn_drought() {
+        let mut w = flat_world(5.0, 10.0, 70);
+        w.map.cells.iter_mut().for_each(|c| c.wetness = 0.05);
+        w.map.tiles.iter_mut().for_each(|t| t.wetness = 0.05);
+        let est = add(&mut w, &design(Thermo::Warm).with(Gene::Estivation, 0.9), 4);
+        let asleep = |w: &World| est.iter().filter(|&&k| w.organisms[k].dormancy == Dormancy::Summer).count();
+        let mut old = w.clone();
+        old.config.balance.founding_rivals = 0.0;
+        w.step();
+        old.step();
+        assert_eq!(asleep(&w), 4, "autumn drought: asleep");
+        assert_eq!(asleep(&old), 0, "the old rule: summer only");
+        // Into winter: awake (no estivating through it).
+        set_day(&mut w, 90);
+        w.step();
+        assert_eq!(asleep(&w), 0);
     }
 
     #[test]

@@ -55,6 +55,10 @@ fn homes_hash() -> u64 {
         // watered founders and no winter clutches change the days the world
         // grows first.
         config.balance.founding_drought = 0.0;
+        // Playtest 7 (version 70): rival-aware homes move foundings by
+        // design; estivating through spring and autumn droughts changes
+        // the days the world grows first.
+        config.balance.founding_rivals = 0.0;
         // Playtest 6 balance (version 62): toxin upkeep, hungry hunters,
         // toxin source, speciation credit and clutch cover change how the
         // world grows before the sample players found.

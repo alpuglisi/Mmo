@@ -539,6 +539,12 @@ fn balance62_off(b: &mut crate::Balance) {
 /// The playtest 6 predator tunable as snapshots before version 63 read it.
 fn playtest6_off(b: &mut crate::Balance) {
     b.prey_larder = crate::serde_util::before_v63::OLD_VALUE;
+    founding_rivals_off(b);
+}
+
+/// The playtest 7 founding tunable as snapshots before version 70 read it.
+fn founding_rivals_off(b: &mut crate::Balance) {
+    b.founding_rivals = crate::serde_util::before_v70::OLD_VALUE;
 }
 
 /// Version 61 snapshots (before the playtest 6 balance rules) restore with
@@ -1902,6 +1908,7 @@ fn version_63_snapshots_restore_without_held_plans() {
     assert_eq!(r.group_plans.held, Default::default());
     assert!(r.snapshot_v63() == old);
     w.group_plans.held = Default::default();
+    founding_rivals_off(&mut w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     // This version keeps them.
     let mut w = fixture_world();
@@ -1909,4 +1916,24 @@ fn version_63_snapshots_restore_without_held_plans() {
     w.group_plans.held.loosened.insert(key);
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.group_plans.held, w.group_plans.held);
+}
+
+/// Version 66 snapshots (before the playtest 7 founding rules) restore
+/// with that tunable off, and are otherwise the same world.
+#[test]
+fn version_66_snapshots_restore_without_founding_rivals() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v66();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 66);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.founding_rivals, crate::serde_util::before_v70::OLD_VALUE);
+    assert!(r.snapshot_v66() == old);
+    founding_rivals_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.founding_rivals, 1.0);
 }

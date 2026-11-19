@@ -1313,6 +1313,16 @@ pub struct Balance {
     /// the cap). 0: the band rule.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v63"))]
     pub prey_larder: f32,
+    /// Playtest 7 founding (version 70; *Playtest 7: rivals
+    /// and drought sleepers* in the README; off at 0, what snapshots before
+    /// version 70 read, `serde_util::before_v70`). A player's founding
+    /// keeps out of other players' territories and away from their animals
+    /// (playtest 7: a late joiner landed inside a rival's territory with
+    /// four rivals within 35 tiles), and an estivator sleeps through a
+    /// drought in spring and autumn too, not only in summer (playtest 7: a
+    /// drought founding with estivation never slept and starved).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v70"))]
+    pub founding_rivals: f32,
 }
 
 impl Balance {
@@ -1611,12 +1621,13 @@ impl Default for Balance {
             speciation_credit: 1.0,
             clutch_cover: 2.1,
             prey_larder: 1.0,
+            founding_rivals: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 168;
+    pub const FIELD_COUNT: usize = 169;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1794,6 +1805,7 @@ impl Balance {
             ("speciation_credit", &mut self.speciation_credit),
             ("clutch_cover", &mut self.clutch_cover),
             ("prey_larder", &mut self.prey_larder),
+            ("founding_rivals", &mut self.founding_rivals),
         ]
     }
 
