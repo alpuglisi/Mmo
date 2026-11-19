@@ -22,6 +22,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { capFrameRate, pixelRatio } from './frames.mjs';
 import { runScenario } from './android/scenario.mjs';
+import { stamp } from './names.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -127,7 +128,7 @@ async function main() {
         await pwCdp.send('Page.setWebLifecycleState', { state: 'active' });
       },
     };
-    const report = await runScenario(device, { outDir, backgroundSeconds: BG_SECONDS, name: `emu_desk_${Date.now().toString(36)}` });
+    const report = await runScenario(device, { outDir, backgroundSeconds: BG_SECONDS, name: `emu_desk_${stamp()}` });
     // The dropped socket can only come back through a new one.
     if (report.afterResume.reconnects < 1) throw new Error(`expected a reconnect after the dead socket, got ${report.afterResume.reconnects}`);
     console.log('Android scenario on desktop Chromium passed');

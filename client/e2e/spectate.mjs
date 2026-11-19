@@ -22,6 +22,7 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cappedBrowser } from './frames.mjs';
+import { stamp } from './names.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -92,7 +93,7 @@ async function main() {
       if (i > 100) throw new Error('server did not start');
       await new Promise((r) => setTimeout(r, 100));
     }
-    const name = `spec_${Date.now().toString(36)}`;
+    const name = `spec_${stamp()}`;
     const auth = await api(base, 'POST', '/api/register', { name, password: 'a long password' });
     const design = { name: 'Watched striders', thermo: 'warm', birth: 'live', litter_size: 2, founders: 20, traits: { body_size: 0.4, fur: 0.5, coloration: 0.8 } };
     const { lineage } = await api(base, 'POST', '/api/lineage', design, auth.token);

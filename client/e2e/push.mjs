@@ -26,6 +26,7 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cappedBrowser } from './frames.mjs';
+import { stamp } from './names.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -185,7 +186,7 @@ async function main() {
     }
     const page = await context.newPage();
     page.on('pageerror', (e) => errors.push(e.message));
-    const name = `push_${Date.now().toString(36)}`;
+    const name = `push_${stamp()}`;
     await register(page, base, name);
     const token = await page.evaluate(() => JSON.parse(localStorage.getItem('evo.session')).token);
     await waitFor('the service worker', () => page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => !!r?.active)), 30000);

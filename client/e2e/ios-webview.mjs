@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { runScenario } from './android/scenario.mjs';
 import { WebDriver, WebViewSession } from './ios/webdriver.mjs';
+import { stamp } from './names.mjs';
 
 const run = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -155,7 +156,7 @@ try {
   console.log('    starting the Appium session (builds WebDriverAgent the first time)');
   await driver.createSession(caps);
   console.log(`    session ${driver.sessionId} in ${Math.round((Date.now() - started) / 1000)} s`);
-  const report = await runScenario(device, { outDir, backgroundSeconds: BG_SECONDS, name: `ios_${Date.now().toString(36)}` });
+  const report = await runScenario(device, { outDir, backgroundSeconds: BG_SECONDS, name: `ios_${stamp()}` });
   console.log(`iOS WebView smoke passed (${report.steps.length} steps; report in ${path.join(outDir, 'report.json')})`);
 } catch (e) {
   console.error(`iOS WebView smoke FAILED: ${e.message}`);

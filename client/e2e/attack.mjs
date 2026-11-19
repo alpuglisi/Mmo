@@ -23,6 +23,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stamp } from './names.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -203,7 +204,7 @@ async function main() {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     const page = await context.newPage();
     page.on('pageerror', (e) => errors.push(e.message));
-    const lineage = await register(page, base, `hunter_${Date.now().toString(36)}`, 0.9);
+    const lineage = await register(page, base, `hunter_${stamp()}`, 0.9);
     step(`founded lineage #${lineage}`);
 
     // Possess one, and attack mode from the possession bar.
@@ -374,7 +375,7 @@ async function main() {
     const bobContext = await browser.newContext({ viewport: { width: 1000, height: 700 } });
     const bob = await bobContext.newPage();
     bob.on('pageerror', (e) => errors.push(e.message));
-    await register(bob, base, `newcomer_${Date.now().toString(36)}`);
+    await register(bob, base, `newcomer_${stamp()}`);
     const bobs = await bob.evaluate(() => window.evo.model.state.organisms.map((o) => o.id));
     let r = await send(page, { type: 'possess_attack', organism: p2.id, target: bobs[0] });
     if (['not_found', 'not_possessed'].includes(r.error?.code)) {

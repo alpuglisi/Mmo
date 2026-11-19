@@ -22,6 +22,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stamp } from './names.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -128,7 +129,7 @@ async function main() {
     const page = await context.newPage();
     page.on('pageerror', (e) => errors.push(e.message));
     await page.goto(`${base}/?tour=off`);
-    const login = `refound_${Date.now().toString(36)}`;
+    const login = `refound_${stamp()}`;
     await page.fill('#login-name', login);
     await page.fill('#login-password', 'a long password');
     await page.click('#register-submit');
