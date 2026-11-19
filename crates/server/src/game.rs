@@ -2054,6 +2054,22 @@ impl Game {
         }
     }
 
+    /// Pinned views follow what the player can still see, every tick: one
+    /// whose centre no living animal of theirs (nor their largest group)
+    /// sees any more is dropped, one they see less of narrows (playtest 9:
+    /// a view pinned where the animals had been kept watching after they
+    /// left or died, one camera per connection).
+    fn recheck_views(&mut self) {
+        let pinned: Vec<(u64, PlayerId, ViewWindow)> =
+            (self.conns.iter()).filter_map(|(&id, c)| c.view.map(|v| (id, c.player, v))).collect();
+        for (id, player, v) in pinned {
+            let reach = self.view_reach(player, Vec2::new(v.x, v.y));
+            if let Some(c) = self.conns.get_mut(&id) {
+                c.view = (reach >= 1.0).then(|| ViewWindow { radius: v.radius.min(reach), ..v });
+            }
+        }
+    }
+
     pub fn retire(&mut self, player: PlayerId, lineage: u32) -> Result<usize, ErrorInfo> {
         self.retire_sparing(player, lineage, &mut Outbox::new()).map(|r| r.0)
     }
@@ -4680,6 +4696,7 @@ impl Game {
     /// have met, expire offers at a season change, record a new legacy day.
     pub fn after_tick(&mut self) -> Outbox {
         let mut out = std::mem::take(&mut self.pending_out);
+        self.recheck_views();
         let open: Vec<u64> = self.offers.values().filter(|o| o.status.is_open()).map(|o| o.id).collect();
         let tick = self.world.tick();
         for id in open {
@@ -5303,9 +5320,10 @@ impl Game {
         self.world.owner_count(player) + cohorts
     }
 
-    /// Where a player's lineage lives: the mean position of its agents, or,
-    /// with none (all of it abstract), of its cohorts by region; the map's
-    /// center for a player with neither.
+    /// Where a player's lineage lives: the centre of its largest group of
+    /// agents ([`Game::lineage_center_of`]), or, with none (all of it
+    /// abstract), the mean of its cohorts by region; the map's center for a
+    /// player with neither.
     /// Whether `player` may look at point `p`: within the largest view
     /// radius of one of their living organisms, or of their lineage's center
     /// (the default view, which also finds a lineage living as cohorts).
@@ -5388,12 +5406,30 @@ impl Game {
     }
 
     /// [`Game::lineage_center`] given the player's living organisms (indices
-    /// in organism order).
+    /// in organism order): the centre of their largest group, the mean of
+    /// those in the 3×3 block of 16-tile cells holding the most of them (the
+    /// mean of all could fall between two groups, where none of them sees:
+    /// playtest 9).
     fn lineage_center_of(&self, player: PlayerId, own: &[u32]) -> Vec2 {
+        const CELL: f32 = 16.0;
+        let cell = |p: Vec2| ((p.x / CELL).floor() as i64, (p.y / CELL).floor() as i64);
+        let mut cells: BTreeMap<(i64, i64), u32> = BTreeMap::new();
+        for &i in own {
+            *cells.entry(cell(self.world.organisms[i as usize].pos)).or_default() += 1;
+        }
+        let around = |(cx, cy): (i64, i64)| (-1..=1).flat_map(move |dy| (-1..=1).map(move |dx| (cx + dx, cy + dy)));
+        let best = (cells.keys())
+            .map(|&k| (around(k).map(|n| cells.get(&n).copied().unwrap_or(0)).sum::<u32>(), k))
+            .max_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)))
+            .map(|(_, k)| k);
         let (mut sum, mut n) = (Vec2::ZERO, 0.0f32);
         for &i in own {
-            sum += self.world.organisms[i as usize].pos;
-            n += 1.0;
+            let p = self.world.organisms[i as usize].pos;
+            let (cx, cy) = cell(p);
+            if best.is_some_and(|(bx, by)| (cx - bx).abs() <= 1 && (cy - by).abs() <= 1) {
+                sum += p;
+                n += 1.0;
+            }
         }
         if n == 0.0 {
             let m = &self.world.map;
@@ -12150,6 +12186,37 @@ mod tests {
         g.conns.get_mut(&10).unwrap().view = Some(ViewWindow { x: p.x, y: p.y, radius: 8.0, pinned: true });
         g.found_at_any_price(1, &design("Third")).unwrap();
         assert!(!g.state_for(10).unwrap().view.pinned, "found unpins");
+    }
+
+    /// Playtest 9: a pinned view follows sight every tick (dropped once the
+    /// animals have left), and the default view centres on the largest group,
+    /// not the mean of two groups far apart.
+    #[test]
+    fn a_pinned_view_is_dropped_once_the_animals_leave() {
+        let (mut g, a, _) = game();
+        let p = g.world.organism(a[0]).unwrap().pos;
+        let pin = g.command(10, 1, Some(1), ClientMsg::SetView { x: p.x, y: p.y, radius: 8.0 });
+        assert!(result(&pin).0, "{pin:?}");
+        let _ = g.after_tick();
+        assert!(g.state_for(10).unwrap().view.pinned, "still in sight");
+        let (w, h) = (g.world.map.width as f32, g.world.map.height as f32);
+        // Far from the pin: the opposite corner.
+        let far = Vec2::new(if p.x < w / 2.0 { w - 3.0 } else { 3.0 }, if p.y < h / 2.0 { h - 3.0 } else { 3.0 });
+        let near = Vec2::new(if far.x < w / 2.0 { w - 3.0 } else { 3.0 }, far.y);
+        let mine: Vec<usize> = (0..g.world.organisms.len())
+            .filter(|&i| g.world.organisms[i].alive && g.world.organisms[i].owner == 1)
+            .collect();
+        assert!(mine.len() >= 4);
+        for (k, &i) in mine.iter().enumerate() {
+            // Two groups: a few at `near`, the most at `far`.
+            g.world.organisms[i].pos = if k < 2 { near } else { far };
+        }
+        let center = g.lineage_center(1);
+        assert!((center - far).len() < 2.0, "the largest group's centre, not the mean: {center:?}");
+        let _ = g.after_tick();
+        let view = g.state_for(10).unwrap().view;
+        assert!(!view.pinned, "dropped once out of sight: {view:?}");
+        assert!((Vec2::new(view.x, view.y) - far).len() < 2.0, "back on the largest group: {view:?}");
     }
 
     /// Info leaks: the map image shows a player only what they may see,
