@@ -848,6 +848,8 @@ export interface FoundResponse {
   grace?: string;
   /** The drought provision, when it applied (founders start watered); also sent as an alert. */
   watered?: string;
+  /** Where the founders landed and how far the nearest rival's animals and territory are; also sent as an alert. */
+  landing?: string;
 }
 
 export interface GeneInfo {

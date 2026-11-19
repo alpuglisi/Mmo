@@ -507,6 +507,10 @@ pub struct FoundResponse {
     /// lose water more slowly for their first days.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watered: Option<String>,
+    /// Where the founders landed and how far the nearest rival's animals
+    /// and territory are; also sent as an alert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landing: Option<String>,
 }
 
 async fn found_lineage(
@@ -549,6 +553,7 @@ async fn found_lineage(
             refound_fee: ok.refound_fee,
             grace: ok.grace,
             watered: ok.watered,
+            landing: ok.landing,
         }),
     ))
 }
