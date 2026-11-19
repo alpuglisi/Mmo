@@ -557,6 +557,8 @@ impl Game {
             | ClientMsg::Compatibility
             | ClientMsg::Provision
             | ClientMsg::Survey
+            | ClientMsg::NameAnimal { .. }
+            | ClientMsg::AnimalNames
             | ClientMsg::SetNameplate { .. }
             | ClientMsg::NameSpecies { .. }
             | ClientMsg::Nameplates

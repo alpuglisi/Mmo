@@ -274,6 +274,11 @@ pub enum ClientMsg {
     /// share fertile), the drift risk, and the body-plan gene that keeps
     /// you apart. Data: [`CompatibilityView`].
     Compatibility,
+    /// Name one of your living animals (cosmetic, 50 renown each time):
+    /// shown on its listings and by `animal_names`. Data: `{name, shop}`.
+    NameAnimal { organism: OrgId, name: String },
+    /// The names of your living animals. Data: `{names: {id: name}}`.
+    AnimalNames,
     /// A survey: rivals' groups and territories within 64 tiles of your
     /// main group, in 8-tile cells, now (30 renown plus 1 per 10 of your
     /// animals alive). Data: [`SurveyView`].
@@ -391,6 +396,8 @@ impl ClientMsg {
             ClientMsg::Provision => "provision",
             ClientMsg::SubstituteMating { .. } => "substitute_mating",
             ClientMsg::Survey => "survey",
+            ClientMsg::NameAnimal { .. } => "name_animal",
+            ClientMsg::AnimalNames => "animal_names",
             ClientMsg::SetNameplate { .. } => "set_nameplate",
             ClientMsg::NameSpecies { .. } => "name_species",
             ClientMsg::Nameplates => "nameplates",
@@ -444,6 +451,8 @@ pub const COMMAND_NAMES: &[&str] = &[
     "provision",
     "substitute_mating",
     "survey",
+    "name_animal",
+    "animal_names",
     "end_grace",
 ];
 
@@ -1911,6 +1920,9 @@ pub struct ShopView {
     /// The price of a survey now.
     #[serde(default)]
     pub survey_price: u64,
+    /// The price of naming one of your animals.
+    #[serde(default)]
+    pub animal_name_price: u64,
     #[serde(default)]
     pub provisions_bought: u32,
     #[serde(default)]
@@ -2202,6 +2214,13 @@ pub struct ListingView {
     pub owner: PlayerId,
     pub owner_name: String,
     pub organism: OrgId,
+    /// The name its owner gave it (`name_animal`), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animal_name: Option<String>,
+    /// Past 90% of its lifespan: it may die of old age before a buyer
+    /// meets it (playtest 7: listings outlived old animals unwarned).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub aging: bool,
     /// `stud` (male) or `dam` (female).
     pub role: String,
     pub sex: String,
