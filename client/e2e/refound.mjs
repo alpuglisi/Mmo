@@ -95,6 +95,7 @@ async function found(page) {
   });
   if (which === 'reduced') {
     step(`re-founding notice: "${(await page.textContent('#founded-reduced')).replace(/\s+/g, ' ').slice(0, 90)}…"`);
+    check(!(await page.$('#founded-reduced-cancel')), 'the notice after founding has one OK button, no Cancel');
     await page.click('#founded-reduced-ok');
   }
   await page.waitForSelector('#world-canvas', { timeout: UI_MS });

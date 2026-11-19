@@ -113,7 +113,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   founders.addEventListener('input', () => { spec.founders = Number(founders.value); update(); });
   const graceHint = h('p', { class: 'muted small', id: 'design-grace-winter' });
   const showGraceHint = (): void => {
-    graceHint.textContent = graceWinterText(spec.founders);
+    graceHint.textContent = graceWinterText(spec.founders, !!refoundNow);
   };
 
   // --- traits
@@ -311,6 +311,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   const serverError = h('p', { class: 'error', id: 'design-server-error', role: 'alert' });
   const submit = h('button', { id: 'design-submit', type: 'button' }, 'Found lineage');
   const nameWarnEl = h('p', { class: 'error small', id: 'design-name-warning', role: 'alert', hidden: true });
+  const refoundNowEl = h('p', { class: 'small food-hint food-warn', id: 'design-refound-now', hidden: true });
   // Phones: the budget card sits below ~45 sliders, so a bar along the bottom
   // keeps the total in sight and jumps to it (and the Found button).
   const dockTotal = h('span', { class: 'dock-total', id: 'design-dock-total' });
@@ -373,17 +374,36 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     hybridKey = key;
     const level = extra.some((r) => r.fertility >= 0.5) ? 'warn' : a.level;
     hybridBox.className = `card hybrid-card hybrid-${level}`;
-    const points = [...a.points];
+    // The estimate's all-clear doesn't stand when the server measured a fertile lineage.
+    const clear = a.level === 'ok' && extra.length === 0;
+    const points = a.level === 'ok' && !clear ? [] : [...a.points];
+    const headline = a.level === 'ok' && !clear
+      ? `Measured: fertile with ${extra.length === 1 ? extra[0].lineage_name : `${extra.length} lineages`}`
+      : a.headline;
     if (extra.length) points.push(`Also fertile with these founders, measured: ${extra.map((r) => `${r.lineage_name} (${r.wild ? 'wild' : r.owner_name}, ${Math.round(r.fertility * 100)}% fertile)`).join(', ')}.`);
     hybridBox.replaceChildren(
       h('h2', {}, 'Interbreeding'),
-      h('p', { class: 'hybrid-headline' }, level === 'warn' ? '⚠ ' : '', a.headline),
+      h('p', { class: 'hybrid-headline' }, level === 'warn' ? '⚠ ' : '', headline),
       h('ul', { class: 'small hybrid-points' }, ...points.map((t) => h('li', {}, t))),
-      h('p', { class: 'small muted hybrid-market', id: 'design-hybrid-market' }, a.market),
+      h('p', { class: 'small muted hybrid-market', id: 'design-hybrid-market' }, measured ? measuredMarket(measured) : a.market),
       h('p', { class: 'small muted hybrid-confidence', id: 'design-hybrid-confidence' },
         measured
           ? `Figures marked "measured" come from the server pairing ${measured.sample} sampled animals with these founders on day ${measured.day + 1}; they are the ones that count.`
           : a.confidence));
+  }
+
+  /**
+   * Who this design could breed with through the market, from the server's
+   * sample once it has one: one source of truth with the figures above
+   * (playtest 7: a rival listed "100% fertile", then "no other player's
+   * species is within breeding range").
+   */
+  function measuredMarket(v: DesignCompatView): string {
+    const rivals = [...new Map(v.rows.filter((r) => !r.wild && r.owner !== cb.player && r.fertility >= 0.05)
+      .sort((a, b) => b.fertility - a.fertility).map((r) => [r.owner, r] as const)).values()];
+    return rivals.length
+      ? `Directed matings and the market: measured, you could breed with ${rivals.slice(0, 5).map((r) => `${r.owner_name} (${r.lineage_name}, ${Math.round(r.fertility * 100)}% fertile)`).join(', ')}${rivals.length > 5 ? ` and ${rivals.length - 5} more` : ''}; other players' studs would be sterile with yours.`
+      : 'Directed matings and the market: measured, no other player\'s lineage would be fertile with these founders; their studs would be sterile with yours.';
   }
 
   let waterTimer: ReturnType<typeof setTimeout> | undefined;
@@ -408,38 +428,24 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       if (warnName !== null && seq === waterSeq) r = await api.designCompatibility(cb.token, { ...p, name: 'Unnamed design' }).catch(() => null);
       if (seq !== waterSeq) return;
       const raw = warnName ?? (typed ? r?.name_warning ?? null : null);
-      const nw = raw === null ? null : serverText(raw);
-      if (nw !== nameWarning) {
-        nameWarning = nw;
-        nameWarned = typed;
-        update();
-      }
+      // Per name, not per text: two refused names with the same reason both show it.
+      nameWarning = raw === null ? null : serverText(raw);
+      nameWarned = typed;
       if (r) {
-        serverCompat = { design: JSON.stringify({ ...p, name: '' }), view: r };
+        const key = JSON.stringify({ ...p, name: '' });
+        serverCompat = { design: key, view: r };
         hybridKey = '';
-        renderHybrid();
+        serverEggs = r.egg_warning ? { design: key, text: serverText(r.egg_warning) } : null;
+        serverCarnEggs = r.carnivore_egg_warning ? serverText(r.carnivore_egg_warning) : null;
+        refoundNow = r.refound ? { design: key, terms: r.refound } : null;
       }
-      // Balance's warning for a design whose eggs can't hatch, verbatim (it replaces the client's own).
-      const eggText = r?.egg_warning ?? null;
-      if (r && (eggText === null ? null : serverText(eggText)) !== (serverEggs?.text ?? null)) {
-        serverEggs = eggText ? { design: JSON.stringify({ ...p, name: '' }), text: serverText(eggText) } : null;
-        update();
-      } else if (r && serverEggs) {
-        serverEggs.design = JSON.stringify({ ...p, name: '' });
-      }
-      // Incubated eggs on a hunter (balance's carnivore_egg_warning), verbatim.
-      const carn = r?.carnivore_egg_warning ? serverText(r.carnivore_egg_warning) : null;
-      if (r && carn !== serverCarnEggs) {
-        serverCarnEggs = carn;
-        update();
-      }
+      // Every answer redraws the warnings, the budget and the card at once
+      // (drought and water advice never redrew; warnings lagged one check).
+      update(true, false);
       const warning = r?.water_warning;
       waterBox.hidden = !warning;
       if (warning) waterBox.replaceChildren(h('h2', {}, 'Drinking water'), h('p', { class: 'hybrid-headline' }, '⚠ ', serverText(warning)));
       const rf = r?.refound;
-      const before = JSON.stringify(refoundNow?.terms ?? null);
-      refoundNow = r && rf ? { design: JSON.stringify({ ...p, name: '' }), terms: rf } : null;
-      if (JSON.stringify(rf ?? null) !== before) update();
       refoundBox.hidden = !rf;
       if (rf) {
         refoundBox.replaceChildren(h('h2', {}, 'Re-founding soon'),
@@ -458,7 +464,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   }
 
   /** Redraw from the design; `full` (default) also recomputes costs, captions and validation. */
-  function update(full = true): void {
+  /** `ask`: also ask the server about the design again (not when redrawing for its answer). */
+  function update(full = true, ask = true): void {
     showGraceHint();
     avatar.update(spec, spec.morphology);
     readout.update(spec.morphology);
@@ -472,24 +479,27 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     // (`refound.cost`), so the budget shows that figure, not the full design's
     // (playtest 5: "Budget 70.2" next to "costing 56.2").
     const rf = refoundNow && refoundNow.design === JSON.stringify({ ...payload(), name: '' }) ? refoundNow.terms : null;
-    const shown = rf ? rf.cost : c.total;
-    const now = !rf ? '' : rf.founders < rf.requested
-      ? ` · re-founding: ${rf.founders} of ${rf.requested} founders`
-      : ' · re-founding price';
-    total.textContent = `${shown.toFixed(1)} / ${cat.budget} points${now}`;
-    dockTotal.textContent = `${shown.toFixed(1)} / ${cat.budget} points${now} · founding with points left is fine`;
-    const frac = shown / cat.budget;
+    // The budget is the full design against the cap (what the server
+    // checks); a re-founding's price and the founders that land are told
+    // apart, under it (playtest 7: "54.5 points unspent" and "40 founders"
+    // when 20 land).
+    total.textContent = `${c.total.toFixed(1)} / ${cat.budget} points`;
+    dockTotal.textContent = `${c.total.toFixed(1)} / ${cat.budget} points${rf ? ` · ${rf.founders} of ${rf.requested} founders land now` : ''} · founding with points left is fine`;
+    refoundNowEl.hidden = !rf;
+    refoundNowEl.textContent = rf
+      ? `Re-founding now: ${rf.founders < rf.requested ? `${rf.founders} of your ${rf.requested} founders land` : `all ${rf.founders} founders land`}, at the re-founding price of ${rf.cost.toFixed(1)} points${rf.fee ? ` and ${rf.fee} renown` : ''}.`
+      : '';
+    const frac = c.total / cat.budget;
     bar.style.width = `${Math.min(100, frac * 100)}%`;
     bar.classList.toggle('over', frac > 1 + 1e-5);
     const extras = [
       c.morph > 0 ? `body plan ${c.morph.toFixed(1)}` : '',
       ...bodyParts(c.body),
     ].filter(Boolean);
-    const refoundPart = rf && Math.abs(rf.cost - c.total) >= 0.05 ? [`re-founding ${rf.cost > c.total ? '+' : '−'}${Math.abs(rf.cost - c.total).toFixed(1)}`] : [];
-    breakdown.textContent = [`traits ${c.traits.toFixed(1)}`, `offspring ${c.litter.toFixed(1)}`, `extra founders ${c.founders.toFixed(1)}`, ...extras, ...refoundPart].join(' · ');
+    breakdown.textContent = [`traits ${c.traits.toFixed(1)}`, `offspring ${c.litter.toFixed(1)}`, `extra founders ${c.founders.toFixed(1)}`, ...extras].join(' · ');
     // Most of the budget unspent (the starting design): say so before the player founds a bare-minimum animal.
-    // The same figure as the total above (playtest 6: "78.3 / 100" next to "35.7 points left").
-    const left = cat.budget - shown;
+    // The same figure as the total above.
+    const left = cat.budget - c.total;
     unspent.textContent = left > cat.budget / 2
       ? `${left.toFixed(1)} points still unspent. ${(spec.traits.carnivory ?? 0) < 0.34
         ? 'A plant eater like the starting design needs little: raise the traits that suit the world, or try a preset in Builder mode.'
@@ -497,8 +507,9 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       : left > 0.05 ? `${left.toFixed(1)} points left to spend.` : left >= -1e-3 ? 'Every point spent.' : '';
     // (Wings a heavy body can't use: one warning, in #design-warnings.)
     renderHybrid();
-    checkWater();
-    const food = foundingHint(payload(), world);
+    if (ask) checkWater();
+    // The founders that land (fewer on a quick re-founding) are the ones the land must feed.
+    const food = foundingHint(rf ? { ...payload(), founders: rf.founders } : payload(), world);
     foodBox.textContent = food.text;
     foodBox.className = `small food-hint food-${food.level}`;
     const warns = designWarnings(payload(), world, serverCompat?.view.drought_warning).filter((w) => !(w.id === 'eggs' && serverEggs));
@@ -600,7 +611,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
         h('section', { class: 'card' }, h('h2', {}, 'Behavior, diet and mate preferences'), h('p', { class: 'muted small' }, 'Free: these are trade-offs.'),
           h('div', { class: 'traits' }, ...free.map(traitRow)))),
       h('aside', { class: 'design-side' }, avatar.el,
-        (budgetCard.append(h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, unspent, foodBox, warnBox, rampNote, problem, needName, serverError,
+        (budgetCard.append(h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, refoundNowEl, unspent, foodBox, warnBox, rampNote, problem, needName, serverError,
           raisedNote, h('div', { class: 'row wrap' }, submit, reset, blank)), budgetCard),
         hybridBox,
         waterBox, refoundBox),
@@ -628,8 +639,11 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
 export const GRACE_WINTER_FOUNDERS = 40;
 
 /** The designer's line on the first-winter grace rule for `founders`. */
-export function graceWinterText(founders: number): string {
-  const rule = `Newcomer grace: a founding of ${GRACE_WINTER_FOUNDERS} or fewer founders whose grace would end in late autumn or winter keeps it until that winter ends.`;
+export function graceWinterText(founders: number, refound = false): string {
+  // Through the spring after that winter (`World::grace_end` with the founding drought on, the default).
+  const rule = `Newcomer grace: a founding of ${GRACE_WINTER_FOUNDERS} or fewer founders whose grace would end in late autumn or winter keeps it through that winter and the spring after it.`;
+  // Founding again soon after continues the last lineage's grace instead of starting one.
+  if (refound) return `Newcomer grace: founding again soon after your last lineage carries on what was left of its grace; a new grace (and its first-winter extension for ${GRACE_WINTER_FOUNDERS} or fewer founders) starts only once the re-founding window has passed.`;
   return founders <= GRACE_WINTER_FOUNDERS
     ? `${rule} These ${founders} qualify.`
     : `${rule} ${founders} founders don't: their grace ends on time even at winter's start.`;

@@ -1863,6 +1863,7 @@ impl Game {
         self.lineage_of.insert(player, lineage);
         self.founded.insert(lineage, self.founding_sample(&founders));
         self.founded_day.insert(player, self.world.day());
+        self.unpin_views(player);
         self.joined.push(player);
         for &id in &founders {
             self.watched.insert(id, (player, Watch::Founder));
@@ -1897,6 +1898,15 @@ impl Game {
     /// ledger, records and the old lineage's history stay. Marketplace
     /// offers and listings of the removed animals close on the next tick as
     /// for any animal gone. The number removed.
+    /// Drops `player`'s pinned views (every connection): a view pinned
+    /// over a lineage that was retired or replaced stayed pinned at a spot
+    /// the server would now refuse (playtest 7).
+    fn unpin_views(&mut self, player: PlayerId) {
+        for c in self.conns.values_mut().filter(|c| c.player == player) {
+            c.view = None;
+        }
+    }
+
     pub fn retire(&mut self, player: PlayerId, lineage: u32) -> Result<usize, ErrorInfo> {
         self.retire_sparing(player, lineage, &mut Outbox::new()).map(|r| r.0)
     }
@@ -1934,6 +1944,7 @@ impl Game {
         let (n, moved) = self.world.retire_player_sparing(player, &homes, RETIRE_TRANSFER_SHARE);
         self.economy.retired_day.insert(player, self.world.day());
         self.economy.died_out.remove(&player);
+        self.unpin_views(player);
         for (&p, &b) in &before {
             let got = self.world.owner_count(p).saturating_sub(b);
             if got > 0 {
@@ -5336,9 +5347,20 @@ impl Game {
         let max = evo_sim::world::commands::GRACE_WINTER_FOUNDERS;
         let founders = w.lineages.get(lineage as usize).map_or(0, |l| l.founders);
         let winter = if w.grace_end(lineage, start) > start + w.grace_length() {
-            format!(" It lasts through your first winter: a founding of {max} or fewer whose grace would end in late autumn or winter keeps it until that winter ends.")
+            // Through the spring after it too while `Balance::founding_drought` is on (`World::grace_end`).
+            let until = if w.config.balance.founding_drought > 0.0 {
+                "through the spring after it"
+            } else {
+                "until that winter ends"
+            };
+            format!(" It lasts through your first winter: a founding of {max} or fewer whose grace would end in late autumn or winter keeps it {until}.")
         } else if founders <= max {
-            format!(" (A founding of {max} or fewer whose grace would end in late autumn or winter keeps it until that winter ends; this one ends before then.)")
+            let until = if w.config.balance.founding_drought > 0.0 {
+                "through the spring after it"
+            } else {
+                "until that winter ends"
+            };
+            format!(" (A founding of {max} or fewer whose grace would end in late autumn or winter keeps it {until}; this one ends before then.)")
         } else {
             format!(" (Only a founding of {max} or fewer keeps its grace through its first winter; this one has {founders}.)")
         };
@@ -10947,6 +10969,29 @@ mod tests {
         let own = male(&g, &a);
         let out = g.command(10, 1, Some(9), ClientMsg::RequestMating { mine: own, partner: dam, price: None });
         assert_eq!(code(&out), Some("not_mature".into()), "own pair");
+    }
+
+    /// A pinned view ends with the lineage: retiring (and re-founding)
+    /// unpins it, as the old spot may now be refused (playtest 7).
+    #[test]
+    fn retire_and_refound_unpin_the_view() {
+        let (mut g, a, _) = game();
+        let p = g.world.organism(a[0]).unwrap().pos;
+        let pin = g.command(10, 1, Some(1), ClientMsg::SetView { x: p.x, y: p.y, radius: 8.0 });
+        assert!(result(&pin).0, "{pin:?}");
+        assert!(g.state_for(10).unwrap().view.pinned);
+        let l = g.lineage_of(1).unwrap();
+        g.retire(1, l).unwrap();
+        assert!(!g.state_for(10).unwrap().view.pinned, "retire unpins");
+        g.found_at_any_price(1, &design("Again")).unwrap();
+        let p = g.world.organisms.iter().find(|o| o.alive && o.owner == 1).unwrap().pos;
+        // With no lineage there is nowhere to pin; a founding unpins anyway
+        // (an extinct lineage's pin is dropped with its replacement).
+        g.conns.get_mut(&10).unwrap().view = Some(ViewWindow { x: p.x, y: p.y, radius: 8.0, pinned: true });
+        g.retire(1, g.lineage_of(1).unwrap()).unwrap();
+        g.conns.get_mut(&10).unwrap().view = Some(ViewWindow { x: p.x, y: p.y, radius: 8.0, pinned: true });
+        g.found_at_any_price(1, &design("Third")).unwrap();
+        assert!(!g.state_for(10).unwrap().view.pinned, "found unpins");
     }
 
     /// Info leaks: the map image shows a player only what they may see,

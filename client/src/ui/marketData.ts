@@ -118,7 +118,14 @@ export function buyProblem(l: ListingView, me: PlayerId, balance: number, slotsL
 /** How a body-plan gene reads in a compatibility line. */
 const BODY_PLAN_WORDS: Record<string, string> = {
   carnivory: 'diet', endothermy: 'warm/cold blood', birth_mode: 'birth mode', body_size: 'body size', morphology: 'eye or leg count',
+  // A rival's row names no gene (playtest 6): their body plan as a whole.
+  body_plan: 'body plans',
 };
+
+/** How far apart a body-plan gap is, in words (0.30 or more: sterile). */
+function gapWords(gap: number): string {
+  return gap >= 0.3 ? 'too different to breed' : gap >= 0.2 ? 'far apart' : gap >= 0.1 ? 'somewhat apart' : 'slightly apart';
+}
 
 /** How sure the "who can breed with you" list is (it samples animals; matings vary). */
 export const COMPAT_CONFIDENCE = 'From a sample of adults on each side: the mean of every pair, the range most pairs fall in, and the share of pairs that can conceive at all. Animals vary and lineages drift, so a given mating can differ; a mating preview gives a pair\'s exact odds.';
@@ -137,7 +144,7 @@ export function compatRowText(r: CompatibilityView['rows'][number]): string {
   // gap under 0.30 lowers fertility; 0.30 or more makes a pair sterile).
   const cause = r.limiting === 'morphology'
     ? `closest pair differs in eye or leg count`
-    : r.gap >= 0.3 ? `${what} ${r.gap.toFixed(2)} apart even in the closest pair (0.30 is sterile)` : `${what} ${r.gap.toFixed(2)} apart in the closest pair`;
+    : r.gap >= 0.3 ? `${what} ${gapWords(r.gap)}, even in the closest pair` : `${what} ${gapWords(r.gap)} in the closest pair`;
   if (!r.compatible) {
     if (share === null || (r.fertile_share ?? 0) <= 0) return `${who}: sterile (${cause})${drift}`;
     return `${who}: mostly sterile: ${share}${range} (${cause})${drift}`;
