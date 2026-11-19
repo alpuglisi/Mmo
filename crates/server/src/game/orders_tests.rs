@@ -564,7 +564,7 @@ fn drownings_and_slow_die_offs_are_warned() {
     assert!(
         w.iter().any(|(k, t)| k == "decline"
             && t.contains("Your lineage is crashing: 63 → 33 alive over the last 10 days")
-            && t.contains("30 died of hunger")),
+            && t.contains("30 died (30 of hunger")),
         "{w:?}"
     );
     // The same deaths in a lineage that grows meanwhile: not a die-off (playtest 8: "954 → 1251").
@@ -1645,4 +1645,79 @@ fn a_rally_into_a_rival_territory_warns() {
     let d = run(&mut g, ClientMsg::Rally { group: 0, x: t.center.x, y: t.center.y }).unwrap();
     let warnings: Vec<String> = serde_json::from_value(d["warnings"].clone()).unwrap_or_default();
     assert!(warnings.iter().any(|w| w.contains("inside bo's territory")), "{d}");
+}
+
+/// A warning's cool-down holds through a quiet day, the sleeping fold's
+/// own key included (playtest 11: the fold's key dropped every day, so the
+/// "3 days at most" line came 15 of 18 days).
+#[test]
+fn a_warnings_cool_down_holds_through_a_quiet_day() {
+    let (mut g, _) = game();
+    g.warned.insert((1, "dormant".to_string()), 10);
+    g.warned.insert((1, "hunted".to_string()), 10);
+    let mut out = Outbox::new();
+    g.warning_alerts(11, &mut out);
+    assert!(g.warned.contains_key(&(1, "dormant".to_string())));
+    assert!(g.warned.contains_key(&(1, "hunted".to_string())));
+    g.warning_alerts(10 + WARNING_REPEAT_DAYS, &mut out);
+    assert!(!g.warned.contains_key(&(1, "dormant".to_string())), "forgotten once the cool-down is over");
+}
+
+/// A split starts both groups' peaks afresh (playtest 11: "Group B has
+/// fallen from 751 to 311 adults" right after a split).
+#[test]
+fn a_split_doesnt_read_as_a_fall() {
+    let (mut g, _) = game();
+    let record = g.daily_record();
+    let mut out = Outbox::new();
+    // A stale peak under the id the split will take.
+    for id in 1..8 {
+        g.group_peak.insert((1, id), 751);
+    }
+    let d = run(&mut g, ClientMsg::SplitGroup { group: 0, organisms: None }).unwrap();
+    let b = d["group"].as_u64().unwrap() as u8;
+    assert!(!g.group_peak.contains_key(&(1, b)));
+    g.group_peak.retain(|&(_, id), _| id == b);
+    g.daily_group_checks(&record, &mut out);
+    let fell = alerts(&g, AlertKind::Group).into_iter().filter(|t| t.contains("has fallen from")).count();
+    assert_eq!(fell, 0, "{:?}", alerts(&g, AlertKind::Group));
+}
+
+/// Cancelling a rally gives back the territory it replaced (playtest 11:
+/// rallying to read the warnings, then cancelling, cost the claim).
+#[test]
+fn cancelling_a_rally_gives_the_territory_back() {
+    let (mut g, _) = game_with(GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let home = g.world.group_middle(1, 0).unwrap();
+    run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 5.0 }).unwrap();
+    let t = g.world.territory(1, 0).expect("claimed");
+    let to = land_away(&g, home, 10.0);
+    run(&mut g, ClientMsg::Rally { group: 0, x: to.x, y: to.y }).unwrap();
+    assert_eq!(g.world.territory(1, 0), None, "the rally replaces it");
+    let d = run(&mut g, ClientMsg::CancelRally { group: 0 }).unwrap();
+    assert_eq!(g.world.territory(1, 0), Some(t), "{d}");
+}
+
+/// Toxin and predation deaths count toward the slow-decline warning, named
+/// by cause (playtest 11: −28% to toxin brought no decline alert).
+#[test]
+fn toxin_deaths_count_toward_a_decline() {
+    let (mut g, _) = game();
+    let lineage = g.lineage_of(1).unwrap();
+    let base = g.daily_record();
+    g.history.clear();
+    for k in 0..=DECLINE_DAYS {
+        let mut r = base.clone();
+        r.day = 100 + k;
+        let e = r.lineages.iter_mut().find(|e| e.lineage == lineage).unwrap();
+        e.alive = (100 - 3 * k) as usize;
+        e.deaths.clear();
+        if k > 0 {
+            e.deaths.insert("toxin".into(), 3);
+        }
+        g.history.push_back(r);
+    }
+    let w = g.lineage_warnings(1);
+    let d = w.iter().find(|w| w.kind == "decline").expect("a decline warning");
+    assert!(d.text.contains("of toxins") && d.text.contains("poisonous prey"), "{}", d.text);
 }
