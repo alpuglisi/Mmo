@@ -152,7 +152,10 @@ export function compatRowText(r: CompatibilityView['rows'][number]): string {
     return `${who}: mostly sterile: ${share}${range} (${cause})${drift}`;
   }
   if (r.fertility >= 0.999) return `${who}: fully fertile${drift}`;
-  return `${who}: ${pct0(r.fertility)} fertile on average${range}${share ? `; ${share}` : ''} (${cause})${drift}`;
+  // The fertile pairs' own mean beside the share (playtest 11: "10% fertile" beside "80% of pairs can conceive"
+  // read as a contradiction: sterile pairs count 0 in the mean).
+  const each = share && r.fertile_share && r.fertile_share < 0.995 ? `, at about ${pct0(r.fertility / r.fertile_share)} each` : '';
+  return `${who}: ${pct0(r.fertility)} fertile on average${range}${share ? `; ${share}${each}` : ''} (${cause})${drift}`;
 }
 
 /** The shop's explanation line. */
@@ -286,7 +289,7 @@ export function restoreText(s: Pick<ShopView, 'balance' | 'restore_price' | 'res
   const short = s.balance < s.restore_price ? ` You have ${s.balance}.` : '';
   return {
     label: `Restore pasture: ${s.restore_price} renown`,
-    note: `Every dry tile within ${RESTORE_RADIUS} tiles of the group regrows as high as the season allows (nothing in midwinter). Priced at 1 renown per living animal of the largest lineage grazing there (at least ${RESTORE_MIN_PRICE}). ${doubling}${short}`,
+    note: `Every dry tile within ${RESTORE_RADIUS} tiles of the group regrows as high as the season allows (nothing regrows in winter, and little in a drought). Priced at 1 renown per animal of your lineage plus each other player's animal you can see grazing the circle (at least ${RESTORE_MIN_PRICE}); the button shows the price for your lineage alone; its dialog gives the chosen group's. ${doubling}${short}`,
     can: s.balance >= s.restore_price,
   };
 }

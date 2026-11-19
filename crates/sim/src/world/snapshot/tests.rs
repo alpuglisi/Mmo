@@ -28,6 +28,10 @@ fn busy_world() -> World {
     // would hold no cohorts (`staggered_busy_world_continues_exactly`
     // covers staggering).
     config.balance.decide_interval = 1.0;
+    // (The states this test asserts at its tick were found without pack
+    // cohesion, version 85; `a_world_with_pack_cohesion_continues_exactly`
+    // covers it.)
+    config.balance.pack_cohesion = 0.0;
     config.scoring.catastrophes = true;
     config.scoring.catastrophe_first_year = 0;
     config.scoring.species_interval_days = 1;
@@ -283,6 +287,23 @@ fn restored_world_continues_exactly() {
     assert_same(&a, &b);
     assert_same(&a, &c);
     assert_same(&a, &d);
+}
+
+/// Pack cohesion's homes (`World::refresh_pack_homes`) are recomputed as
+/// each tick starts, not saved: a restored world with packs pulled together
+/// continues exactly.
+#[test]
+fn a_world_with_pack_cohesion_continues_exactly() {
+    let mut a = presets::standard_world(WorldConfig { seed: 12, width: 64, height: 64, ..Default::default() }, 1);
+    a.config.balance.pack_cohesion = 1.0;
+    a.run_days(3);
+    let bytes = a.snapshot();
+    let mut b = World::restore(&bytes, Some(a.map.terrain().clone())).expect("restore");
+    for _ in 0..2 * a.config.ticks_per_day {
+        a.step();
+        b.step();
+    }
+    assert_same(&a, &b);
 }
 
 #[test]
@@ -611,6 +632,47 @@ fn playtest10_off(b: &mut crate::Balance) {
 fn landing_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v90::OLD_VALUE;
     (b.reinforce_clear, b.founding_together) = (old, old);
+    playtest11_off(b);
+}
+
+/// The playtest 11 balance tunables as snapshots before version 92 read
+/// them.
+fn playtest11_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v92::OLD_VALUE;
+    (b.graced_hunting, b.share_memory, b.wild_rebound) = (old, old, old);
+    raids_off(b);
+}
+
+/// The playtest 11 raid and placement tunables as snapshots before version
+/// 93 read them.
+fn raids_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v93::OLD_VALUE;
+    (b.raid_rules, b.animal_clear) = (old, old);
+}
+
+/// Version 90 snapshots (before the playtest 11 balance rules) restore with
+/// them off and no remembered world size, and are otherwise the same world.
+#[test]
+fn version_90_snapshots_restore_without_playtest11_balance() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v90();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 90);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.share_memory, crate::serde_util::before_v92::OLD_VALUE);
+    assert!(r.legacy.iter().all(|l| l.world_alleles == 0.0));
+    assert!(r.snapshot_v90() == old);
+    playtest11_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    // This version keeps the remembered world size.
+    let mut w = fixture_world();
+    w.run_days(1);
+    assert!(w.legacy.last().unwrap().world_alleles > 0.0);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.share_memory, 120.0);
+    assert_eq!(r.legacy, w.legacy);
 }
 
 /// Version 85 snapshots (before the playtest 10 balance rules) restore with
@@ -804,6 +866,10 @@ fn fixture_world() -> World {
     // Snapshots before version 58 hold no niche tallies: start with none so
     // the older layouts restore to the same world.
     w.chronicle.niche_tally = Default::default();
+    // Nor before version 92 the remembered world size (`share_memory`).
+    for l in &mut w.legacy {
+        l.world_alleles = 0.0;
+    }
     w
 }
 
@@ -1992,6 +2058,9 @@ fn version_57_snapshots_restore_without_niche_tallies() {
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.chronicle.niche_tally, w.chronicle.niche_tally);
     w.chronicle.niche_tally = Default::default();
+    for l in &mut w.legacy {
+        l.world_alleles = 0.0;
+    }
     founding_drought_off(&mut w.config.balance);
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert!(r.snapshot() == w.snapshot());
@@ -2166,7 +2235,7 @@ fn version_83_snapshots_restore_without_rival_clear() {
     assert!(r.snapshot() == w.snapshot());
     let w = fixture_world();
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
-    assert_eq!((r.config.balance.rival_clear, r.config.balance.pack_cohesion), (1.0, 0.0));
+    assert_eq!((r.config.balance.rival_clear, r.config.balance.pack_cohesion), (1.0, 0.3));
 }
 
 /// Version 89 snapshots (before the playtest 10 placement rules) restore
@@ -2187,4 +2256,24 @@ fn version_89_snapshots_restore_without_reinforce_clear() {
     let w = fixture_world();
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!((r.config.balance.reinforce_clear, r.config.balance.founding_together), (1.0, 1.0));
+}
+
+/// Version 92 snapshots (before the playtest 11 raid and placement rules)
+/// restore with them off, and are otherwise the same world.
+#[test]
+fn version_92_snapshots_restore_without_raid_rules() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v92();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 92);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.raid_rules, r.config.balance.animal_clear), (0.0, 0.0));
+    assert!(r.snapshot_v92() == old);
+    raids_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.raid_rules, r.config.balance.animal_clear), (1.0, 1.0));
 }

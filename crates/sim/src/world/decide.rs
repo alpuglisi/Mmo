@@ -1557,6 +1557,17 @@ impl World {
     /// hunted the wild antelope from 988 to 3 and the newts from 1,400 to
     /// 50 in seven years, and the shrinking wild let a herd run away.
     pub(crate) fn wild_refuge_skip(&self, l: u32) -> f32 {
+        let r = self.refuge_fill(l);
+        if r >= 1.0 {
+            return 0.0;
+        }
+        1.0 - r.powi(4)
+    }
+
+    /// Wild lineage `l`'s count over its refuge (`Balance::wild_refuge` of
+    /// its wild cap, coming in over `Balance::refuge_ramp` years), capped
+    /// at 1; 1 for a player's lineage or with the refuge off.
+    pub(crate) fn refuge_fill(&self, l: u32) -> f32 {
         let bal = &self.config.balance;
         let mut refuge = bal.wild_refuge;
         // Coming in over `Balance::refuge_ramp` years: a fresh world's wild
@@ -1567,11 +1578,21 @@ impl World {
             refuge *= (days / (bal.refuge_ramp * year)).min(1.0);
         }
         if refuge <= 0.0 || self.lineages.get(l as usize).is_none_or(|x| x.owner != crate::WILD) {
-            return 0.0;
+            return 1.0;
         }
         let (alive, cap) = self.cap_usage(l);
-        let r = (alive as f32 / (refuge * cap.max(1) as f32)).min(1.0);
-        1.0 - r.powi(4)
+        (alive as f32 / (refuge * cap.max(1) as f32)).min(1.0)
+    }
+
+    /// The litter multiplier of wild lineage `l` (`Balance::wild_rebound`):
+    /// `1 + wild_rebound × (1 − r)`, `r` its [`World::refuge_fill`]; 1 at
+    /// or above its refuge, and for players' lineages.
+    pub(crate) fn wild_rebound(&self, l: u32) -> f32 {
+        let k = self.config.balance.wild_rebound;
+        if k <= 0.0 {
+            return 1.0;
+        }
+        1.0 + k * (1.0 - self.refuge_fill(l))
     }
 
     /// Prey switching (`Balance::prey_switching`): has hunter `o` given up
@@ -1795,7 +1816,7 @@ impl World {
                 if best.is_some_and(|(bd, _)| bd <= d) || self.confine(cl.pos, bound) != cl.pos {
                     continue;
                 }
-                if self.gives_up_on(o, cl.lineage) {
+                if self.gives_up_on(o, cl.lineage) || self.clutch_spared(o, cl) {
                     continue;
                 }
                 best = Some((d, cl.pos));

@@ -220,7 +220,7 @@ async function main() {
     // The app's own dialog (not the browser's confirm), with the server's window.
     await page.waitForSelector('#retire-confirm', { timeout: UI_MS });
     const confirmText = await page.textContent('#retire-confirm');
-    check(/re-founding within \d+ days \(about \d+ real minutes?\) founds half your founders \(rounded up\) and costs \d+ renown after a retirement/.test(confirmText) && !confirmText.includes('ranked season'), 'the retire dialog states the server\'s rule', confirmText);
+    check(/re-founding within \d+ days \(about \d+ real minutes?\) founds half your founders \(rounded up(, at most \d+)?\) and costs \d+ renown after a retirement/.test(confirmText) && !confirmText.includes('ranked season'), 'the retire dialog states the server\'s rule', confirmText);
     await page.click('#retire-confirm-ok');
     // Retired: the design screen opens by itself (playtest 10: it didn't).
     await page.waitForSelector('#design-name', { timeout: UI_MS });

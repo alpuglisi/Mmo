@@ -1077,7 +1077,7 @@ Every `day` field in the API (and in WebSocket messages) counts from 0: day 0 is
 | `POST /api/register` `{name, password}` | | Create an account (name 3–24 of `[A-Za-z0-9_-]`, password ≥ 8 characters and ≤ 1024 bytes). `201 {token, player, name}`; `409 name_taken` |
 | `POST /api/login` `{name, password}` | | `{token, player, name}`; `401 bad_credentials` |
 | `POST /api/logout` | Bearer | End the session |
-| `GET /api/worlds` | | The hosted worlds, the default first: `{default, worlds: [{id, name, width, height, day, year, season, population, lineages, players_online?}]}` (`players_online` for a logged-in caller only) |
+| `GET /api/worlds` | | The hosted worlds, the default first: `{default, worlds: [{id, name, width, height, day, year, season, population, lineages, players_online?}]}` (`players_online` for the operator token only) |
 | `POST /api/design/compatibility` (design) | Bearer | The builder's interbreeding check, nothing founded: 16 founders as the design would make them (founder variation included) against 16 adults of each living lineage (yours too). `200 {day, sample, fertile_with, at_risk, rows}`, rows as `compatibility`'s; `400` for a design that doesn't validate |
 | `POST /api/lineage` (design) | Bearer | Found your lineage (one per player per world). `201 {lineage, founders: [ids], cost}`; `400` with `over_budget {cost, budget}`, `value_out_of_range {gene}`, `reserved_gene`, `litter_size`, `no_founders`, `unknown_gene`, `bad_name`; `409 already_founded` |
 | `GET /api/genes` | | Settable genes with default and point cost, the budget and founder/offspring prices, and the morphology parameters (`morph`: name, kind, values or range, default, cost) |
@@ -1108,7 +1108,7 @@ Every `day` field in the API (and in WebSocket messages) counts from 0: day 0 is
 | `POST /api/push/prefs` | Bearer | Replace them; the reply is normalized (sorted, no duplicates); an unknown kind is refused (422) |
 | `GET /api/map.png?scale=4` | yes | PNG of the world as the caller may see it (`Game::map_rgb`: the terrain, their organisms and others only within their view radius of them; 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
 | `GET /api/spectate` | | The read-only spectator view (watch links `?watch=<world>&lineage=<n>`, `tools/marketing/README.md`): clock, active catastrophes and every lineage's public name, owner, head counts, share, most common look and members per cell (8 tiles for the wild species; none, with `hidden: true`, for players' lineages, which are counted but not placed); no ids, positions, genes or needs, and refreshed at most once per simulated day |
-| `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`), the process's `cpu_seconds` and `rss_bytes` (Linux), the `allocator` (`jemalloc` by default, `glibc` without the feature) and its `heap` statistics (`allocated`: live allocations; `retained`: resident memory the allocator holds but has not handed out; read at most every 2 s), and password hashing over the whole process, `hashing`: `concurrency` and `queue` (the bound), `in_flight` and `waiting` now, `peak_in_flight` (never above `concurrency`), `hashes` done, `rejected` (refused as busy) and `mean_ms` per hash. Without the operator token (`EVO_ADMIN_TOKEN`, sent as `x-admin-token`; `ServerConfig::admin_token`), logged in or not, `conns`, `players_online`, `delta_conns`, `dropped_conns`, `ws_opened`, `ws_closed`, `applied`, `apply_ms.n`, `state_pushes`, `states_out`, `keyframes_out`, `msgs_out`, `bytes_out`, `state_bytes` and the hashing counts read 0 and `apply_by_command` is empty (they told rivals when a player logged on or off or started a hunt) |
+| `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`), the process's `cpu_seconds` and `rss_bytes` (Linux), the `allocator` (`jemalloc` by default, `glibc` without the feature) and its `heap` statistics (`allocated`: live allocations; `retained`: resident memory the allocator holds but has not handed out; read at most every 2 s), and password hashing over the whole process, `hashing`: `concurrency` and `queue` (the bound), `in_flight` and `waiting` now, `peak_in_flight` (never above `concurrency`), `hashes` done, `rejected` (refused as busy) and `mean_ms` per hash. Without the operator token (`EVO_ADMIN_TOKEN`, sent as `x-admin-token`; `ServerConfig::admin_token`), logged in or not, `conns`, `players_online`, `delta_conns`, `dropped_conns`, `ws_opened`, `ws_closed`, `applied`, `apply_ms` (all of it), the save timings and `save_bytes`, `state_pushes`, `states_out`, `keyframes_out`, `msgs_out`, `bytes_out`, `state_bytes` and the hashing counts read 0 and `apply_by_command` is empty (they told rivals when a player logged on or off or started a hunt) |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
 
 Routes about a world (founding, `world`, the leaderboards, terrain, species,
@@ -1222,6 +1222,7 @@ Client → server:
 | `provision` | | The hungriest or thirstiest adults of your lineage get 50 off hunger and thirst, priced per adult fed: 20 adults at 2 renown each while at most a fifth of the soft lineage cap is alive, else 20 per fifth of the cap alive (at most 200) at 4 each; at most 3 within a ranked season's length (`limit_reached`, `no_adults`, `no_lineage`, `insufficient_funds`); `data` = `{fed, shop}` |
 | `name_animal` | `organism`, `name` | Name one of your living animals (cosmetic, 50 renown each time; the species-name filter; `same_name`, `bad_name`, `not_owned`); shown on its listings (`animal_name`); `data` = `{name, shop}` |
 | `animal_names` | | Your living animals' names; `data` = `{names: {id: name}}` |
+| `lineage_candidates` | `request` | Your animals an open offer to your lineage would take as the partner now; `data` = `{request, candidates}` (`not_a_lineage_offer`) |
 | `survey` | | Rival groups and territories within 64 tiles of your main group's middle, in 8-tile cells (members rounded to tens), now: 30 renown plus 1 per 10 of your animals alive; `data` = `{price, x, y, radius, groups: [{player, name, x, y, members, territory?: [x, y, radius]}], shop}` (`no_lineage`, `insufficient_funds`) |
 | `substitute_mating` | `request`, `mine` | The requester of an accepted agreement whose animal died sends another adult of theirs instead, before the deadline (the purchase checks; `not_substitutable` while the first still lives or for anyone else); `data` = `{offer}` |
 | `set_nameplate` | `color, title` | A cosmetic nameplate (a palette color, a 1–24 character title) shown with your name: 500 renown, 100 per change (`bad_color`, `bad_title`); `data` = `{nameplate, shop}` |
@@ -2034,6 +2035,9 @@ minutes, every purchase failed when the buyer's animal died):
   was found (a logged-in caller, or `evo-lobby` holding the same token,
   is told, so the lobby still routes a player to their lineage's server;
   its own public answer says no more).
+- Playtest 11: `/api/assign` reads `players_online` 0 except for the
+  operator token (`evo-lobby` sends it when `EVO_ADMIN_TOKEN` is set, and
+  needs it to fill worlds by players online).
 
 **Playtest 9 changes** (economy):
 
@@ -2078,6 +2082,28 @@ minutes, every purchase failed when the buyer's animal died):
   renown per food, and its price is honoured for 30 real seconds; nothing
   regrows during winter, and regrowth shrinks with the share of land in
   drought.
+
+**Playtest 11 changes** (economy):
+
+- **Sleep and the shield**: an agreement's deadline pauses at most 30
+  game days in all, whoever sleeps; an asleep walker isn't shielded (it
+  isn't walking); the pair of a completed mating stays shielded for two
+  game days on the way back. Agreement updates no longer go out when only
+  the paused deadline moved (nor on a repeated "Complete now").
+- **Income taper** counts renown held in offers and bids (escrow) with
+  the balance.
+- **Market walks**: a predator near the usual meeting point moves it only
+  as far as needed, either way along the line, in twentieths
+  (`OfferView::meet_note` says why); the requester's walk of 24 tiles or
+  more carries a `walk_warning`; an incoming offer to the lineage gives
+  the nearest adult's distance (`apart`); `lineage_candidates {request}`
+  lists the accepter's animals the server would take, and the picker
+  offers only those.
+- **Listing incentive**: a fixed listing's sale pays no market fee (offers
+  and auctions still do).
+- **Restore pasture**: quotes are per group and hold the food too: if the
+  plants fell more than a fifth since the preview, the purchase asks for
+  a new one (`quote_changed`).
 
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.
@@ -9069,6 +9095,57 @@ around it.
 
 
 
+### Playtest 11: balance
+
+Playtest 11 (`docs/playtest-11.md`, findings 2, 6 and 11). A cold flier won
+both eras (13.0% and 20.5% means) and the pack was back to 250. In year 5,
+a drought peaking at 98%, with no catastrophe, took the wild from 3,472 to
+1,015. Two player herds near the cap (2,100 and 2,000) grazed beside it and
+a 220-strong pack hunted it. The leader's share rose from 25% to 31% while
+its own herd shrank under litters ×0.10: the brake works on the lineage, but
+a share also rises when everything else dies. The replay shows the same
+effect every year. In spring, after winter has taken the wild's breeding
+adults, the cold flier's share doubles (14% → 26–29%) with no more animals.
+
+Three rules, version 92 (each off at 0), and a founding fix:
+
+- **The share counts against the world as big as it has been lately**
+  (`Balance::share_memory`, 120 days). Each day's legacy snapshot keeps an
+  exponential running mean of the world's allele total
+  (`LegacySnapshot::world_alleles`), and when today's world is smaller, both
+  totals are scaled up to that mean (`World::smooth_legacy`). Every share
+  falls with a shrinking world instead of the survivors' rising. The mean
+  follows a lasting change within a season or two, and a growing world
+  counts as it is. Shares then add up to less than the whole; the rest is
+  no one's. The lineage panel's breakdown is scaled the same way.
+- **Wild rebound** (`Balance::wild_rebound`, 1). A wild species below its
+  refuge (30% of its wild cap) breeds faster: litters `1 + wild_rebound ×
+  (1 − r)` times the size, `r` its count over the refuge. Agents and cohorts
+  both follow it, so the wild recovers from a drought or a pack.
+- **A graced hunter may hunt** (`Balance::graced_hunting`, 1). A newcomer's
+  grace no longer keeps its own hunters off rivals' unprotected animals, by
+  instinct or by order. Its first attack on one ends its owner's grace, as
+  End my grace now does. A graced rival is still spared. When a hunting
+  lineage is going hungry while graced, the alert says so.
+- **Re-founding lands at most 10 founders** (`REFOUND_MAX_FOUNDERS`, half the
+  base price's 20): half the request, at most 10. Asking for 40 got 20 for
+  the points of 20, so the halving only bit above 40.
+
+**Replay** (`dominance --only Cold,Herd,Sleepers,Pack,Broker,Steady
+--cold-day 27 --megadrought 500 --trace`: the cold flier founded on day 27
+as in the playtest, and a megadrought from day 500; seeds 1–4, 840 days, two
+eras). Era means, playtest 11 rules (v92 tunables off) → v92 rules: Cold
+15.7% → 17.4%, Herd 18.4% → 14.9%, Broker 6.6% → 9.0%, Pack 7.1% → 7.6%,
+Steady 5.6% → 3.4%, Sleepers 14.4% → 0.7%. No lineage passes 20% for an era
+under either. The replay's players stay far smaller than the playtest's
+(Cold peaks at 721 on average, not 2,100), and its megadrought doesn't
+collapse the wild: spring lows 1,790–2,480 and autumn highs 2,450–3,380 on
+seed 1. The 98% collapse needed two player herds at the cap grazing through
+the drought. The smoothing is tested directly
+(`shares_count_against_the_world_as_big_as_it_has_been`: a world halved
+overnight leaves a quarter-share lineage at 12.6%, not 25%). The 12-seed
+sweep scores 11.92.
+
 ### Playtest 10: balance
 
 Playtest 10 (`docs/playtest-10.md`, findings 7 and 8) had no runaway, with
@@ -9460,6 +9537,72 @@ and 8 of 8 (8 and 8 off; viable 7 and 8 either way).
 | --- | --- |
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.77 (± 0.16; 11.82 with the five tunables off). Every lineage survives 12 of 12. |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
+
+### Playtest 11: server Lows
+
+Server-side Lows from `docs/playtest-11.md`:
+
+- **Hunger text.** "Going hungry" names the cap that actually binds: the
+  soft cap, the world-share cap (with its share), or both.
+- **Decline.** Within one decline a crash stays a crash. When the lineage
+  is 30% or more below its peak over the last two 10-day windows, the
+  warning reads "still crashing: peak → now". It no longer drops to "dying
+  off slowly" just because the last 10 days lost less.
+- **Rounding.**
+  - Rally and abandon-territory replies give `x`, `y` and `radius` in
+    hundredths. The state keeps exact values, so its wire format is
+    unchanged.
+  - Reinforce `at` is in hundredths.
+  - `/api/species` `peak_adults` is a whole number.
+  - `preview_mating` `distance` is in whole tiles.
+- **Restore preview.** When nothing would regrow (winter, a drought, already
+  grown), the preview prices 0 and its `hint` says why. It keeps no quote.
+  A purchase is still refused with `nothing_to_restore`.
+- **Wording.**
+  - "it had 1 adult": counts go through `count_of` and `thousands`, so
+    plurals and thousands separators are right.
+  - The substitute alert says "within about a real minute" or "about N real
+    minutes".
+  - For an unpriced request it names the requester's mating slot, not a
+    hold fee. A forfeited slot says whose it is ("ann forfeits one of this
+    season's mating slots").
+  - The reinforce refusal reads "you have N alive now, young included" or
+    "you had N at the most".
+  - A sale with a fee gives the gross price, the fee and the net ("Sale: 30
+    renown … less a 3 renown market fee: 27 paid to you").
+  - The taper ledger reads "(8, reduced by the taper on a balance over
+    1,000)".
+  - The re-founding feed line uses the flat sentence instead of the whole
+    rule.
+  - The species list in the client has a space before "Name it…".
+- **Closed offers.** A command on an offer that closed recently answers
+  `unknown_offer` with "offer N has already closed (declined)". The last
+  1,024 closed offers are kept in memory.
+- **Compatibility fields.**
+  - `fertility` is the mean over all pairs, with sterile pairs counting 0,
+    so it is never more than `fertile_share`. The mean over the fertile
+    pairs alone is `fertility / fertile_share`.
+  - `compatible` means `fertile_share` ≥ 0.5, however low each pair's
+    chance.
+  - The client adds "at about N% each".
+  - `fertile_with` and `at_risk` leave out the player's own lineage.
+  - The design compatibility reply now carries `points` and `budget`.
+- **Auctions.** When the real-time minimum lengthens an auction asked for
+  in days, the reply says so in game days, e.g. "lengthened from 20 to about
+  62 game days: every auction runs at least 5 real minutes".
+- **Public feed.** Achievements in `/api/achievements` are in the third
+  person ("ann's lineage"). Players' own alerts keep "your".
+- **Retirement.** A retired lineage gets no "· 0 alive" day summary.
+  `/api/species` leaves out an extinct species made only of ended player
+  lineages, unless another species descends from it.
+- **Territory.** "has recovered" is sent only to a group that was told its
+  territory no longer feeds it.
+- **Era ranks.** Eras rank by the mean as shown (tenths of a percent), then
+  by final share. Two players at 0.7% no longer rank by hidden digits.
+- **Move-order cooldown.** One migrate or rally per group per real second
+  (`GameConfig::order_cooldown_ms`, 1,000; 0 turns it off). Otherwise the
+  error is `order_cooldown`. A refused order does not start the wait.
+- **`next_refound_fee`** is null before the player's first founding.
 
 ### Playtest 10: server Lows
 
@@ -10260,6 +10403,111 @@ with no hint that the rule was relaxed, and 2 tiles from a territory's edge.
 - **Neither study is moved by these rules.** A world's first foundings and
   the wild don't use them: they apply to a player's founding in a running
   world, to reinforcements and to the server's alerts.
+
+### Playtest 11: raids, landings and heat
+
+Round 12 for `docs/playtest-11.md` findings H1, M5, M12 and M17. Snapshot
+version 93 (main is at 92; balance's round 12). It adds `Balance::raid_rules` and `Balance::animal_clear`, off
+at 0, which is what older snapshots read (`serde_util::before_v93`), and
+turns `pack_cohesion` on at 0.3.
+
+**H1: nest raids ignored grace, offline protection and the market shield.**
+`apply::raid_clutch` and `decide::scent_clutch` skipped only the raider's own
+clutches and species it had given up on.
+- **The hunting rules for clutches** (`Balance::raid_rules` 1).
+  - `World::clutch_spared` keeps a player's raider off a clutch whose
+    lineage is under its founding grace. It also works the other way: a
+    graced raider spares other players' clutches.
+  - It also spares a clutch whose mother or guardian walks under a market
+    shield.
+  - Offline protection softens a raid as it softens a strike
+    (`World::offline_clutch_factor`: the surviving core's factor and the
+    mother's home range, stacked as for her). A raid then succeeds only
+    with that chance.
+  - Wild raiders, like wild hunters, ignore grace.
+  - **With balance's `graced_hunting`** (round 12, version 92) a graced
+    hunter's own grace no longer spares rivals' animals. It doesn't spare
+    their clutches either, and its first raid on one ends its owner's grace,
+    as a first attack does.
+- Tested with a shielded mother (`a_shielded_mothers_clutch_is_not_raided`).
+  Grace and offline protection share the code path but have no test of
+  their own: a grace is hard to set up in the predator test world.
+
+**M5: foundings on a crowded map landed inside a rival herd** ("0 tiles
+away", 148 rival animals in view).
+- **The 8-tile rule in every strict pick** (`Balance::animal_clear` 1).
+  Round 10 kept `ANIMAL_CLEAR` (8) tiles from rival animals only in the first
+  150 of 200 picks, then marked it down. Now the strict picks double to 400,
+  and every one keeps 8 tiles from every other player's animal.
+- **Then the emptiest ground.** If none qualifies, a second round of 400
+  keeps every other strict rule (room on dry land, water that lasts a
+  drought). Each rival animal within 8 tiles then costs 0.5, so the
+  emptiest ground wins. Only after that comes the old unchecked round.
+  - The first version of this went straight to the unchecked round. On the
+    crowded 64-tile test map a drought founding then lost its lasting-water
+    rule (caught by `drought_foundings_land_by_lasting_water`).
+- **Said.** `World::founding_crowded` records how many rival animals stood
+  within 8 tiles of such a home. The landing text adds: "The map is crowded:
+  no ground was clear of other players' animals, so they landed on the
+  emptiest found, with N rival animals within 8 tiles."
+- **Retired herds' ground.** The owner's retired lineages' homes are
+  avoided only in the picks that must keep clear, not in the
+  emptiest-ground round. Ground a retired herd just left empty is no longer
+  ruled out when nothing else is clear. Died-out homes are still marked
+  down there.
+- Tested by `foundings_keep_clear_of_rival_animals_or_say_how_crowded`:
+  rival animals 24 tiles apart leave clear ground, and every home is on it;
+  8 tiles apart leave none, and the crowding is recorded.
+
+**M17: reinforcements, packs and own-kind kills.**
+- **Reinforcements keep 8 tiles from rival animals** too (`animal_clear`).
+  If none of the near search is clear, round 11's outward ring search finds
+  the nearest clear ground, and the reply says so ("… in or beside another
+  player's territory or animals …"). Tested by
+  `reinforcements_keep_clear_of_a_rival_herd`.
+- **Pack cohesion at 0.3.** In the six-player study
+  (`predators --playtest4 --seeds 3 --days 360`, New arm, the pack on its
+  own instinct) the Apex Stalkers peaked at 126 and ended at 89 with
+  cohesion 0.3, against 111 and 77 with it off. On main 126e870 (balance's
+  round 12 merged) they peaked at 100 and ended at 84, against 106 and 87.
+  Both are within the ~15% the coordinator set, so 0.3 is the default. At 1 the pack ended half the size
+  (round 10). With it on, `restored_world_continues_exactly` lost the states
+  it asserts at its tick, so that test runs with cohesion off. The new
+  `a_world_with_pack_cohesion_continues_exactly` checks that a restored world
+  with cohesion continues exactly.
+- **Own-kind kills explained.** A death notice naming the player's own
+  lineage as the hunter adds: "A starving hunter turns on its own kind when
+  no other prey is in reach: lead the pack to prey, or split it so fewer
+  share what there is."
+
+**M12: heat.** A furred design died of heat in its first summer in forest by
+water: the advice it had been given.
+- **The advice was wrong.** In the sim, forest and water don't cool an
+  animal. Tile temperature (`terrain::update_tile`) has no canopy or water
+  term; only a burrow's shelter, a deep sleep, a lighter coat and the
+  body's heat tolerance change the heat a warm body takes
+  (`apply::update_needs`).
+- **The heat warning now says what helps:** "Thick fur, fat and big bodies
+  hold heat, and shade or water don't cool them: a burrow keeps the midday
+  heat off burrowers, and estivators sleep through the hottest weeks. Move
+  groups to the map's cooler parts, or found a lighter-coated design."
+- **A designer heat warning** (`DesignCompatView::heat_warning`).
+  `World::summer_heat` gives, for a warm-blooded design, the share of dry
+  land whose summer peak (mean plus the seasonal swing) passes its harm
+  threshold (`30 − 8 × insulation + heat tolerance + 8` °C). From a quarter
+  of the land the designer shows: "Heat: in summer about N% of the land gets
+  hotter than this design can bear (about T °C …). Shade and water don't
+  cool them; less fur and fat, a smaller body, burrowing … or estivation
+  … do." Tested by `a_thick_coat_overheats_on_a_warm_map`.
+
+**Checks** (on main 126e870 at version 92 with this round merged):
+
+| Check | Result |
+| --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.87 (± 0.16); every lineage 12 of 12 |
+| `predlong 6` on seeds 31–38 and 41–48 | fox 16/16 (16 viable), pack hunters 16/16 (16); no seed lost a prey species |
+| workspace tests (459 sim), both clippy runs, fixtures, serde lib tests, client typecheck, `vitest` (476), build | pass |
+| e2e (16 scripts, `E2E_JOBS=2`) | 16 of 16 pass |
 
 ## Genetics validation
 

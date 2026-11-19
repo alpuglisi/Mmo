@@ -477,13 +477,17 @@ pub fn copies(text: &str, other: &str) -> bool {
 /// 10).
 pub fn holds_name(text: &str, other: &str) -> bool {
     let decoration = |w: &String| DECORATIONS.iter().any(|d| fold(d) == *w);
-    let core: String = key_words(other).into_iter().filter(|x| !decoration(x)).collect();
+    let words: Vec<String> = key_words(other).into_iter().filter(|x| !decoration(x)).collect();
+    let core: String = words.concat();
     let t: String = key_words(text).concat();
-    core.len() >= 6 && near_inside(&t, &core)
+    // Or one of its longer words (7+ letters), a letter off at most:
+    // "Thornbak" for "Thornback Ridge" (playtest 11).
+    (core.len() >= 6 && near_inside(&t, &core)) || words.iter().any(|w| w.len() >= 7 && near_inside(&t, w))
 }
 
-/// Whether `a` and `b` are at most one edit apart (a letter added, dropped
-/// or changed).
+/// Whether `a` and `b` are at most one edit apart: a letter added, dropped
+/// or changed, or two neighbours swapped ("Herdmatser", "LateCmoer":
+/// playtest 11; the Damerau distance).
 pub fn within_one(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     let (s, l) = if a.len() <= b.len() { (a, b) } else { (b, a) };
@@ -492,7 +496,10 @@ pub fn within_one(a: &str, b: &str) -> bool {
     }
     let p = s.iter().zip(l).take_while(|(x, y)| x == y).count();
     if s.len() == l.len() {
-        return s[p..].len() <= 1 || s[p + 1..] == l[p + 1..];
+        if s[p..].len() <= 1 || s[p + 1..] == l[p + 1..] {
+            return true;
+        }
+        return s.len() >= p + 2 && s[p] == l[p + 1] && s[p + 1] == l[p] && s[p + 2..] == l[p + 2..];
     }
     s[p..] == l[p + 1..]
 }
@@ -570,13 +577,16 @@ pub fn impersonates<'a>(text: &str, others: impl IntoIterator<Item = &'a str>, k
     let f = fold(text);
     let fb = fold(&strip_digits(text));
     let fl = fold(&letters(text));
-    others.into_iter().any(|n| {
-        let o = fold(n);
-        let ob = fold(&strip_digits(n));
-        let ol = fold(&letters(n));
-        let (short, long) = if fl.len() <= ol.len() { (&fl, &ol) } else { (&ol, &fl) };
-        !o.is_empty()
-            && (o == f
+    let others: Vec<&str> = others.into_iter().collect();
+    let cores: Vec<String> = others.iter().map(|n| fold(&letters(n))).filter(|c| c.len() >= 4).collect();
+    blends(text, &cores)
+        || others.into_iter().any(|n| {
+            let o = fold(n);
+            let ob = fold(&strip_digits(n));
+            let ol = fold(&letters(n));
+            let (short, long) = if fl.len() <= ol.len() { (&fl, &ol) } else { (&ol, &fl) };
+            !o.is_empty()
+                && (o == f
                 || (ob.len() >= 4 && ob == fb)
                 || (ol.len() >= 4 && ol == fl)
                 || (ol.len() >= 5 && fl.contains(ol.as_str()))
@@ -589,6 +599,23 @@ pub fn impersonates<'a>(text: &str, others: impl IntoIterator<Item = &'a str>, k
                     && long.len() - short.len() <= 2
                     && long.contains(short.as_str()))
                 || (kind == Kind::Title && o.len() >= 3 && f.contains(&o)))
+        })
+}
+
+/// Whether `text`'s letters are the start of one name and the end of
+/// another (at least 4 letters each, of two different names): "Herd
+/// Nomad", "Pocket Master", "Apex Nomad" (playtest 11) blend two players'
+/// names. Two names' ends ("Nomad Hunter") or starts are generic enough to
+/// pass.
+fn blends(text: &str, names: &[String]) -> bool {
+    let t = fold(&letters(text));
+    (4..=t.len().saturating_sub(4)).any(|k| {
+        let (start, end) = t.split_at(k);
+        names.iter().enumerate().any(|(i, a)| {
+            a.len() > start.len()
+                && a.starts_with(start)
+                && names.iter().enumerate().any(|(j, b)| j != i && b.len() > end.len() && b.ends_with(end))
+        })
     })
 }
 
@@ -914,6 +941,25 @@ mod tests {
         }
     }
 
+    /// Playtest 11: the start of one player's name and the end of
+    /// another's.
+    #[test]
+    fn blends_of_two_names_are_look_alikes() {
+        let players = ["Herdmaster11", "PocketNomad11", "ApexHunter11", "GeneBroker11"];
+        for (name, blend) in [
+            ("Herd Nomad", true),
+            ("Pocket Master", true),
+            ("Apex Nomad", true),
+            ("GeneHunter", true),
+            ("Nomad Hunter", false),
+            ("Herd Pocket", false),
+            ("Steppe grazers", false),
+            ("Masters of the herd", false),
+        ] {
+            assert_eq!(impersonates(name, players, Kind::Title), blend, "{name:?}");
+        }
+    }
+
     #[test]
     fn one_edit_apart() {
         for (a, b, near) in [
@@ -923,7 +969,10 @@ mod tests {
             ("herdmaster", "hxrdmaster", true),
             ("herdmaster", "erdmaster", true),
             ("herdmaster", "herdmast", false),
-            ("herdmaster", "hredmaster", false),
+            // Two neighbours swapped (playtest 11).
+            ("herdmaster", "hredmaster", true),
+            ("herdmaster", "herdmatser", true),
+            ("herdmaster", "hedrmatser", false),
         ] {
             assert_eq!(within_one(a, b), near, "{a} {b}");
         }
@@ -931,6 +980,10 @@ mod tests {
         assert!(holds_name("The Ironfangs", "Ironfang Pack"));
         assert!(!holds_name("Iron chief", "Ironfang Pack"));
         assert!(!holds_name("Red", "Red fox"), "too short");
+        // A longer word of the rival's name, a letter off (playtest 11).
+        assert!(holds_name("Thornbak", "Thornback Ridge"));
+        assert!(holds_name("Skyglass Swarn", "Skyglass Swarm"));
+        assert!(!holds_name("Ridge pack", "Thornback Ridge"), "short words alone pass");
     }
 
     #[test]
@@ -980,6 +1033,11 @@ mod tests {
             ("Herdmaste", "Herdmaster10", Kind::Title, true),
             ("erdmaster1", "Herdmaster10", Kind::Title, true),
             ("Herdmastr's pet", "Herdmaster10", Kind::Species, true),
+            // Playtest 11: two neighbours swapped.
+            ("Herdmatser", "Herdmaster11", Kind::Title, true),
+            ("Rulebedner", "Rulebender11", Kind::Species, true),
+            ("LateCmoer", "LateComer11", Kind::Title, true),
+            ("GeneBorker", "GeneBroker11", Kind::Lineage, true),
             // Generic words from two names pass (playtest 10's "Nomad Hunter").
             ("Nomad Hunter", "PocketNomad10", Kind::Title, false),
             ("Nomad Hunter", "ApexHunter10", Kind::Title, false),

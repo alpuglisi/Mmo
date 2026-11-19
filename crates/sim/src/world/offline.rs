@@ -284,6 +284,19 @@ impl World {
         stack(core, self.offline.home_factor(o), self.config.balance.home_range.stack_floor)
     }
 
+    /// Factor on the chance a raid takes clutch `c`'s eggs
+    /// (`Balance::raid_rules`): as a strike on its mother would be, under
+    /// the surviving core and her home range (playtest 11: raids ignored
+    /// offline protection). 1 without the rule.
+    pub(super) fn offline_clutch_factor(&self, c: &super::Clutch) -> f32 {
+        if self.config.balance.raid_rules <= 0.0 {
+            return 1.0;
+        }
+        let core = if self.offline.engaged(c.lineage) { self.offline.rules.predation } else { 1.0 };
+        let home = self.index.get(&c.mother).map_or(1.0, |&k| self.offline.home_factor(&self.organisms[k]));
+        stack(core, home, self.config.balance.home_range.stack_floor)
+    }
+
     /// Factor on the starvation and thirst damage `o` takes.
     pub(super) fn offline_hardship_factor(&self, o: &Organism) -> f32 {
         if self.offline.covers(o) {

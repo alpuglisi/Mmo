@@ -71,6 +71,8 @@ fn homes_hash() -> u64 {
         (config.balance.rival_clear, config.balance.pack_cohesion) = (0.0, 0.0);
         // Playtest 10 (version 90): landings kept clear and together.
         (config.balance.reinforce_clear, config.balance.founding_together) = (0.0, 0.0);
+        // Playtest 11 (version 91): raids by the rules, homes clear of rival animals.
+        (config.balance.raid_rules, config.balance.animal_clear) = (0.0, 0.0);
         // Playtest 6 balance (version 62): toxin upkeep, hungry hunters,
         // toxin source, speciation credit and clutch cover change how the
         // world grows before the sample players found.

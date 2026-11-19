@@ -137,6 +137,9 @@ describe('compatibility and the shop', () => {
   it('says who can breed with whom and why not', () => {
     expect(compatRowText(row)).toBe("ann's Foxes: fully fertile");
     expect(compatRowText({ ...row, fertility: 0.5, gap: 0.21 })).toBe("ann's Foxes: 50% fertile on average (diet far apart in the closest pair)");
+    // Playtest 11: the fertile pairs' own chance beside the share.
+    expect(compatRowText({ ...row, fertility: 0.1, fertile_share: 0.8, gap: 0.21 }))
+      .toBe("ann's Foxes: 10% fertile on average; 80% of pairs can conceive, at about 13% each (diet far apart in the closest pair)");
     expect(compatRowText({ ...row, owner: 0, fertility: 0, compatible: false, gap: 0.45 }))
       .toBe('wild Foxes: sterile (diet too different to breed, even in the closest pair)');
     // Playtest 7: a rival's row read "body_plan 0.30 apart".
@@ -238,7 +241,7 @@ describe('pasture restoration', () => {
     expect(first.label).toBe('Restore pasture: 240 renown');
     expect(first.can).toBe(true);
     expect(first.note).toContain('within 12 tiles of the group');
-    expect(first.note).toContain('1 renown per living animal of the largest lineage grazing there (at least 200)');
+    expect(first.note).toContain('1 renown per animal of your lineage plus each other player\'s animal you can see grazing the circle (at least 200)');
     expect(first.note).toContain('The next one costs twice as much');
     const third = restoreText({ balance: 100, restore_price: 960, restores_bought: 2 })!;
     expect(third.can).toBe(false);

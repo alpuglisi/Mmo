@@ -845,7 +845,7 @@ impl World {
         }
     }
 
-    fn attack(&mut self, i: usize, j: usize, rng: &mut SimRng) {
+    pub(super) fn attack(&mut self, i: usize, j: usize, rng: &mut SimRng) {
         let (a, b) = (&self.organisms[i], &self.organisms[j]);
         // A hunter whose last prey broke free is still recovering.
         if !b.alive || a.pos.dist(b.pos) > self.config.balance.attack_reach || self.tick < a.strike_ready_tick {
@@ -855,6 +855,17 @@ impl World {
         if self.grace_spares(a, b) {
             return;
         }
+        // A graced hunter's first attack on a rival's animal ends its
+        // owner's grace (`Balance::graced_hunting`).
+        if self.config.balance.graced_hunting > 0.0
+            && b.owner != crate::WILD
+            && b.owner != a.owner
+            && self.attack_grace_left(a).is_some()
+        {
+            let owner = a.owner;
+            self.grace_waived.insert(owner, self.tick);
+        }
+        let (a, b) = (&self.organisms[i], &self.organisms[j]);
         let escape = self.escape_chance(a, b);
         // Pack-mates striking beside it (`Balance::pack_hunt`), the more so
         // in a hunt a player leads (`decide::led_pack`).
@@ -1142,7 +1153,13 @@ impl World {
         let c = &self.clutches[k];
         // A raider that has given up on a rare species passes its clutches
         // over too (`Balance::prey_switching`).
-        if c.eggs.is_empty() || c.owner == o.owner || self.gives_up_on(o, c.lineage) {
+        if c.eggs.is_empty() || c.owner == o.owner || self.gives_up_on(o, c.lineage) || self.clutch_spared(o, c) {
+            return;
+        }
+        // Offline protection softens a raid as it does a strike
+        // (`Balance::raid_rules`).
+        let shield = self.offline_clutch_factor(c);
+        if shield < 1.0 && rng.gen::<f32>() >= shield {
             return;
         }
         // A present guardian may drive the raider off.
@@ -1152,6 +1169,19 @@ impl World {
                 return;
             }
         }
+        // A graced raider's first raid on a rival's clutch ends its owner's
+        // grace, as a first attack does (`Balance::graced_hunting`, with
+        // `raid_rules`).
+        let bal = &self.config.balance;
+        if bal.raid_rules > 0.0
+            && bal.graced_hunting > 0.0
+            && c.owner != crate::WILD
+            && self.attack_grace_left(o).is_some()
+        {
+            let owner = o.owner;
+            self.grace_waived.insert(owner, self.tick);
+        }
+        let (o, c) = (&self.organisms[i], &self.clutches[k]);
         let n = c.eggs.len().min(3);
         let food = n as f32 * c.egg_mass * self.config.balance.meat_per_kg;
         let bal = &self.config.balance;
@@ -1515,7 +1545,9 @@ impl World {
             * self.breeding_suppression(i)
             * litter_condition(&self.config.balance, mother)
             // The soft lineage cap (`Balance::lineage_crowding`).
-            * self.lineage_crowding(mother.lineage)[0];
+            * self.lineage_crowding(mother.lineage)[0]
+            // A wild species under its refuge recovers (`Balance::wild_rebound`).
+            * self.wild_rebound(mother.lineage);
         let mut count = expected.floor() as usize + usize::from(rng.gen::<f32>() < expected.fract());
         if !traits.birth.lays_eggs() {
             count = count.min(self.cap_room(mother.lineage));

@@ -10,7 +10,8 @@
 //!
 //! `--trace` prints, each season of the first seed's new arm, the wild
 //! species' numbers, the players', and the wild's births, deaths by cause
-//! and who ate them (playtest 9: why the wild shrank).
+//! and who ate them (playtest 9: why the wild shrank), and each player's
+//! legacy share. `--megadrought DAY` schedules a megadrought on that day.
 //!
 //! Ten players through the server's own rules (`Game`: founding with the
 //! winter provision, the renown shop, seasons) on the standard world with
@@ -40,8 +41,8 @@
 //! - **Loophole** founds Rulebender5's small egg-incubating cold flier as a
 //!   half-size re-found (22 founders) on `--loophole-day` (default 334).
 //!
-//! Two arms on the same seeds. **Playtest 10 rules**: the version 89
-//! tunables off (`nest_raids`, `share_litters`, `refuge_ramp`), or with `--baseline playtest2`
+//! Two arms on the same seeds. **Playtest 11 rules**: the version 92
+//! tunables off (`graced_hunting`, `share_memory`, `wild_rebound`), or with `--baseline playtest2`
 //! playtest 2's (the balance rules since version 43 off, the old soft cap),
 //! each founded at any price. **New rules**:
 //! today's defaults, each design fitted to today's prices by dropping
@@ -97,6 +98,8 @@ struct Args {
     only: Option<Vec<String>>,
     /// Print the wild's numbers and deaths each season (first seed, new rules).
     trace: bool,
+    /// Schedule a megadrought on this day (its usual length).
+    megadrought: Option<u64>,
 }
 
 fn args() -> Args {
@@ -115,6 +118,7 @@ fn args() -> Args {
         new_only: false,
         only: None,
         trace: false,
+        megadrought: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -137,6 +141,7 @@ fn args() -> Args {
             }
             "--new-only" => a.new_only = true,
             "--trace" => a.trace = true,
+            "--megadrought" => a.megadrought = Some(v().parse().expect("--megadrought")),
             "--only" => a.only = Some(v().split(',').map(|x| x.trim().to_string()).collect()),
             _ => panic!("unknown argument {k}"),
         }
@@ -393,12 +398,13 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         }
     }
     if !new_rules {
-        // Default: playtest 10's rules (the version 89 tunables off: no
-        // nest raids, crowding by share makes animals hungrier too, the
-        // wild refuge from day 0).
+        // Default: playtest 11's rules (the version 92 tunables off: grace
+        // spares a graced hunter's prey, the share counts against today's
+        // world, no wild rebound).
         let b = &mut g.world.config.balance;
-        (b.nest_raids, b.share_litters, b.refuge_ramp) = (0.0, 0.0, 0.0);
+        (b.graced_hunting, b.share_memory, b.wild_rebound) = (0.0, 0.0, 0.0);
         if a.playtest2_baseline {
+            (b.nest_raids, b.share_litters, b.refuge_ramp) = (0.0, 0.0, 0.0);
             (b.wild_barrier, b.world_crowding, b.wild_refuge) = (0.0, 0.0, 0.0);
             (b.honest_signals, b.wild_isolation) = (0.0, 0.0);
             (b.toxin_upkeep, b.hungry_hunters, b.toxin_source, b.speciation_credit, b.clutch_cover) =
@@ -414,6 +420,9 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
     }
     for (k, n) in NAMES.iter().enumerate() {
         g.set_name(k as PlayerId + 1, n);
+    }
+    if let Some(day) = a.megadrought {
+        g.world.schedule_catastrophe(evo_sim::chronicle::CatastropheKind::Megadrought, day, None);
     }
     let mut o = Outcome::default();
     let found = |g: &mut Game, p: PlayerId, d: FounderDesign, o: &mut Outcome| {
@@ -611,7 +620,7 @@ fn main() {
         }
     });
     let results = results.into_inner().unwrap();
-    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 10 rules" };
+    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 11 rules" };
     for (new, title) in [(false, old_title), (true, "New rules")] {
         if a.new_only && !new {
             continue;
@@ -707,8 +716,14 @@ fn trace_season(g: &Game, day: u64, prev: &mut TracePrev) {
     let total: usize = species.values().sum();
     let sp: Vec<String> =
         species.iter().map(|(n, c)| format!("{}:{c}", n.split_whitespace().last().unwrap_or(n))).collect();
+    let legacy = w.latest_legacy();
     let players: Vec<String> = (1..=PLAYERS)
-        .filter_map(|p| Some(w.owner_count(p)).filter(|&n| n > 0).map(|n| format!("{}:{n}", NAMES[p as usize - 1])))
+        .filter_map(|p| {
+            Some(w.owner_count(p)).filter(|&n| n > 0).map(|n| {
+                let share = legacy.map_or(0.0, |l| l.share(p)) * 100.0;
+                format!("{}:{n}({share:.0}%)", NAMES[p as usize - 1])
+            })
+        })
         .collect();
     let d: Vec<String> = deaths
         .iter()
@@ -723,8 +738,9 @@ fn trace_season(g: &Game, day: u64, prev: &mut TracePrev) {
         .map(|(&p, n)| format!("{}:{n}", if p == evo_sim::WILD { "wild" } else { NAMES[p as usize - 1] }))
         .collect();
     println!(
-        "day {day:4} {:?}: wild {total} [{}] born {} | players [{}] | wild deaths [{}] eaten by [{}]",
+        "day {day:4} {:?} drought {:.0}%: wild {total} [{}] born {} | players [{}] | wild deaths [{}] eaten by [{}]",
         w.season(),
+        w.map.drought * 100.0,
         sp.join(" "),
         born - prev.born,
         players.join(" "),

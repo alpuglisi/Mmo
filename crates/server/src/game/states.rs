@@ -558,6 +558,7 @@ impl Game {
             | ClientMsg::Provision
             | ClientMsg::RestorePasture { .. }
             | ClientMsg::Survey
+            | ClientMsg::LineageCandidates { .. }
             | ClientMsg::NameAnimal { .. }
             | ClientMsg::AnimalNames
             | ClientMsg::SetNameplate { .. }

@@ -77,7 +77,7 @@ function softCapInfo(population: number, c: CrowdingView): CapInfo {
     + `litters shrink toward the soft cap of ${grouped(c.soft_cap)} (half size at it, smaller past it) and past it members compete for food. `
     + `Births stop only at the hard cap of ${grouped(c.hard_cap)} living organisms, young included. `
     + (worldCap !== null
-      ? `A lineage's litters also shrink as at the soft cap once it holds ${Math.round((c.world_share ?? 0.2) * 100)}% of the world's animals (wild included; breeding only, not hunger): at today's numbers from ${grouped(worldCap)}. `
+      ? `A lineage's litters also shrink as at the soft cap once its crowding count reaches ${Math.round((c.world_share ?? 0.2) * 100)}% of the whole world's, counted the same way (every lineage and the wild; breeding only, not hunger): at today's numbers from ${grouped(worldCap)}. `
       : '')
     + (full
       ? 'You are at it: no young are born until some of yours die. A bigger number no longer raises your share; healthier breeding adults and their genes do.'
@@ -145,3 +145,14 @@ export function rampText(ramp: { founded_day: number; weight: number; days: numb
 export const LEGACY_EXPLAIN = 'Share: your alleles among all living breeding adults (genes, not heads; your genes in other lineages count too). '
   + 'Weighted: the same, but each adult counts by how many of its young reached adulthood, so it stays at 0% until your first young grow up. '
   + 'A new lineage counts toward the ranked season gradually (the founding ramp), so dying out and founding again does not pay.';
+
+/**
+ * Why the share can fall while the herd grows (playtest 11: it halved during
+ * a boom of young): only breeding adults count. Null unless the young
+ * outnumber the adults.
+ */
+export function boomShareText(adults: number, young: number): string | null {
+  if (young <= adults || young < 10) return null;
+  return `Most of yours are young (${grouped(young)} of ${grouped(adults + young)}): the legacy share counts breeding adults only, `
+    + 'so it can fall during a boom while older adults die, and rises as the young grow up.';
+}

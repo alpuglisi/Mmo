@@ -438,8 +438,14 @@ button.danger { background: #b62324; color: #fff; }
   .stage-wrap.show-legend .toasts { display: none; } /* the open legend takes their place */
   .hint { max-width: none; }
   /* Phones: under the toolbar and the notices, above an open Tools menu (it hid them, playtest 9). */
-  .toasts { top: calc(58px + var(--cat-h, 0px)); bottom: auto; left: 8px; right: 8px; max-width: none; align-items: stretch; z-index: 8; }
-  .toast { font-size: 12px; padding: 4px 8px; }
+  .toasts { top: max(calc(58px + var(--cat-h, 0px)), var(--tip-bottom, 0px)); bottom: auto; left: 8px; right: 8px; max-width: none; align-items: stretch; z-index: 8; }
+  /* Two lines at most, the rest a tap away (they take taps on phones only). */
+  .toast { font-size: 12px; padding: 4px 8px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+  .toast.open { -webkit-line-clamp: unset; line-clamp: none; display: block; }
+  /* Only a cut-short toast takes a tap (to open it), and none while the Tools menu is open over the map. */
+  .toast.long, .toast.open { pointer-events: auto; cursor: pointer; }
+  .stage-wrap:has(.toolbar.more-open) .toast { pointer-events: none; }
+  .toasts { max-height: 40%; overflow: hidden; }
   .toast:nth-last-child(n+3) { display: none; } /* the two newest only: keep the map visible */
 
   .sidebar {
@@ -588,7 +594,9 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
   #clock { text-overflow: clip; flex: 0 0 auto; }
   .topbar .pill { white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
   /* A live connection as a green dot (the room goes to "N renown": a bare number puzzled newcomers). */
-  .topbar .balance-pill { flex-shrink: 0; padding: 2px 8px; }
+  /* Log out and Help never shrink (playtest 11: "Lo / ou" wrapped and clipped at 390 px); the renown pill gives way, with an ellipsis. */
+  .topbar .balance-pill { flex: 0 1 auto; min-width: 4.5em; padding: 2px 8px; }
+  .topbar #logout, .topbar .help-btn { flex-shrink: 0; white-space: nowrap; }
   .topbar .pill.conn-open { font-size: 0; width: 12px; height: 12px; padding: 0; border-radius: 50%; background: var(--good, #3fb950); flex: 0 0 auto; }
   #clock .clock-long { display: none; }
   #clock .clock-short { display: inline; }

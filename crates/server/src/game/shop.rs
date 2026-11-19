@@ -118,6 +118,21 @@ pub fn drought_design_text(drought: f32) -> String {
     )
 }
 
+/// Share of the dry land too hot in summer for a design from which the
+/// design check warns (`DesignCompatView::heat_warning`).
+pub const HEAT_DESIGN_SHARE: f32 = 0.25;
+
+/// [`DesignCompatView::heat_warning`]'s text.
+pub fn heat_design_text(share: f32, limit: f32) -> String {
+    format!(
+        "Heat: in summer about {:.0}% of the land gets hotter than this design can bear (about {limit:.0} °C, its coat \
+         and body hold the heat in), and founders landing there die of heat in their first summer. Shade and water \
+         don't cool them; less fur and fat, a smaller body, burrowing (a burrow keeps the midday heat off) or \
+         estivation (sleeping through the hottest weeks) do.",
+        share * 100.0
+    )
+}
+
 /// [`DesignCompatView::carnivore_egg_warning`]'s text.
 pub const CARNIVORE_EGG_WARNING: &str = "An egg-laying hunter leaves its clutch to hunt, and unattended eggs chill or \
      are raided: expect several eggs lost for each one that hatches. Live birth suits a roaming carnivore; an egg layer \
@@ -216,7 +231,7 @@ impl Game {
             restores_bought: self.restores_bought(player),
             animal_name_price: economy::ANIMAL_NAME_PRICE,
             owed: self.economy.refound_debt.get(&player).copied().unwrap_or(0),
-            next_refound_fee: {
+            next_refound_fee: self.lineage_of(player).map(|_| {
                 let (today, window) = (self.world.day(), self.refound_window_days());
                 let n = self
                     .economy
@@ -224,7 +239,7 @@ impl Game {
                     .get(&player)
                     .map_or(0, |d| d.iter().filter(|&&x| x + window > today).count());
                 crate::game::refound_fee(n as u32)
-            },
+            }),
             reinforce_next_day: self.reinforce_next(player).map(|x| x.0),
             reinforce_next_minutes: self.reinforce_next(player).map(|x| x.1),
         }
@@ -389,24 +404,38 @@ impl Game {
             // anywhere a lone animal walked gave a census of rivals).
             .filter(|o| self.in_sight(player, o.pos))
             .count();
+        // Rounded up to tens: the price against the shop's own (head count
+        // only) was an exact count of the rivals around (playtest 11).
+        let others = others.div_ceil(10) * 10;
         let size = self.owner_population(player) + others;
         let tick = self.world.tick();
         // A preview's price is honoured for a few seconds (playtest 10: the
         // purchase seconds later cost more).
         let quote_ticks =
             crate::game::minutes_to_ticks(crate::game::RESTORE_QUOTE_SECONDS / 60.0, self.cfg.tick_ms).max(1);
-        let quoted = self.restore_quotes.get(&player).filter(|q| q.0 == group && tick <= q.2).map(|q| q.1);
+        // Quotes are per group (playtest 11: one quote per player).
+        let quote = self.restore_quotes.get(&(player, group)).copied().filter(|q| tick <= q.2);
+        let quoted = quote.map(|q| q.0);
         let now = economy::restore_price(size, self.restores_bought(player));
         // The shop's own quote (head count only) holds when no other player
         // grazes the circle.
         let price = quoted.unwrap_or_else(|| if others == 0 { self.quoted(player, now, |q| q.restore) } else { now });
         let food = self.world.restore_pasture(at, r, false);
         let per_food = price as f32 / food.max(1.0);
-        let hint = (food >= 1.0 && per_food > 1.0).then(|| {
-            format!(
-                "poor value now: about {per_food:.1} renown per food (a drought or the season holds the plants back)"
-            )
-        });
+        const NOTHING: &str =
+            "nothing would regrow there now (winter, a drought, or the plants are already as high as the season allows)";
+        let hint = if food < 1.0 {
+            // A preview of nothing says why and prices nothing (playtest 11:
+            // a winter preview quoted 1,242 for 0 food, no reason given).
+            Some(NOTHING.to_string())
+        } else {
+            (per_food > 1.0).then(|| {
+                format!(
+                    "poor value now: about {per_food:.1} renown per food (a drought or the season holds the plants back)"
+                )
+            })
+        };
+        let price = if food < 1.0 { 0 } else { price };
         let mut view = crate::protocol::RestoreView {
             group,
             x: at.x.round(),
@@ -422,22 +451,34 @@ impl Game {
             shop: None,
         };
         if preview {
-            self.restore_quotes.insert(player, (group, price, tick + quote_ticks));
+            if price > 0 {
+                self.restore_quotes.insert((player, group), (price, food, tick + quote_ticks));
+            }
             view.shop = Some(self.shop_view(player));
             return Ok(view);
         }
         if food < 1.0 {
-            return Err(ErrorInfo::new(
-                "nothing_to_restore",
-                "nothing would regrow there now (winter, a drought, or the plants are already as high as the season allows)",
-            ));
+            return Err(ErrorInfo::new("nothing_to_restore", NOTHING));
+        }
+        // The quote holds the food too: if the plants fell by more than a
+        // fifth since, ask again instead of charging the quoted price for
+        // less (playtest 11).
+        if let Some((_, quoted_food, _)) = quote {
+            if food < quoted_food * 0.8 {
+                self.restore_quotes.remove(&(player, group));
+                return Err(ErrorInfo::new(
+                    "quote_changed",
+                    format!("the pasture changed since the quote: about {food:.0} food now, not {quoted_food:.0}; preview again"),
+                )
+                .with_detail(serde_json::json!({ "restored": food.round(), "quoted": quoted_food.round() })));
+            }
         }
         self.spend(
             player,
             price,
             format!("Pasture restored within {r} tiles of group {group}: about {:.0} food", food),
         )?;
-        self.restore_quotes.remove(&player);
+        self.restore_quotes.remove(&(player, group));
         view.restored = self.world.restore_pasture(at, r, true).round();
         let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
         let days = self.economy.restore_days.entry(player).or_default();
@@ -518,6 +559,15 @@ impl Game {
     ) -> Result<(String, ShopView), ErrorInfo> {
         let name = names::check(name, crate::design::MAX_NAME_LEN, names::Kind::Species)
             .map_err(|why| ErrorInfo::new("bad_name", format!("that name can't be used: {why}")))?;
+        match self.world.organism(organism) {
+            Some(o) if o.owner == player => {}
+            Some(_) => return Err(ErrorInfo::new("not_owned", format!("#{organism} is not yours"))),
+            None => return Err(ErrorInfo::new("not_found", format!("no living organism #{organism}"))),
+        }
+        // The price before the checks against other players' and the wild's
+        // names: `bad_name` against `insufficient_funds` was a free oracle
+        // of which names pass (playtest 11).
+        self.check_funds(player, economy::ANIMAL_NAME_PRICE)?;
         if self.impersonates(player, &name, names::Kind::Species) {
             return Err(ErrorInfo::new("bad_name", "an animal's name can't look like another player's name"));
         }
@@ -528,11 +578,6 @@ impl Game {
         }
         if self.rival_name(player, &name) || self.holds_rival_name(player, &name) {
             return Err(ErrorInfo::new("name_taken", "another player's lineage or species has that name"));
-        }
-        match self.world.organism(organism) {
-            Some(o) if o.owner == player => {}
-            Some(_) => return Err(ErrorInfo::new("not_owned", format!("#{organism} is not yours"))),
-            None => return Err(ErrorInfo::new("not_found", format!("no living organism #{organism}"))),
         }
         if self.economy.animal_names.get(&organism) == Some(&name) {
             return Err(ErrorInfo::new("same_name", format!("#{organism} is already called {name}")));
@@ -560,6 +605,14 @@ impl Game {
         }
         let title = names::check(title, economy::MAX_TITLE_LEN, names::Kind::Title)
             .map_err(|why| ErrorInfo::new("bad_title", format!("that title can't be used: {why}")))?;
+        let price = if self.economy.nameplates.contains_key(&player) {
+            economy::NAMEPLATE_CHANGE_PRICE
+        } else {
+            economy::NAMEPLATE_PRICE
+        };
+        // The price first: `bad_title` against `insufficient_funds` was a
+        // free oracle of which titles pass (playtest 11).
+        self.check_funds(player, price)?;
         // Nor another player's name, or one inside it (it shows beside the
         // owner's: "Herdmaster4 (alt)").
         if self.wild_name(&title) {
@@ -571,11 +624,6 @@ impl Game {
         if self.rival_name(player, &title) || self.holds_rival_name(player, &title) {
             return Err(ErrorInfo::new("bad_title", "that title can't be used: it is another player's lineage name"));
         }
-        let price = if self.economy.nameplates.contains_key(&player) {
-            economy::NAMEPLATE_CHANGE_PRICE
-        } else {
-            economy::NAMEPLATE_PRICE
-        };
         self.spend(player, price, format!("Nameplate: {color} \"{title}\""))?;
         let plate = economy::Nameplate { color: color.to_string(), title };
         self.economy.nameplates.insert(player, plate.clone());
@@ -586,15 +634,6 @@ impl Game {
     pub(super) fn name_species(&mut self, player: PlayerId, species: u32, name: &str) -> Result<String, ErrorInfo> {
         let name = names::check(name, crate::design::MAX_NAME_LEN, names::Kind::Species)
             .map_err(|why| ErrorInfo::new("bad_name", format!("that species name can't be used: {why}")))?;
-        if self.wild_name(&name) {
-            return Err(ErrorInfo::new("bad_name", "that species name can't be used: it is a wild species' name"));
-        }
-        if self.rival_name(player, &name) {
-            return Err(ErrorInfo::new("name_taken", "another player's lineage or species has that name"));
-        }
-        if self.impersonates(player, &name, names::Kind::Species) {
-            return Err(ErrorInfo::new("bad_name", "a species name can't look like another player's name"));
-        }
         let tracker = &self.world.chronicle.species;
         let s =
             tracker.get(species).ok_or_else(|| ErrorInfo::new("unknown_species", format!("no species {species}")))?;
@@ -611,6 +650,23 @@ impl Game {
         if let Some(&by) = self.economy.named_species.get(&species) {
             return Err(ErrorInfo::new("already_named", format!("{} has already named this species", self.name(by))));
         }
+        // Whether it can be named, and paid for, before the checks against
+        // other players' and the wild's names: they were a free oracle
+        // (playtest 11).
+        self.check_funds(player, economy::SPECIES_NAME_PRICE)?;
+        if self.wild_name(&name) {
+            return Err(ErrorInfo::new("bad_name", "that species name can't be used: it is a wild species' name"));
+        }
+        // Nor a near copy of a rival's lineage name (playtest 11: "Skyglass
+        // Swarn" beside "Skyglass Swarm").
+        if self.rival_name(player, &name) || self.holds_rival_name(player, &name) {
+            return Err(ErrorInfo::new("name_taken", "another player's lineage or species has that name"));
+        }
+        if self.impersonates(player, &name, names::Kind::Species) {
+            return Err(ErrorInfo::new("bad_name", "a species name can't look like another player's name"));
+        }
+        let tracker = &self.world.chronicle.species;
+        let s = tracker.get(species).expect("checked above");
         // Its own name again would charge for nothing (playtest 5: 300).
         if names::fold(&s.name) == names::fold(&name) {
             return Err(ErrorInfo::new("same_name", format!("the species is already called {}", s.name)));
@@ -806,7 +862,12 @@ impl Game {
         if alive > max {
             return Err(ErrorInfo::new(
                 "too_large",
-                format!("reinforcements are for lineages of at most {max} (yours has {alive})"),
+                // Said as a count now, young included (playtest 11: "yours
+                // has 423" read as neither the count shown nor the peak).
+                format!(
+                    "reinforcements are for lineages of at most {max} alive (you have {} alive now, young included)",
+                    super::thousands(alive as u64)
+                ),
             ));
         }
         let peak = self.season_peak(player);
@@ -815,7 +876,7 @@ impl Game {
                 "too_large",
                 format!(
                     "reinforcements are for lineages of at most {max} alive at any time in the last {} days \
-                     (yours had {peak})",
+                     (you had {peak} at the most)",
                     self.cfg.season_days
                 ),
             ));
@@ -890,11 +951,16 @@ impl Game {
         // (playtest 10: no hint the rule was relaxed).
         let note = moved.map(|(_, d)| {
             format!(
-                "your group stands in or beside another player's territory, so they landed on the nearest clear \
+                "your group stands in or beside another player's territory or animals, so they landed on the nearest clear \
                  ground, {d:.0} tiles from it"
             )
         });
-        let site = ReinforceSite { at: [at.x, at.y], nearby_count: nearby, group, note };
+        let site = ReinforceSite {
+            at: [crate::protocol::round::c2(at.x), crate::protocol::round::c2(at.y)],
+            nearby_count: nearby,
+            group,
+            note,
+        };
         self.spend(
             player,
             price,
@@ -984,8 +1050,10 @@ impl Game {
         coarsen_rivals(&mut rows, player);
         // As the rows show it (playtest 10: `fertile_with: 2` beside rows all
         // at 0 once rivals' figures were rounded to tenths).
-        let fertile_with = rows.iter().filter(|r| r.fertility > 0.0).count();
-        let at_risk = rows.iter().filter(|r| r.fertile_share <= 0.0 && r.drift_risk != "none").count();
+        // Other lineages only (playtest 11: the player's own lineage counted).
+        let fertile_with = rows.iter().filter(|r| r.owner != player && r.fertility > 0.0).count();
+        let at_risk =
+            rows.iter().filter(|r| r.owner != player && r.fertile_share <= 0.0 && r.drift_risk != "none").count();
         // Shores the founders can drink from (steep banks stop non-climbers).
         let probe = evo_sim::organism::Organism::new(
             0,
@@ -1013,6 +1081,11 @@ impl Game {
             .then(|| CARNIVORE_EGG_WARNING.to_string());
         let egg_warning = (design.thermo == evo_sim::Thermo::Warm && design.birth == evo_sim::BirthType::AbandonedEggs)
             .then(|| EGG_WARNING.to_string());
+        let heat_warning = self
+            .world
+            .summer_heat(design)
+            .filter(|&(share, _)| share >= HEAT_DESIGN_SHARE)
+            .map(|(share, limit)| heat_design_text(share, limit));
         DesignCompatView {
             day: self.world.day(),
             sample: SAMPLE,
@@ -1024,6 +1097,7 @@ impl Game {
             egg_warning,
             drought_warning,
             carnivore_egg_warning,
+            heat_warning,
             refound: self.refound_terms(player).map(|t| {
                 let n = t.founders(design);
                 crate::protocol::RefoundView {
@@ -1038,6 +1112,8 @@ impl Game {
                     reason: t.reason,
                 }
             }),
+            points: Some(design.point_cost()),
+            budget: Some(evo_sim::design::DESIGN_BUDGET),
             // With the founders that would land (a re-founding gives fewer).
             grace_note: self
                 .grace_preview(player, self.refound_terms(player).map_or(design.founders, |t| t.founders(design))),
@@ -1082,13 +1158,29 @@ impl Game {
         self.hosts = self.world.legacy_hosts();
     }
 
+    /// The host tally's total, scaled as the day's legacy snapshot scales
+    /// its own (`Balance::share_memory`: the world as big as it has been
+    /// lately), so the breakdown's shares match the leaderboard's.
+    fn hosts_total(&self) -> f64 {
+        let raw: f64 = self.hosts.values().sum();
+        let scale = self.world.latest_legacy().map_or(1.0, |l| {
+            let sum: f64 = l.alleles.values().sum();
+            if sum > 0.0 && l.total_alleles > sum {
+                l.total_alleles / sum
+            } else {
+                1.0
+            }
+        });
+        raw * scale
+    }
+
     /// `player`'s alleles living in other players' lineages, over all
     /// alleles: what the royalty pays for. Alleles in the wild (a design
     /// that hybridised with a wild species) don't count: they came from
     /// no trade, and at 5 renown a point they paid every lineage about as
     /// much as its income (examples/competition.rs).
     fn traded_share(&self, player: PlayerId) -> f64 {
-        let total: f64 = self.hosts.values().sum();
+        let total = self.hosts_total();
         if total <= 0.0 {
             return 0.0;
         }
@@ -1124,7 +1216,7 @@ impl Game {
 
     /// Whose genes make up `player`'s legacy share (`lineage_stats.score`).
     pub(super) fn score_breakdown(&self, player: PlayerId) -> Option<ScoreBreakdown> {
-        let total: f64 = self.hosts.values().sum();
+        let total = self.hosts_total();
         let day = self.world.latest_legacy().map_or(self.world.day(), |l| l.day);
         if total <= 0.0 {
             return None;

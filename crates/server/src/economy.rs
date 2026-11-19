@@ -344,6 +344,11 @@ pub struct Economy {
     /// The day each player's last lineage ended, retired or died out
     /// (re-founding soon after costs founders: `Game::refound_terms`).
     pub retired_day: BTreeMap<PlayerId, u64>,
+    /// The day each retired lineage was retired (lineage → day), so a gone
+    /// species reads "retired day N", not "extinct" a few days early from
+    /// its last detection (playtest 11). Absent from older saves: none.
+    #[serde(default)]
+    pub retired_lineages: BTreeMap<u32, u64>,
     /// The simulated days of each player's recent re-foundings within the
     /// window (`Game::refound_terms`: each one doubles the next's fee).
     #[serde(default)]

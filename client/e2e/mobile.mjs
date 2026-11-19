@@ -32,6 +32,8 @@ const { chromium, devices } = require('playwright');
 const here = path.dirname(fileURLToPath(import.meta.url));
 const clientDir = path.resolve(here, '..');
 const bin = process.env.EVO_SERVER_BIN ?? path.resolve(clientDir, '../target/release/evo-server');
+/** The operator token the servers here run with (players online need it). */
+const OPERATOR = 'mobile-e2e-operator';
 const dist = path.join(clientDir, 'dist');
 const shots = path.resolve(process.env.SCREENSHOT_DIR ?? path.join(here, 'out'));
 
@@ -910,14 +912,9 @@ async function worldChecks(browser, base, errors) {
   const context = await browser.newContext({ ...device('Pixel 7') });
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push(e.message));
-  // Players online are told to a logged-in caller only (playtest 9): a
-  // watcher account reads them.
-  const watcher = await (await fetch(`${base}/api/register`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: `obs_${stamp()}`, password: 'a long password' }),
-  })).json();
-  const auth = { headers: { authorization: `Bearer ${watcher.token}` } };
+  // Players online are told to the operator only (playtest 11): the
+  // server runs with this token (see `withServer`).
+  const auth = { headers: { 'x-admin-token': OPERATOR } };
   const online = async () => Object.fromEntries((await (await fetch(`${base}/api/worlds`, auth)).json()).worlds.map((w) => [w.id, w.players_online]));
   await page.goto(`${base}/?tour=off`);
   await page.waitForSelector('#world-select', { state: 'visible', timeout: 20000 * TIME_SCALE });
@@ -983,6 +980,7 @@ async function withServer(seed, fn, extra = []) {
   const base = `http://127.0.0.1:${port}`;
   const server = spawn(bin, ['--fast', '--memory', '--size', '64', '--seed', String(seed), '--days-per-year', '480', '--bind', `127.0.0.1:${port}`, '--static', dist, ...extra], {
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, EVO_ADMIN_TOKEN: OPERATOR },
   });
   let log = '';
   server.stdout.on('data', (d) => (log += d));

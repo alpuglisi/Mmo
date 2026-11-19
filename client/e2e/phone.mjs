@@ -161,6 +161,47 @@ async function main() {
     const viewport = page.viewportSize();
     step(`founded on a ${viewport.width} × ${viewport.height} phone`);
 
+    // Log out stays whole in the top bar, even with a big renown balance (playtest 11: "Lo / ou" at 390 px).
+    const bar = await page.evaluate(() => {
+      const b = document.querySelector('#balance');
+      const was = b.textContent;
+      b.textContent = '12,900 renown';
+      // A late date and a world name, as in a long game on a server with two worlds.
+      const w = document.querySelector('#world-name');
+      w.textContent = 'Main world';
+      w.hidden = false;
+      const c = document.querySelector('#clock .clock-short');
+      if (c) c.textContent = 'Y4 d412 14:00 autumn ☾';
+      // And the connection pill in words (reconnecting), not the green dot.
+      const conn = document.querySelector('#conn-state');
+      const connWas = [conn.className, conn.textContent];
+      conn.className = 'pill conn-closed';
+      conn.textContent = 'reconnecting…';
+      const out = document.querySelector('#logout');
+      const r = out.getBoundingClientRect();
+      const res = { right: r.right, width: r.width, vw: innerWidth, clipped: out.scrollWidth > out.clientWidth + 1, text: out.textContent };
+      b.textContent = was;
+      w.hidden = true;
+      [conn.className, conn.textContent] = connWas;
+      return res;
+    });
+    check(bar.right <= bar.vw && !bar.clipped && bar.width >= 50, 'Log out should fit in the top bar on a 390 px phone', bar);
+    step('Log out fits the top bar beside a big renown balance, a world name and a worded connection pill');
+
+    // A long toast shows two lines on a phone; a tap opens the rest (playtest 11: 3–4 line toasts covered a third of the map).
+    await page.evaluate(() => window.evo.model.toast('info', 'Your lineage is being hunted: 7 of your animals were eaten on day 300, by a rival pack near 40, 52. Keep the herd together, move it away from the pack, or claim a territory where the hunters are fewer; the Food layer shows where the plants are.'));
+    const clamp = await page.evaluate(() => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(() => {
+      const el = document.querySelector('#toasts .toast:last-child');
+      const lh = parseFloat(getComputedStyle(el).lineHeight) || 16;
+      res({ h: el.clientHeight, lh, long: el.classList.contains('long') });
+    }))));
+    check(clamp.long && clamp.h <= clamp.lh * 2 + 12, 'a long toast should be cut to two lines on a phone', clamp);
+    await page.tap('#toasts .toast:last-child');
+    const opened = await page.evaluate(() => document.querySelector('#toasts .toast:last-child').clientHeight);
+    check(opened > clamp.h, 'a tap opens the rest of the toast', { opened, clamp });
+    await page.evaluate(() => { window.evo.model.toasts = []; window.evo.model.emit('toast'); });
+    step(`a long toast shows two lines (${clamp.h} px); a tap opens it (${opened} px)`);
+
     // 1. The renown pill opens the Market.
     await page.tap('#balance');
     await waitFor('the Market in the sheet', () => page.evaluate(() => document.querySelector('.game')?.classList.contains('sheet-open')

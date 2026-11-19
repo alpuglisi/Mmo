@@ -213,7 +213,7 @@ export class GameModel {
         const toLineage = m.offer.partner === 0;
         const text = `${m.offer.from_name} asks to mate their #${m.offer.mine} with ${toLineage ? 'one of yours (you pick which)' : `your #${m.offer.partner}`}`;
         this.toast('info', text);
-        this.addFeed([{ kind: 'offer', text, tick: this.tick(), ...(toLineage ? {} : { organism: m.offer.partner }) }]);
+        this.addFeed([{ kind: 'offer', text, tick: this.tick(), day: this.state?.clock.day, ...(toLineage ? {} : { organism: m.offer.partner }) }]);
         this.emit('offers');
         break;
       }
@@ -239,6 +239,12 @@ export class GameModel {
           incoming: prev?.incoming ?? m.offer.to_player === this.player,
         });
         this.trimClosed();
+        // Only a change a player acts on is said (playtest 11: a deadline moved
+        // every half day while an animal slept, 58 updates and toasts for one offer).
+        if (prev && offerKey(prev.offer, prev.outcome, prev.error) === offerKey(m.offer, m.outcome, m.error)) {
+          this.emit('offers');
+          break;
+        }
         const text = offerUpdateText(m.offer, m.outcome, m.error, this.player);
         this.toast(m.error && m.offer.status !== 'accepted' ? 'error' : 'info', text);
         this.addFeed([{ kind: 'offer', text, tick: this.tick(), day: m.day ?? this.state?.clock.day }]);
@@ -272,4 +278,9 @@ export class GameModel {
     const closed = [...this.offers.values()].filter((e) => !isOpen(e.offer.status));
     for (const e of closed.slice(0, Math.max(0, closed.length - MAX_CLOSED))) this.offers.delete(e.offer.id);
   }
+}
+
+/** What about an offer is worth telling: not its deadline or the animals' positions. */
+export function offerKey(o: OfferView, outcome: MatingOutcome | undefined, error: ErrorInfo | undefined): string {
+  return JSON.stringify([o.status, o.mine, o.partner, o.lost ?? null, o.substitute_sex ?? null, outcome ?? null, error?.code ?? null, error?.message ?? null]);
 }

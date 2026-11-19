@@ -433,3 +433,65 @@ fn hungry_hunters_go_for_a_rival_clutch() {
     w.config.balance.nest_raids = 0.0;
     assert_eq!(w.scent_clutch(&w.organisms[h]), None);
 }
+
+/// Playtest 11: nest raids ignored the market shield (and grace and
+/// offline protection). With `Balance::raid_rules` a player's hunter
+/// passes up a rival clutch whose mother is shielded, as it would her.
+#[test]
+fn a_shielded_mothers_clutch_is_not_raided() {
+    let mut w = niche(4);
+    let h = adults(&mut w, Sex::Male, 1, &[])[0];
+    clear_area(&mut w, &[h]);
+    let at = Vec2::new(20.5, 20.5);
+    w.organisms[h].pos = at;
+    w.organisms[h].needs.hunger = 70.0;
+    // A player's hunter (grace and shields bind players' animals).
+    w.organisms[h].owner = 7;
+    w.grid.rebuild(&w.organisms);
+    let nest = at + Vec2::new(4.0, 1.0);
+    let g = w.organisms[h].genome.clone();
+    let rival = (0..w.lineages.len() as u32).find(|&l| l != w.organisms[h].lineage).unwrap();
+    w.clutch_at.insert(w.map.tile_coords(nest), 0);
+    w.clutches.push(Clutch {
+        pos: nest,
+        owner: 8,
+        mother: 4242,
+        father: 0,
+        generation: 1,
+        lineage: rival,
+        eggs: vec![(*g).clone(), (*g).clone(), (*g).clone()],
+        hatch_tick: 1_000_000,
+        guardian: None,
+        warm_blooded: true,
+        chill: 0.0,
+        overheat: 0.0,
+        newborn_growth: 0.1,
+        egg_mass: 0.05,
+    });
+    assert_eq!(w.scent_clutch(&w.organisms[h]), Some(nest));
+    w.set_market_shield([4242]);
+    assert_eq!(w.scent_clutch(&w.organisms[h]), None);
+    assert!(w.clutch_spared(&w.organisms[h], &w.clutches[0]));
+    // The old rule: raided all the same.
+    w.config.balance.raid_rules = 0.0;
+    assert_eq!(w.scent_clutch(&w.organisms[h]), Some(nest));
+}
+
+/// A wild species under its refuge breeds faster (`Balance::wild_rebound`):
+/// `1 + wild_rebound × (1 − r)`, `r` its count over the refuge; a player's
+/// lineage, and the wild before the refuge comes in, breed as before.
+#[test]
+fn a_scarce_wild_species_breeds_back() {
+    let mut w = niche(1);
+    let wild = (0..w.lineages.len() as u32).find(|&l| w.lineages[l as usize].owner == crate::WILD).unwrap();
+    let player = (0..w.lineages.len() as u32).find(|&l| w.lineages[l as usize].owner != crate::WILD).unwrap();
+    // Day 0: the refuge hasn't come in (`refuge_ramp`).
+    assert_eq!(w.wild_rebound(wild), 1.0);
+    w.tick = 2 * 4 * w.config.days_per_season() as u64 * w.config.ticks_per_day as u64;
+    let r = w.refuge_fill(wild);
+    assert!(r < 1.0, "{r}");
+    assert!((w.wild_rebound(wild) - (2.0 - r)).abs() < 1e-5, "{}", w.wild_rebound(wild));
+    assert_eq!(w.wild_rebound(player), 1.0);
+    w.config.balance.wild_rebound = 0.0;
+    assert_eq!(w.wild_rebound(wild), 1.0);
+}
