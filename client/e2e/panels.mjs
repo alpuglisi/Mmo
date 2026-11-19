@@ -150,16 +150,24 @@ async function main() {
       return r.length > 0 && r.every((t) => / female /.test(t)) ? r : null;
     }));
     check(rows.length <= 50, 'the picker shows at most 50 rows', rows.length);
-    const picked = await page.evaluate(() => {
-      const r = [...document.querySelectorAll('#mating-mine .picker-row')];
-      return r[r.length - 1].textContent.match(/^#(\d+)/)[1];
-    });
-    // Search by id finds it.
-    await page.fill('#mating-mine .picker-search', picked);
-    await waitFor('the searched row', () => page.evaluate((id) => {
-      const r = [...document.querySelectorAll('#mating-mine .picker-row')];
-      return r.length >= 1 && r[0].textContent.startsWith(`#${id} `);
-    }, picked));
+    // Search by id finds it. The picked female can leave the picker in
+    // between (pregnant, or dead) under a loaded run: pick another then.
+    let picked = null;
+    for (let attempt = 0; attempt < 5 && !picked; attempt++) {
+      await page.fill('#mating-mine .picker-search', '');
+      const id = await waitFor('a female row', () => page.evaluate((k) => {
+        const r = [...document.querySelectorAll('#mating-mine .picker-row')].map((b) => b.textContent.match(/^#(\d+)/)?.[1]).filter(Boolean);
+        return r.length ? r[(r.length - 1 - k + 10 * r.length) % r.length] : null;
+      }, attempt));
+      await page.fill('#mating-mine .picker-search', id);
+      const found = await waitFor('the searched row', () => page.evaluate((id) => {
+        const r = [...document.querySelectorAll('#mating-mine .picker-row')];
+        return r.length >= 1 && r[0].textContent.startsWith(`#${id} `);
+      }, id), 8000).catch(() => false);
+      if (found) picked = id;
+      else step(`#${id} left the picker before the search found it: picking another`);
+    }
+    check(picked, 'the picker search never found a picked female');
     await page.click(`#mating-mine .picker-row:has-text("#${picked} ")`);
     await waitFor('the picker to close on a choice', () => page.evaluate(() => document.querySelector('#mating-mine .picker-panel').hidden));
     await page.evaluate(() => { window.__pickerButton = document.querySelector('#mating-mine .picker-button'); });
