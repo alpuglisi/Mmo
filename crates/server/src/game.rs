@@ -170,6 +170,10 @@ impl std::fmt::Debug for TerrainBlob {
     }
 }
 
+/// A pasture-restoration preview: (price, food, honoured until tick, the
+/// circle's centre x, y).
+type RestoreQuote = (u64, f32, u64, f32, f32);
+
 #[derive(Clone, Debug)]
 pub struct GameConfig {
     /// Half-side of the default view window, in tiles.
@@ -766,6 +770,10 @@ pub const LINEAGE_PICK_SLACK: f32 = 24.0;
 /// warning (`Game::walk_warning`).
 pub const LONG_WALK_TILES: f32 = 24.0;
 
+/// Hunger or thirst from which an animal is too needy to offer
+/// (`Game::check_fit_to_offer`).
+pub const UNFIT_NEED: f32 = 85.0;
+
 /// Game days the pair of a completed market mating stays shielded from
 /// other players' animals on the way back (playtest 11).
 pub const POST_MATING_SHIELD_DAYS: u64 = 2;
@@ -1023,8 +1031,8 @@ pub struct Game {
     /// the way back (`POST_MATING_SHIELD_DAYS`). Not saved.
     post_shield: BTreeMap<OrgId, u64>,
     /// Pasture-restoration previews by (player, group): (price, food,
-    /// honoured until tick). Not saved.
-    restore_quotes: BTreeMap<(PlayerId, u8), (u64, f32, u64)>,
+    /// honoured until tick, the circle's centre x, y). Not saved.
+    restore_quotes: BTreeMap<(PlayerId, u8), RestoreQuote>,
     /// Hunters of the watched deaths not yet announced, in words, per
     /// player (`announce_deaths`). Not saved.
     pending_killers: BTreeMap<PlayerId, BTreeMap<OrgId, String>>,
@@ -3275,6 +3283,7 @@ impl Game {
             return Ok(Some(serde_json::to_value(outcome).unwrap()));
         }
         let to = self.check_cross_pair(player, mine, partner)?;
+        self.check_fit_to_offer(mine)?;
         self.check_request_allowed(player, to)?;
         let price = price.filter(|&p| p > 0);
         if let Some(p) = price {
@@ -3343,6 +3352,7 @@ impl Game {
         if a.sex == Sex::Female && a.pregnancy.is_some() {
             return Err(e(CommandError::AlreadyPregnant));
         }
+        self.check_fit_to_offer(mine)?;
         let to = match self.world.lineages.get(lineage as usize) {
             Some(l) if l.owner != WILD && l.owner != player && self.lineage_of(l.owner) == Some(lineage) => l.owner,
             Some(l) if l.owner == player => {
@@ -3594,6 +3604,28 @@ impl Game {
     /// The checks before asking another player's consent (or buying a
     /// listing): ownership, maturity, sex, pregnancy, compatibility, slots
     /// and the open-offer limit. Returns the partner's owner.
+    /// Refuse offering an animal unlikely to live to the meeting: past 90% of
+    /// its lifespan, asleep, or starving or parched (playtest 12: 7 of 16
+    /// offers died while pending).
+    fn check_fit_to_offer(&self, id: OrgId) -> Result<(), ErrorInfo> {
+        let Some(a) = self.world.organism(id) else { return Ok(()) };
+        let tpd = self.world.config.ticks_per_day;
+        let (age, life) = (a.age_days(tpd), a.traits.lifespan_days);
+        let why = if age >= 0.9 * life {
+            Some(format!("it is old ({age:.0} of about {life:.0} days) and may die before the two meet"))
+        } else if matches!(a.dormancy, Dormancy::Winter | Dormancy::Summer) {
+            Some("it is asleep (winter or summer sleep) and won't walk to a meeting until it wakes".to_string())
+        } else if a.needs.hunger >= UNFIT_NEED || a.needs.thirst >= UNFIT_NEED {
+            Some("it is starving or parched: let it eat and drink first".to_string())
+        } else {
+            None
+        };
+        match why {
+            Some(w) => Err(ErrorInfo::new("unfit", format!("#{id} can't be offered now: {w}"))),
+            None => Ok(()),
+        }
+    }
+
     fn check_cross_pair(&self, player: PlayerId, mine: OrgId, partner: OrgId) -> Result<PlayerId, ErrorInfo> {
         let e = |err: CommandError| ErrorInfo::from(&err);
         let a = self.world.organism(mine).ok_or(e(CommandError::NotFound(mine)))?;
@@ -5053,6 +5085,11 @@ impl Game {
                 self.season.add_sale(o.to, o.from, net);
             }
             self.alert(o.to, AlertKind::Market, format!("{text}."), Some(o.partner), out);
+            // The payer's ledger shows the escrow leaving too (playtest 12:
+            // no line, and "paid into escrow" never came back down).
+            let text = format!("Escrow paid out: {amount} renown to {to} for {what} (the mating ran)");
+            let _ = self.post(o.from, 0, LedgerKind::Escrow, text, Some(o.id), o.listing);
+            self.economy.note_payout(o.from, amount);
             // The payer hears it with the outcome (`Game::close`).
             let _ = to;
             Some("paid")
@@ -5597,6 +5634,17 @@ impl Game {
             .chain(self.post_shield.keys().copied())
             .collect();
         self.world.set_market_shield(shielded);
+        // A pending offer's two animals are spared by the other side's
+        // animals only (playtest 12: offered animals eaten before an answer;
+        // a full shield was free immunity in playtest 10).
+        let pairs: Vec<(OrgId, PlayerId)> = self
+            .offers
+            .values()
+            .filter(|o| o.status == OfferStatus::Pending && o.from != o.to)
+            .flat_map(|o| [(o.mine, o.to), (o.partner, o.from)])
+            .filter(|&(id, _)| id != 0)
+            .collect();
+        self.world.set_pair_shield(pairs);
         // Possessed animals (and for two game days after) don't mate
         // naturally with other players' animals (`World::bar_cross_mating`).
         let bar_until = tick + 2 * self.world.config.ticks_per_day as u64;
@@ -11437,7 +11485,10 @@ mod tests {
         let notices = g.take_notices();
         assert!(notices.iter().any(|n| n.player == 2 && n.kind == PushKind::Market && n.text == bob_alert.text));
         assert!(notices.iter().any(|n| n.player == 1 && n.kind == PushKind::Mating && n.text == ann_alert.text));
-        assert_eq!(ledger_kinds(&g, 1), vec![LedgerKind::Grant, LedgerKind::Escrow]);
+        // In, and out again to the seller (a 0-delta line: playtest 12).
+        assert_eq!(ledger_kinds(&g, 1), vec![LedgerKind::Grant, LedgerKind::Escrow, LedgerKind::Escrow]);
+        assert!(g.ledger(1, 5).iter().any(|e| e.delta == 0 && e.text.starts_with("Escrow paid out: 30")));
+        assert_eq!(g.economy.totals.get(&1).map(|t| t.escrow_paid), Some(30));
         assert_eq!(ledger_kinds(&g, 2), vec![LedgerKind::Grant, LedgerKind::Sale]);
         let t = trades(&mut g);
         assert_eq!(
@@ -14184,6 +14235,28 @@ mod tests {
                 assert!(g.world.market_shielded(dam) && g.world.market_shielded(stud), "shielded on the way back");
             }
         }
+    }
+
+    /// Playtest 12: an animal unlikely to live to the meeting (old, asleep,
+    /// starving) can't be offered; a pending offer's animals are spared by
+    /// the other side's animals only.
+    #[test]
+    fn unfit_animals_cant_be_offered_and_pending_offers_shield_from_the_other_side() {
+        let (mut g, a, b) = game();
+        let dam = female(&g, &a);
+        let stud = male(&g, &b);
+        not_pregnant(&mut g, &[dam]);
+        in_sight_of(&mut g, stud, dam);
+        let o = g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap();
+        o.needs.hunger = 95.0;
+        let out = g.command(20, 2, None, ClientMsg::RequestMating { mine: stud, partner: dam, price: Some(10) });
+        assert_eq!(result(&out).1.as_deref(), Some("unfit"), "{out:?}");
+        g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().needs.hunger = 10.0;
+        let out = g.command(20, 2, None, ClientMsg::RequestMating { mine: stud, partner: dam, price: Some(10) });
+        assert!(result(&out).0, "{out:?}");
+        g.world.step();
+        g.after_tick();
+        assert!(!g.world.market_shielded(dam) && !g.world.market_shielded(stud), "no full shield for a pending offer");
     }
 
     /// A pending request naming a listed animal doesn't make it busy (a

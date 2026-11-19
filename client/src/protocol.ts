@@ -677,6 +677,8 @@ export interface LedgerTotals {
   earned: number;
   royalties: number;
   escrow: number;
+  /** Of that, paid out to sellers. */
+  escrow_paid?: number;
   sales: number;
   refunds: number;
   shop: number;

@@ -133,6 +133,8 @@ pub fn survey_price(alive: usize) -> u64 {
 
 /// Radius in tiles of a pasture restoration (`Game::restore_pasture`).
 pub const RESTORE_RADIUS: f32 = 12.0;
+/// Below this much food a restoration counts as nothing (refused, priced 0).
+pub const RESTORE_MIN_FOOD: f32 = 50.0;
 /// Renown per living member of the lineage for a pasture restoration (at
 /// least [`RESTORE_MIN`]), doubled for each one already bought within a
 /// ranked season's length: a sink that scales with the leaders (playtest 8:
@@ -407,6 +409,14 @@ impl Economy {
             e.push(l);
         }
         e
+    }
+
+    /// Escrow of `player`'s paid out to a seller (a completed mating): the
+    /// ledger totals count it (`LedgerTotals::escrow_paid`).
+    pub fn note_payout(&mut self, player: PlayerId, amount: u64) {
+        if let Some(t) = self.totals.get_mut(&player) {
+            t.escrow_paid += amount;
+        }
     }
 
     pub fn balance(&self, player: PlayerId) -> u64 {

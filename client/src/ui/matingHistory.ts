@@ -19,7 +19,8 @@ export interface HistoryRow {
 }
 
 export function offerLine(o: Pick<OfferView, 'id' | 'mine' | 'partner' | 'from_name' | 'to_name' | 'price' | 'status'> & { listing?: number; lineage?: number }): string {
-  const bought = o.listing !== undefined ? ` · bought from listing ${o.listing}` : '';
+  // A purchase reads as one (playtest 12: it looked like the buyer's own offer).
+  const bought = o.listing !== undefined ? ` · a purchase from ${o.to_name}'s listing ${o.listing}` : '';
   const partner = o.partner === 0 && o.lineage !== undefined ? `${o.to_name}'s pick` : `${o.to_name}'s #${o.partner}`;
   return `#${o.id}: ${o.from_name}'s #${o.mine} × ${partner}${o.price !== undefined ? ` · price ${o.price}` : ''}${bought} · ${o.status}`;
 }

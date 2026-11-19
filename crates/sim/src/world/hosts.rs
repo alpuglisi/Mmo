@@ -406,6 +406,12 @@ impl World {
         self.market_shield = ids.into_iter().collect();
     }
 
+    /// Animals in pending offers, each spared by one player's animals (the
+    /// other side of the offer) only.
+    pub fn set_pair_shield(&mut self, pairs: impl IntoIterator<Item = (OrgId, PlayerId)>) {
+        self.pair_shield = pairs.into_iter().collect();
+    }
+
     /// Whether `id` is shielded by a market agreement now.
     pub fn market_shielded(&self, id: OrgId) -> bool {
         self.market_shield.contains(&id)
@@ -708,6 +714,20 @@ mod tests {
         assert!(w.grace_spares(&w.organisms[a], &w.organisms[b]), "a rival spares it");
         w.set_market_shield([]);
         assert!(!w.grace_spares(&w.organisms[a], &w.organisms[b]));
+    }
+
+    /// A pending offer's animal is spared by the other side's animals only.
+    #[test]
+    fn the_pair_shield_spares_only_from_one_player() {
+        let mut w = presets::standard_world(WorldConfig { seed: 8, width: 64, height: 64, ..Default::default() }, 1);
+        w.config.balance.attack_grace = 0.0;
+        let a = w.organisms.iter().position(|o| o.owner == 1).unwrap();
+        let b = w.organisms.iter().position(|o| o.owner == 2).unwrap();
+        let id = w.organisms[b].id;
+        w.set_pair_shield([(id, 3)]);
+        assert!(!w.grace_spares(&w.organisms[a], &w.organisms[b]), "player 1 isn't the other side");
+        w.set_pair_shield([(id, 1)]);
+        assert!(w.grace_spares(&w.organisms[a], &w.organisms[b]), "the other side spares it");
     }
 
     /// A possessed male (or one barred for a while after) sires no young
