@@ -943,20 +943,6 @@ impl World {
         removed
     }
 
-    /// Whether `o` is a player's pack hunter in its lineage's first winter
-    /// (`Balance::winter_larder`): winter, within a year of the founding.
-    pub(crate) fn first_winter_pack(&self, o: &Organism) -> bool {
-        if self.config.balance.winter_larder <= 0.0
-            || self.season() != Season::Winter
-            || !decide::player_pack(&self.config.balance, o)
-        {
-            return false;
-        }
-        let founded = self.lineage_founded.get(o.lineage as usize).copied().unwrap_or(0);
-        let year = self.config.days_per_year.max(1) as u64 * self.config.ticks_per_day as u64;
-        self.tick.saturating_sub(founded) < year
-    }
-
     /// `owner`'s room for the pack larder as this tick started (0–1).
     pub(crate) fn pack_room(&self, owner: PlayerId) -> f32 {
         self.pack_room.get(&owner).copied().unwrap_or(0.0)
@@ -979,6 +965,7 @@ impl World {
                 let room = (apply::BAND_CROWD - n as f32) / (apply::BAND_CROWD - apply::BAND_SMALL);
                 self.pack_room.insert(p, room.clamp(0.0, 1.0));
             }
+            self.first_winter_room();
             return;
         }
         let (mut grazers, mut grazers_of, mut hunters) =
@@ -996,6 +983,34 @@ impl World {
             let prey = grazers - grazers_of.get(&p).copied().unwrap_or(0);
             let per = prey as f32 / h.max(1) as f32;
             self.pack_room.insert(p, ((per - none) / (full - none)).clamp(0.0, 1.0));
+        }
+        self.first_winter_room();
+    }
+
+    /// A founding-sized pack's first winter (`Balance::winter_larder`): a
+    /// player with up to `apply::BAND_SMALL` animals whose lineage was
+    /// founded within the year has the full larder room in winter, whatever
+    /// the prey. A strong pack that outgrew that by its first winter gets
+    /// nothing extra (it overshot: ApexHunter2's wolves took 36% of six
+    /// players' animals with the rule at any size).
+    fn first_winter_room(&mut self) {
+        let bal = &self.config.balance;
+        if bal.winter_larder <= 0.0 || self.season() != Season::Winter {
+            return;
+        }
+        let year = self.config.days_per_year.max(1) as u64 * self.config.ticks_per_day as u64;
+        let mut young: BTreeMap<PlayerId, bool> = BTreeMap::new();
+        for (l, lin) in self.lineages.iter().enumerate() {
+            if lin.owner == crate::WILD {
+                continue;
+            }
+            let founded = self.lineage_founded.get(l).copied().unwrap_or(0);
+            *young.entry(lin.owner).or_default() |= self.tick.saturating_sub(founded) < year;
+        }
+        for (p, first) in young {
+            if first && (self.owner_count(p) as f32) <= apply::BAND_SMALL {
+                self.pack_room.insert(p, 1.0);
+            }
         }
     }
 

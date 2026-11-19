@@ -1309,10 +1309,11 @@ pub struct Balance {
     // Playtest 7 predators (version 65; *Playtest 7: predators and
     // warnings* in the README). Off at 0, what snapshots before version 65
     // read (`serde_util::before_v65`).
-    /// A player pack's first winter: within a year of its founding, in
-    /// winter, its pack hunters have the full larder (`player_packs`)
-    /// whatever the prey there is (`World::first_winter_pack`; playtest 7:
-    /// a pure carnivore lost 60% in its first winter). 0: off.
+    /// A founding-sized pack's first winter: within a year of its
+    /// founding, in winter, a player with up to 60 animals has the full
+    /// larder room (`player_packs`) whatever the prey there is
+    /// (`World::first_winter_room`; playtest 7: a pure carnivore lost 60%
+    /// in its first winter). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v65"))]
     pub winter_larder: f32,
 }
