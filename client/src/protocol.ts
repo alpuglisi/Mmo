@@ -79,6 +79,8 @@ export type ClientMsg =
   | { type: 'reinforce' }
   | { type: 'provision' }
   | { type: 'survey' }
+  /** Regrow the dry pasture within 12 tiles of the main group (renown: 1 per member, at least 200, doubling per restoration in the window); data: `{ restored, price, shop }`. */
+  | { type: 'restore_pasture' }
   | { type: 'name_animal'; organism: OrgId; name: string }
   | { type: 'animal_names' }
   | { type: 'substitute_mating'; request: number; mine: OrgId }
@@ -1114,6 +1116,9 @@ export interface ShopView {
   provision_price?: number;
   /** Adults a provision would feed now (the price is per adult). */
   provision_size?: number;
+  /** The price of a pasture restoration now (`restore_pasture`), and how many were bought within the window (absent on older servers). */
+  restore_price?: number;
+  restores_bought?: number;
   /** The price of a survey now (rival groups near your main group). */
   survey_price?: number;
   /** The price of naming one of your animals (cosmetic). */

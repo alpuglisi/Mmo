@@ -262,3 +262,28 @@ export function ledgerTotals(entries: LedgerEntry[]): { earned: number; spent: n
   }
   return t;
 }
+
+/** The radius a pasture restoration regrows, around the main group (server `restore_pasture`). */
+export const RESTORE_RADIUS = 12;
+/** The least a restoration costs, before doubling (server: 1 renown per living member, at least this). */
+export const RESTORE_MIN_PRICE = 200;
+
+/**
+ * The shop's pasture-restoration line: the button, its note (how the price
+ * is made: 1 renown per living member, at least 200, doubled for each
+ * restoration already bought within a ranked season's length) and whether
+ * it can be bought now. Null on a server without it.
+ */
+export function restoreText(s: Pick<ShopView, 'balance' | 'restore_price' | 'restores_bought'>): { label: string; note: string; can: boolean } | null {
+  if (s.restore_price === undefined || s.restore_price <= 0) return null;
+  const bought = s.restores_bought ?? 0;
+  const doubling = bought === 0
+    ? 'The next one costs twice as much, and doubles again with each one within a ranked season\'s length.'
+    : `${bought} bought recently: the price has doubled ${bought === 1 ? 'once' : `${bought} times`}, and doubles again with the next.`;
+  const short = s.balance < s.restore_price ? ` You have ${s.balance}.` : '';
+  return {
+    label: `Restore pasture: ${s.restore_price} renown`,
+    note: `Every dry tile within ${RESTORE_RADIUS} tiles of your main group regrows to full plant cover. Priced at 1 renown per living animal (at least ${RESTORE_MIN_PRICE}). ${doubling}${short}`,
+    can: s.balance >= s.restore_price,
+  };
+}
