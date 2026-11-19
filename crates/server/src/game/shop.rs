@@ -359,10 +359,9 @@ impl Game {
 
     /// `restore_pasture`: the plants within [`economy::RESTORE_RADIUS`] of
     /// one of the player's groups regrow to what the season allows
-    /// (`World::restore_pasture`), for renown that scales with the largest
-    /// lineage with animals in the circle (the buyer's or another's: no
-    /// cheap purchase by a small ally on a leader's ground) and doubles with
-    /// each restoration in the window. With `preview`, only what it would
+    /// (`World::restore_pasture`), for renown that scales with the buyer's
+    /// lineage plus the other players' animals grazing the circle, and
+    /// doubles with each restoration in the window. With `preview`, only what it would
     /// add and cost. Nothing to regrow (midwinter, a drought, already
     /// grown) is refused, not charged.
     pub(super) fn restore_pasture(
@@ -378,23 +377,33 @@ impl Game {
             return Err(ErrorInfo::new("no_such_group", format!("your group {group} has no animals")));
         };
         let r = economy::RESTORE_RADIUS;
-        // Every player with animals in the circle benefits: the price follows
-        // the largest of their lineages.
-        let mut benefit: BTreeMap<PlayerId, usize> = BTreeMap::new();
-        for o in self.world.organisms.iter().filter(|o| o.alive && o.owner != WILD && o.pos.dist(at) <= r) {
-            *benefit.entry(o.owner).or_default() += 1;
-        }
-        let (priced_by, size) = benefit
-            .keys()
-            .map(|&p| (p, self.owner_population(p)))
-            .chain(std::iter::once((player, self.owner_population(player))))
-            .max_by_key(|&(p, n)| (n, p == player))
-            .unwrap();
+        // Priced by the buyer's lineage plus the other players' animals
+        // actually in the circle (playtest 10: one stray rival animal priced
+        // it by its owner's whole lineage).
+        let others = self
+            .world
+            .organisms
+            .iter()
+            .filter(|o| o.alive && o.owner != WILD && o.owner != player && o.pos.dist(at) <= r)
+            .count();
+        let size = self.owner_population(player) + others;
+        let tick = self.world.tick();
+        // A preview's price is honoured for a few seconds (playtest 10: the
+        // purchase seconds later cost more).
+        let quote_ticks =
+            crate::game::minutes_to_ticks(crate::game::RESTORE_QUOTE_SECONDS / 60.0, self.cfg.tick_ms).max(1);
+        let quoted = self.restore_quotes.get(&player).filter(|q| q.0 == group && tick <= q.2).map(|q| q.1);
         let now = economy::restore_price(size, self.restores_bought(player));
-        let price = self.quoted(player, now, |q| q.restore);
+        // The shop's own quote (head count only) holds when no other player
+        // grazes the circle.
+        let price = quoted.unwrap_or_else(|| if others == 0 { self.quoted(player, now, |q| q.restore) } else { now });
         let food = self.world.restore_pasture(at, r, false);
-        let others: Vec<String> =
-            benefit.iter().filter(|(&p, _)| p != player).map(|(&p, &n)| format!("{} ({n})", self.name(p))).collect();
+        let per_food = price as f32 / food.max(1.0);
+        let hint = (food >= 1.0 && per_food > 1.0).then(|| {
+            format!(
+                "poor value now: about {per_food:.1} renown per food (a drought or the season holds the plants back)"
+            )
+        });
         let mut view = crate::protocol::RestoreView {
             group,
             x: at.x.round(),
@@ -403,19 +412,21 @@ impl Game {
             restored: food.round(),
             unit: "food".into(),
             price,
-            priced_by: (priced_by != player).then(|| self.name(priced_by)),
-            also_feeds: others,
+            // No census: only whether others graze the circle too.
+            feeds_others: others > 0,
+            hint,
             preview,
             shop: None,
         };
         if preview {
+            self.restore_quotes.insert(player, (group, price, tick + quote_ticks));
             view.shop = Some(self.shop_view(player));
             return Ok(view);
         }
         if food < 1.0 {
             return Err(ErrorInfo::new(
                 "nothing_to_restore",
-                "nothing would regrow there now (midwinter, a drought, or the plants are already as high as the season allows)",
+                "nothing would regrow there now (winter, a drought, or the plants are already as high as the season allows)",
             ));
         }
         self.spend(
@@ -423,6 +434,7 @@ impl Game {
             price,
             format!("Pasture restored within {r} tiles of group {group}: about {:.0} food", food),
         )?;
+        self.restore_quotes.remove(&player);
         view.restored = self.world.restore_pasture(at, r, true).round();
         let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
         let days = self.economy.restore_days.entry(player).or_default();

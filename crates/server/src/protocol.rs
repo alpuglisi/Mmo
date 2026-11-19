@@ -1137,6 +1137,10 @@ pub struct OfferView {
     /// another with `substitute_mating` before `expires_tick`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lost: Option<String>,
+    /// A pending offer: about how far apart the two animals are (8-tile
+    /// steps; for an offer to the lineage, absent until accepted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apart: Option<f32>,
     /// While `lost`: the sex a substitute must be (the partner's other).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub substitute_sex: Option<String>,
@@ -2158,14 +2162,12 @@ pub struct RestoreView {
     pub restored: f32,
     pub unit: String,
     pub price: u64,
-    /// When a larger lineage with animals in the circle sets the price: its
-    /// owner.
+    /// Other players' animals graze the circle too (no counts or names).
+    #[serde(default)]
+    pub feeds_others: bool,
+    /// A poor-value warning (renown per food over 1), if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub priced_by: Option<String>,
-    /// Other players with animals in the circle (who eat from it too), with
-    /// how many.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub also_feeds: Vec<String>,
+    pub hint: Option<String>,
     pub preview: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shop: Option<ShopView>,

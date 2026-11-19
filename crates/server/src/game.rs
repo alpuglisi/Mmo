@@ -714,6 +714,13 @@ pub const MEET_PREDATOR_CLEAR: f32 = 12.0;
 /// (playtest 7: fee-free 5-renown sales in a ring of three colluders).
 pub const MARKET_TITLE_MIN_PRICE: u64 = 10;
 
+/// How much farther than the nearest free animal an accepter may pick one
+/// for an offer to the lineage (`Game::pick_partner`).
+pub const LINEAGE_PICK_SLACK: f32 = 24.0;
+
+/// Real seconds a pasture-restoration preview's price is honoured.
+pub const RESTORE_QUOTE_SECONDS: f64 = 30.0;
+
 /// Tiles the partner's animal may end farther from the meeting point than
 /// it started before a lapse is the seller's fault (`Game::lapse`).
 pub const SELLER_DRIFT: f32 = 3.0;
@@ -936,6 +943,12 @@ pub struct Game {
     /// Each player's animals eaten on the last recorded day, by hunter
     /// lineage, most first (the "being hunted" warning). Not saved.
     hunted: BTreeMap<PlayerId, (u64, Vec<(u32, u64)>)>,
+    /// What each accepted agreement's last periodic update showed, so one
+    /// goes out only on a change. Not saved.
+    last_pushed: BTreeMap<u64, String>,
+    /// Each player's last pasture-restoration preview: (group, price,
+    /// honoured until tick). Not saved.
+    restore_quotes: BTreeMap<PlayerId, (u8, u64, u64)>,
     /// Hunters of the watched deaths not yet announced, in words, per
     /// player (`announce_deaths`). Not saved.
     pending_killers: BTreeMap<PlayerId, BTreeMap<OrgId, String>>,
@@ -1324,6 +1337,8 @@ impl Game {
             kills_seen: BTreeMap::new(),
             kills_ready: false,
             hunted: BTreeMap::new(),
+            last_pushed: BTreeMap::new(),
+            restore_quotes: BTreeMap::new(),
             pending_killers: BTreeMap::new(),
             joined: Vec::new(),
             founding_notes: Vec::new(),
@@ -1533,7 +1548,9 @@ impl Game {
     /// (`NearbyOrganism::protected`).
     pub(crate) fn mark_protected(&self, nearby: &mut [NearbyOrganism]) {
         for n in nearby {
-            if n.owner != WILD && self.world.lineage_grace_left(n.lineage).is_some() {
+            if n.owner != WILD
+                && (self.world.lineage_grace_left(n.lineage).is_some() || self.world.market_shielded(n.id))
+            {
                 n.protected = Some(true);
             }
         }
@@ -2410,6 +2427,16 @@ impl Game {
                 Ok(Some(target_data(Vec2::new(x, y), to, "it can't get there; it goes as near as it can")))
             }
             ClientMsg::PossessAttack { organism, target } => {
+                // A target walking to an agreed mating is spared: say so
+                // instead of accepting an order that never lands (playtest 10).
+                if self.world.market_shielded(target)
+                    && self.world.organism(target).is_some_and(|t| t.owner != player && t.owner != WILD)
+                {
+                    return Err(ErrorInfo::new(
+                        "protected",
+                        format!("#{target} is walking to an agreed mating: other players' animals can't attack it until it meets its partner"),
+                    ));
+                }
                 // Repeating the standing order changes nothing: no new alert.
                 let repeat = self.world.attack_target(organism) == Some(target);
                 self.world.possess_attack(player, organism, target).map_err(|err| match err {
@@ -3116,6 +3143,30 @@ impl Game {
                 .filter(|b| b.owner == o.to)
                 .ok_or_else(|| ErrorInfo::new("not_owned", format!("#{p} isn't one of your living animals")))?;
             if suits(b) {
+                // Not much farther than the nearest free animal (playtest
+                // 10: a pick 107 tiles away, and the buyer forfeited when its
+                // animal couldn't get there).
+                let lineage = o.lineage;
+                let nearest = self
+                    .world
+                    .organisms
+                    .iter()
+                    .filter(|x| lineage.is_none_or(|l| x.lineage == l) && suits(x))
+                    .map(|x| x.pos.dist(a.pos))
+                    .fold(f32::INFINITY, f32::min);
+                let reach = (nearest + LINEAGE_PICK_SLACK).max(LINEAGE_PICK_SLACK);
+                let d = b.pos.dist(a.pos);
+                if d > reach {
+                    return Err(ErrorInfo::new(
+                        "too_far",
+                        format!(
+                            "#{p} is about {:.0} tiles from their animal: pick one within {:.0} tiles (your nearest free one is about {:.0} away)",
+                            (d / 8.0).ceil() * 8.0,
+                            reach,
+                            nearest
+                        ),
+                    ));
+                }
                 return Ok(p);
             }
             // The animal is the accepter's own: say why.
@@ -4411,6 +4462,25 @@ impl Game {
                 return;
             }
         }
+        // An unsteered buyer's animal that kept walking toward the point and
+        // simply ran out of time (a long walk) forfeits nothing (playtest 10).
+        let buyer_now = o.meet.and_then(|(x, y)| self.world.organism(o.mine).map(|b| b.pos.dist(Vec2::new(x, y))));
+        if let (Some((start, _)), Some(best), Some(now), None, None) =
+            (o.start_dist, o.buyer_best, buyer_now, o.steered, &o.lost)
+        {
+            let walked = start - best >= (start * 0.25).max(4.0);
+            if walked && now <= best + 4.0 {
+                let info = ErrorInfo::new(
+                    "lapsed",
+                    format!(
+                        "#{} was still walking to the meeting point ({:.0} tiles left) when time ran out: the agreement lapsed and nothing is forfeit",
+                        o.mine, now
+                    ),
+                );
+                self.close(id, OfferStatus::Expired, None, Some(info), out);
+                return;
+            }
+        }
         let forfeit = self.forfeit_hold(id, "the buyer never came");
         let what = match &o.lost {
             Some(how) => format!("#{} {how} and no other animal came to #{} within the deadline", o.mine, o.partner),
@@ -4677,6 +4747,15 @@ impl Game {
             lineage: o.lineage.filter(|_| o.partner == 0),
             meet: (o.status == OfferStatus::Accepted).then(|| self.meet_view(o)).flatten(),
             lost: o.lost.clone().filter(|_| o.status == OfferStatus::Accepted),
+            // A pending offer: about how far apart the two are (8-tile
+            // steps), so Accept can say what the walk will be (playtest 10).
+            apart: (o.status == OfferStatus::Pending)
+                .then(|| {
+                    let a = self.world.organism(o.mine)?;
+                    let b = self.world.organism(o.partner)?;
+                    Some((a.pos.dist(b.pos) / 8.0).ceil() * 8.0)
+                })
+                .flatten(),
             substitute_sex: o.lost.as_ref().filter(|_| o.status == OfferStatus::Accepted).and_then(|_| {
                 self.world.organism(o.partner).map(|p| if p.sex == Sex::Female { "male" } else { "female" }.to_string())
             }),
@@ -4894,7 +4973,8 @@ impl Game {
             mine_y: coarse(a.pos.y),
             partner_x: coarse(b.pos.x),
             partner_y: coarse(b.pos.y),
-            distance: a.pos.dist(b.pos).round(),
+            // In 4-tile steps: exact distances located the other animal.
+            distance: (a.pos.dist(b.pos) / 4.0).round() * 4.0,
             meet_x: o.meet.map(|m| coarse(m.0)),
             meet_y: o.meet.map(|m| coarse(m.1)),
             asleep: asleep(a) || asleep(b),
@@ -5050,12 +5130,14 @@ impl Game {
                 }
             }
         }
-        // Animals in open offers and agreements are spared by other
-        // players' animals until the offer closes (`World::set_market_shield`).
+        // Animals walking to an accepted agreement's meeting are spared by
+        // other players' animals until it closes (`World::set_market_shield`);
+        // pending offers shield nothing (playtest 10: free, renewable
+        // immunity), nor do listings.
         let shielded: Vec<OrgId> = self
             .offers
             .values()
-            .filter(|o| o.status.is_open() && o.from != o.to)
+            .filter(|o| o.status == OfferStatus::Accepted && o.from != o.to)
             .flat_map(|o| [o.mine, o.partner])
             .filter(|&id| id != 0)
             .collect();
@@ -5079,10 +5161,19 @@ impl Game {
                 .filter(|o| o.status == OfferStatus::Accepted && o.from != o.to)
                 .map(|o| o.id)
                 .collect();
+            self.last_pushed.retain(|id, _| accepted.contains(id));
             for id in accepted {
                 let o = &self.offers[&id];
                 let (from, to) = (o.from, o.to);
                 let view = self.offer_view(id);
+                // Only when something a player would see changed (playtest
+                // 10: an update every couple of seconds).
+                let key =
+                    serde_json::to_string(&(&view.meet, view.expires_tick.map(|t| t / half_day))).unwrap_or_default();
+                if self.last_pushed.get(&id) == Some(&key) {
+                    continue;
+                }
+                self.last_pushed.insert(id, key);
                 for p in [from, to] {
                     out.push((
                         Target::Player(p),
@@ -5376,7 +5467,8 @@ impl Game {
     fn alert_attacked(&mut self, player: PlayerId, attacker: OrgId, target: OrgId, out: &mut Outbox) {
         let w = &self.world;
         let (Some(a), Some(t)) = (w.organism(attacker), w.organism(target)) else { return };
-        if t.owner == WILD || t.owner == player {
+        // A shielded target isn't in danger: no alarm (playtest 10).
+        if t.owner == WILD || t.owner == player || w.market_shielded(target) {
             return;
         }
         let kind = |l: u32| w.lineages.get(l as usize).map_or("animals", |x| x.name.as_str()).to_string();
@@ -8831,6 +8923,9 @@ mod tests {
         assert_eq!(g.shop_view(1).restores_bought, 1);
         g.economy.balances.insert(1, 100);
         assert!(!result(&g.command(10, 1, None, ClientMsg::RestorePasture { group: None, preview: false })).0);
+        // A preview's price is honoured for a while; no census of others.
+        let p = data(&g.command(10, 1, None, ClientMsg::RestorePasture { group: None, preview: true }));
+        assert!(p.get("also_feeds").is_none() && p["feeds_others"].is_boolean(), "{p}");
         // Another group of the player: it must have animals.
         let out = g.command(10, 1, None, ClientMsg::RestorePasture { group: Some(3), preview: true });
         assert_eq!(result(&out).1.as_deref(), Some("no_such_group"));
@@ -12504,6 +12599,64 @@ mod tests {
         o.death = Some(DeathCause::OldAge);
         g.after_tick();
         assert!(g.offers[&id].lost.is_some() && !g.offers[&id].excused, "old age is the buyer's risk");
+    }
+
+    /// Playtest 10: a pending offer shields nothing (only an accepted
+    /// agreement's walkers are spared), and an attack order on a shielded
+    /// animal is refused with the reason; an unsteered buyer's animal that
+    /// kept walking toward the point forfeits nothing at a lapse.
+    #[test]
+    fn only_agreements_shield_and_walking_buyers_forfeit_nothing() {
+        let (mut g, a, b) = game();
+        g.cfg.purchase_deadline_ticks = 12;
+        let dam = female(&g, &a);
+        let stud = male(&g, &b);
+        not_pregnant(&mut g, &[dam]);
+        in_sight_of(&mut g, stud, dam);
+        let out = g.command(20, 2, None, ClientMsg::RequestMating { mine: stud, partner: dam, price: Some(10) });
+        assert!(result(&out).0, "{out:?}");
+        g.world.step();
+        g.after_tick();
+        assert!(!g.world.market_shielded(dam) && !g.world.market_shielded(stud), "a pending offer shields nothing");
+        for id in g.offers.keys().copied().collect::<Vec<_>>() {
+            g.command(20, 2, None, ClientMsg::CancelMating { request: id });
+        }
+        // A purchase: both walkers shielded; an attack on them is refused.
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: dam, fee: 20, expires_days: None });
+        let listing = data(&out)["listing"]["id"].as_u64().unwrap();
+        g.economy.balances.insert(2, 100);
+        g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().pos = Vec2::new(10.0, 10.0);
+        g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().pos = Vec2::new(40.0, 40.0);
+        assert!(result(&g.command(20, 2, None, ClientMsg::BuyListing { listing, mine: stud })).0);
+        let id = *g.offers.keys().next().unwrap();
+        g.world.step();
+        g.after_tick();
+        assert!(g.world.market_shielded(dam) && g.world.market_shielded(stud));
+        let hunter = a.iter().copied().find(|&i| i != dam).unwrap();
+        g.command(10, 1, None, ClientMsg::Possess { organism: hunter });
+        let out = g.command(10, 1, None, ClientMsg::PossessAttack { organism: hunter, target: stud });
+        assert_eq!(result(&out).1.as_deref(), Some("protected"), "{out:?}");
+        g.command(10, 1, None, ClientMsg::Release { organism: hunter });
+        // The stud walks most of the way unsteered, then time runs out.
+        let (mx, my) = g.offers[&id].meet.unwrap();
+        let near = Vec2::new(mx, my) + Vec2::new(6.0, 0.0);
+        for _ in 0..40 {
+            if !g.offers.contains_key(&id) {
+                break;
+            }
+            g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().pos = near;
+            g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().pos = Vec2::new(10.0, 10.0);
+            g.world.step();
+            g.after_tick();
+        }
+        assert!(!g.offers.contains_key(&id));
+        let back: i64 = g
+            .ledger(2, 50)
+            .iter()
+            .filter(|e| e.kind == LedgerKind::Refund && e.offer == Some(id))
+            .map(|e| e.delta)
+            .sum();
+        assert_eq!(back, 20, "it kept walking: nothing forfeit");
     }
 
     /// A pending request naming a listed animal doesn't make it busy (a

@@ -207,6 +207,8 @@ export interface OfferView {
   };
   /** The requester's animal died after acceptance (how): they may send another (`substitute_mating`) before `expires_tick`. */
   lost?: string;
+  /** A pending offer: about how far apart the two animals are (8-tile steps). */
+  apart?: number;
   /** While `lost`: the sex a substitute must be. */
   substitute_sex?: Sex;
 }
