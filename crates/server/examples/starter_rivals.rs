@@ -62,6 +62,19 @@ fn starter(name: &str) -> FounderDesign {
         .founders(20)
 }
 
+/// The proposed starter (`client/src/designMorph.ts` `STARTER_TRAITS`
+/// since round 12): the old one plus toxins 0.5, coloration 0.6, foraging
+/// range 0.6, group tolerance 0.95, 30 founders.
+fn proposed() -> FounderDesign {
+    use Gene::*;
+    starter("proposed")
+        .with(Toxins, 0.5)
+        .with(Coloration, 0.6)
+        .with(ForagingRange, 0.6)
+        .with(GroupTolerance, 0.95)
+        .founders(30)
+}
+
 /// The candidates: the current starter and variants of it.
 fn candidates() -> Vec<(&'static str, FounderDesign)> {
     use Gene::*;
@@ -103,6 +116,9 @@ fn candidates() -> Vec<(&'static str, FounderDesign)> {
             d.litter_size = 4;
             d.founders(20)
         }),
+        // The proposed starter (round 12): bright, mildly toxic, a close
+        // herd foraging wider, 30 founders.
+        ("proposed", proposed()),
         // The ceilings: the strong designs themselves, founded as the newcomer.
         ("as-herd", herd()),
         ("as-sleepers", sleepers()),
