@@ -881,7 +881,8 @@ impl World {
                 || (b.owner != crate::WILD
                     && self.config.balance.graced_hunting <= 0.0
                     && self.attack_grace_left(a).is_some())
-                || self.market_shield.contains(&b.id))
+                || self.market_shield.contains(&b.id)
+                || self.pair_shield.get(&b.id) == Some(&a.owner))
     }
 
     /// Whether a graced hunter `a` holds off rival `b` because the attack

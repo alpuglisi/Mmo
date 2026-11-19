@@ -888,6 +888,11 @@ pub struct AlertView {
     #[serde(default)]
     pub id: u64,
     pub tick: u64,
+    /// The day the alert is about, counted from 0 like every day field in
+    /// the API; texts and the client count from 1, so a daily summary
+    /// stamped `day: 119` reads "Day 120: …", and a landing alert stamped
+    /// 17 is the founding the Lineage tab shows as day 18 (playtest 12 read
+    /// both as a day early).
     pub day: u64,
     pub kind: AlertKind,
     pub text: String,
@@ -1148,6 +1153,14 @@ pub struct OfferView {
     /// steps; for an offer to the lineage, absent until accepted).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apart: Option<f32>,
+    /// The two animals' ages against their lifespans, while open (playtest
+    /// 12: an offered animal died of old age 30 s after the offer, with no
+    /// age shown): the requester's (`mine`) and the partner's (absent for
+    /// an offer to the lineage until accepted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mine_age: Option<AnimalAge>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partner_age: Option<AnimalAge>,
     /// Why an accepted agreement's meeting point isn't the usual one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meet_note: Option<String>,
@@ -1157,6 +1170,19 @@ pub struct OfferView {
     /// While `lost`: the sex a substitute must be (the partner's other).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub substitute_sex: Option<String>,
+}
+
+/// An offered animal's age (`OfferView::mine_age`, `partner_age`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AnimalAge {
+    /// Days old, in tenths.
+    #[serde(serialize_with = "crate::protocol::round::f2")]
+    pub age_days: f32,
+    /// Its expected lifespan in days, whole.
+    pub lifespan_days: f32,
+    /// Past 90% of its lifespan: it may die of old age before they meet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub aging: bool,
 }
 
 /// `OfferView::meet`.
@@ -1512,7 +1538,9 @@ pub struct StateView {
     #[serde(default)]
     pub escrow: u64,
     /// Your lineage's newcomer grace while it lasts: other players' animals
-    /// can't attack it, and it can't attack theirs. Absent once it ends.
+    /// can't attack it. With `Balance::graced_hunting` it may attack
+    /// theirs, and its first attack on a rival's animal ends the grace;
+    /// without, it can't. Absent once it ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grace: Option<GraceView>,
     /// Lineages your animals have learned are poisonous
@@ -1593,7 +1621,8 @@ pub struct WorldSummary {
     #[serde(default)]
     pub lineage_hard_cap: usize,
     /// Player lineages in their newcomer grace: other players' animals
-    /// can't be ordered to attack them.
+    /// can't attack them (their own first attack on a rival ends it, with
+    /// `Balance::graced_hunting`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub protected: Vec<ProtectedLineage>,
 }
@@ -1789,8 +1818,8 @@ pub struct LineageStats {
     /// (the founding ramp, 0..1), and over how many days it ramps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ramp: Option<RampView>,
-    /// Days left of the lineage's newcomer grace (others' animals can't be
-    /// ordered to attack it); absent when it has none.
+    /// Days left of the lineage's newcomer grace (others' animals can't
+    /// attack it); absent when it has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grace_days_left: Option<f32>,
     /// An egg-laying lineage's clutches waiting to hatch (absent for live
@@ -1965,6 +1994,9 @@ pub struct ShopView {
     pub reinforce_blocked: Option<String>,
     /// Kept (destroyed) from every stud fee or price paid out, percent.
     pub market_fee_percent: u64,
+    /// What a fixed listing's sale pays (0: listings are fee-free).
+    #[serde(default)]
+    pub listing_fee_percent: u64,
     /// Royalty: renown a day per percentage point of all alleles that are
     /// yours and live in other players' lineages.
     pub royalty_per_point: f64,
@@ -2085,7 +2117,9 @@ pub struct CompatibilityRow {
     pub drift_risk: String,
     /// The body-plan gene with the widest gap in the closest pair
     /// (`carnivory`, `endothermy`, `birth_mode`, `body_size`, or
-    /// `morphology` for eye or leg counts), and the gap; sterile at 0.30.
+    /// `morphology` for eye or leg counts; `body_plan` for another
+    /// player's lineage; `none` when the closest pair's body plans match),
+    /// and the gap; sterile at 0.30.
     pub limiting: String,
     #[serde(serialize_with = "crate::protocol::round::f2")]
     pub gap: f32,
@@ -2360,6 +2394,10 @@ pub struct LedgerTotals {
     pub royalties: u64,
     /// Paid into escrow.
     pub escrow: u64,
+    /// Of that, paid out to sellers (matings that ran); the rest came back
+    /// as refunds or is still held.
+    #[serde(default)]
+    pub escrow_paid: u64,
     pub sales: u64,
     pub refunds: u64,
     /// Spent in the shop.
@@ -3192,11 +3230,6 @@ pub mod round {
     /// `v` rounded to hundredths, as f64 (so 0.3 is written 0.3).
     pub fn hundredths(v: f32) -> f64 {
         (v as f64 * 100.0).round() / 100.0
-    }
-
-    /// `v` to hundredths, kept an f32 (it serializes as its shortest form).
-    pub fn c2(v: f32) -> f32 {
-        (v * 100.0).round() / 100.0
     }
 
     /// `v` rounded to tenths, as f64.

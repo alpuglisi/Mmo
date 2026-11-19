@@ -144,7 +144,9 @@ export function compatRowText(r: CompatibilityView['rows'][number]): string {
     : r.drift_risk === 'low' ? ' · sterile now; drift could make them fertile in time' : '';
   // The closest pair's widest body-plan gap: a cause, not a verdict (a
   // gap under 0.30 lowers fertility; 0.30 or more makes a pair sterile).
-  const cause = r.limiting === 'morphology'
+  const cause = r.limiting === 'none'
+    ? 'body plans match; genome distance sets the rest'
+    : r.limiting === 'morphology'
     ? `closest pair differs in eye or leg count`
     : r.gap >= 0.3 ? `${what} ${gapWords(r.gap)}, even in the closest pair` : `${what} ${gapWords(r.gap)} in the closest pair`;
   if (!r.compatible) {
@@ -160,7 +162,7 @@ export function compatRowText(r: CompatibilityView['rows'][number]): string {
 
 /** The shop's explanation line. */
 export function shopText(s: ShopView): string {
-  return `Renown spent here is gone for good. Sales pay out less a ${s.market_fee_percent}% market fee; `
+  return `Renown spent here is gone for good. Fixed listings' sales pay no market fee; offers and auctions pay out less a ${s.market_fee_percent}% market fee; `
     + `alleles of yours living in other players' lineages (studs siring into their dams) earn a royalty of `
     + `${s.royalty_per_point} renown a day per 1% of all alleles.`
     + (s.owed ? ` You owe ${s.owed} renown: it is taken from the renown you earn next.` : '');
