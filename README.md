@@ -1176,6 +1176,8 @@ Client → server:
 | `buy_mating_slot` | | One extra directed-mating slot until the weather season changes: 30 renown, doubling with each bought that season, at most 6 (`limit_reached`, `insufficient_funds`, `no_lineage`); `data` = the shop after |
 | `reinforce` | | 10 young adults copied from your lineage's living adults join it on the best-fed ground near them: 150 renown, doubling with each, at most 2 within a ranked season's length per player (a rolling window; retired lineages count: `limit_reached`), only while at most a fifth of the soft lineage cap is alive (`too_large`, `no_adults`, `no_lineage`, `insufficient_funds`, `lineage_full`); `data` = `{added: [ids], shop}` |
 | `provision` | | The hungriest or thirstiest adults of your lineage get 50 off hunger and thirst, priced per adult fed: 20 adults at 2 renown each while at most a fifth of the soft lineage cap is alive, else 20 per fifth of the cap alive (at most 200) at 4 each; at most 3 within a ranked season's length (`limit_reached`, `no_adults`, `no_lineage`, `insufficient_funds`); `data` = `{fed, shop}` |
+| `name_animal` | `organism`, `name` | Name one of your living animals (cosmetic, 50 renown each time; the species-name filter; `same_name`, `bad_name`, `not_owned`); shown on its listings (`animal_name`); `data` = `{name, shop}` |
+| `animal_names` | | Your living animals' names; `data` = `{names: {id: name}}` |
 | `survey` | | Rival groups and territories within 64 tiles of your main group's middle, in 8-tile cells (members rounded to tens), now: 30 renown plus 1 per 10 of your animals alive; `data` = `{price, x, y, radius, groups: [{player, name, x, y, members, territory?: [x, y, radius]}], shop}` (`no_lineage`, `insufficient_funds`) |
 | `substitute_mating` | `request`, `mine` | The requester of an accepted agreement whose animal died sends another adult of theirs instead, before the deadline (the purchase checks; `not_substitutable` while the first still lives or for anyone else); `data` = `{offer}` |
 | `set_nameplate` | `color, title` | A cosmetic nameplate (a palette color, a 1–24 character title) shown with your name: 500 renown, 100 per change (`bad_color`, `bad_title`); `data` = `{nameplate, shop}` |
@@ -1930,6 +1932,30 @@ minutes, every purchase failed when the buyer's animal died):
   form clears its old error on success and starts at 5; a pregnant dam's
   card says so in its title; outcomes mention the failure risk only for
   a miss; the provision quote is fetched fresh before confirming.
+
+**Playtest 7 changes** (`docs/playtest-7.md`):
+
+- **Market**: a buyer's animal lost first and the partner gone later
+  still forfeits the hold fee (it used to refund in full); a buyer's
+  death is excused only for disease, a harmful recessive, attrition or
+  the winter-sleep toll, and never once they possessed or ordered it
+  during the agreement (predation and journeys could be arranged); the
+  meeting point moves toward the partner (to 7/8, then the partner) when
+  a third party's or the wild's predator is within 12 tiles
+  (`Game::safe_meeting_point`); only sales of 10 renown or more count
+  toward the stud-market title (`MARKET_TITLE_MIN_PRICE`); a seller who
+  retires with a sold mating refunds the buyer and pays them the hold fee
+  from their own renown, and a retiring buyer forfeits it.
+- **Re-founding fee**: what the balance can't pay is owed
+  (`Economy::refound_debt`) and taken from the next renown coming in
+  (spending renown first dodged it); a lineage that died out young
+  (within the window of its founding) pays half the fee.
+- **Names for animals** (`name_animal`, 50 renown): a cosmetic sink.
+- Small: the survey asks in the app's dialog and its result is dated; a
+  blocked reinforcement or provision shows "not now", not a price;
+  adult pickers say they search the animals in view; listings of animals
+  past 90% of their lifespan say "old"; accepted agreements' escort views
+  refresh twice a game day.
 
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.

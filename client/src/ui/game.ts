@@ -1412,7 +1412,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     // Searchable pickers, not <select>s: a lineage of thousands made "My
     // adult" unusable (above all on a phone). Nearest first, filters for sex,
     // free and not pregnant, search by id.
-    const mineP = createPicker({ id: 'mating-mine', label: 'My adult', placeholder: 'Search your adults: id or words', filters: ['sex', 'free', 'notPregnant'], noneLabel: 'Choose one of your adults…' });
+    const mineP = createPicker({ id: 'mating-mine', label: 'My adult', placeholder: 'Search your adults in view: id or words', filters: ['sex', 'free', 'notPregnant'], noneLabel: 'Choose one of your adults…' });
     const mine = mineP.el;
     // The partner: picked from a list (yours and other players' visible
     // adults, nearest first); typing an id stays possible.
