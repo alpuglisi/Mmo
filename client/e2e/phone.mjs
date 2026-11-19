@@ -163,6 +163,13 @@ async function main() {
     await waitFor('the Market in the sheet', () => page.evaluate(() => document.querySelector('.game')?.classList.contains('sheet-open')
       && !document.querySelector('#panel-market').hidden));
     step('the renown pill opens the Market in the bottom sheet');
+    // The survey asks in the app's dialog, not a native confirm (playtest 7; the dialog guard catches a native one).
+    await waitFor('the survey button', () => page.evaluate(() => !!document.querySelector('#shop-survey')));
+    await page.evaluate(() => { const b = document.querySelector('#shop-survey'); b.disabled = false; b.click(); });
+    await page.waitForSelector('#survey-confirm', { timeout: UI_MS });
+    await page.tap('#survey-confirm-cancel');
+    await page.waitForSelector('#survey-confirm', { state: 'detached', timeout: 3000 });
+    step('the survey asks in the app\'s dialog (no native confirm)');
     await page.tap('#tab-market'); // a second tap on the open tab closes the sheet
     await waitFor('the sheet closed', () => page.evaluate(() => !document.querySelector('.game').classList.contains('sheet-open')));
 
@@ -186,21 +193,24 @@ async function main() {
       const v = window.evo.screen().view;
       const own = window.evo.model.state.organisms[0];
       window.evo.model.select(own.id);
-      // (Once the floating button shows, the room at the bottom edge follows it.)
+      // (Once the animal's card shows, the room at the bottom edge follows it.)
       for (let k = 0; k < 50 && !(v.edgePad.bottom > 60); k++) await new Promise((r) => setTimeout(r, 50));
       v.cam.y = 10000;
       // (Until a frame has clamped it to the map.)
       for (let k = 0; k < 100 && v.cam.y > v.terrain.height; k++) await new Promise((r) => setTimeout(r, 30));
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
       const canvas = document.querySelector('#world-canvas').getBoundingClientRect();
-      const tops = ['#hint', '#fab-possess', '#possess-bar'].map((q) => document.querySelector(q).getBoundingClientRect()).filter((r) => r.height > 0).map((r) => r.top);
+      const tops = ['#hint', '#fab-possess', '#peek', '#possess-bar'].map((q) => document.querySelector(q).getBoundingClientRect()).filter((r) => r.height > 0).map((r) => r.top);
       const under = Math.min(...tops);
       const mapBottom = canvas.top + v.worldToScreen(0, v.terrain.height).y;
+      const fabBottom = document.querySelector('#fab-possess').getBoundingClientRect().bottom;
+      const peekTop = document.querySelector('#peek').getBoundingClientRect().top;
       window.evo.model.select(null);
-      return { mapBottom, under, pad: v.edgePad.bottom, fab: tops.length };
+      return { mapBottom, under, pad: v.edgePad.bottom, fab: tops.length, fabBottom, peekTop };
     });
-    check(low.fab >= 2 && low.mapBottom <= low.under, 'the map\'s bottom edge should come out from above the hint line and the floating button', low);
-    step(`and past the bottom edge by ${low.pad} px: the map ends at y ${low.mapBottom.toFixed(0)}, above the hint and Possess button (y ${low.under.toFixed(0)})`);
+    check(low.fab >= 2 && low.mapBottom <= low.under, 'the map\'s bottom edge should come out from above the animal\'s card and the Possess button over it', low);
+    check(low.fabBottom <= low.peekTop, 'the Possess button sits above the animal\'s card', low);
+    step(`and past the bottom edge by ${low.pad} px: the map ends at y ${low.mapBottom.toFixed(0)}, above the animal's card and Possess button (y ${low.under.toFixed(0)})`);
 
     // 3. A tap in a herd: the animal under the finger, and a compact chooser.
     await recordTaps(page);
@@ -244,11 +254,14 @@ async function main() {
         close: { left: x.left, right: x.right }, chips: chips.length, first: Number(chips[0]?.dataset.org),
         rows: new Set(chips.map((x) => Math.round(x.getBoundingClientRect().top))).size,
         tipOver: !!t && t.height > 0 && !(t.bottom <= b.top || t.top >= b.bottom),
+        // The tapped animal's card, up with it (below it).
+        peek: (() => { const p = document.querySelector('#peek').getBoundingClientRect(); return p.height > 0 ? p.top : null; })(), bottom: b.bottom,
       };
     });
     check(chooser.left >= 0 && chooser.right <= chooser.vw, 'the chooser should fit the screen', chooser);
     check(chooser.close.left >= chooser.left && chooser.close.right <= Math.min(chooser.right, chooser.vw) + 0.5, 'its × should be in reach', chooser);
     check(!chooser.tipOver, 'no tip card over the chooser', chooser);
+    check(chooser.peek !== null && chooser.peek >= chooser.bottom, 'the animal\'s card shows below the chooser', chooser);
     check(chooser.rows === 1 && chooser.height <= 52, 'the chooser should be one compact row', chooser);
     check(chooser.first === picked, 'the chooser lists the tapped animal first', { chooser, picked });
     await page.screenshot({ path: path.join(shots, 'phone-chooser.png') });
@@ -262,6 +275,26 @@ async function main() {
     });
     await page.waitForSelector('#pick-chooser', { state: 'hidden', timeout: 3000 });
     step(`a tap in a herd selects #${picked} (under the finger, of ${herdTap.tap.candidates.length} in reach); the chooser is one ${chooser.height.toFixed(0)} px row, ${chooser.width.toFixed(0)} px wide on a ${chooser.vw} px screen${chooser.scrolls ? ' (scrolling, × pinned)' : ''}, listing it first, gone at the next touch`);
+    // The tapped animal's compact card, with the sheet down (playtest 7: nothing showed until the Animal tab opened).
+    await page.evaluate((id) => window.evo.model.select(id), picked);
+    const peek = await page.evaluate(() => {
+      const p = document.querySelector('#peek');
+      const b = p.getBoundingClientRect();
+      const h = document.querySelector('#hint').getBoundingClientRect();
+      return { shown: !p.hidden && b.height > 0, title: p.querySelector('.peek-title').textContent, line: p.querySelector('.peek-line').textContent,
+        top: b.top, bottom: b.bottom, vh: window.innerHeight, sheet: document.querySelector('.game').classList.contains('sheet-open'), hint: h.height };
+    });
+    check(peek.shown && !peek.sheet && peek.title.startsWith(`#${picked} `), 'a tap shows the animal\'s card with the sheet down', peek);
+    check(peek.bottom <= peek.vh && peek.hint === 0 && /adult|young/.test(peek.line), 'the card fits, in place of the hint line', peek);
+    await page.screenshot({ path: path.join(shots, 'phone-peek.png') });
+    await page.tap('#peek-details');
+    await waitFor('the inspector in the sheet', () => page.evaluate(() => document.querySelector('.game').classList.contains('sheet-open')
+      && !document.querySelector('#panel-organism').hidden && document.querySelector('#peek').hidden));
+    await page.tap('#tab-organism'); // closes the sheet: the card is back
+    await page.waitForSelector('#peek:not([hidden])', { timeout: 3000 });
+    await page.tap('#peek-close');
+    await waitFor('the selection cleared', () => page.evaluate(() => window.evo.model.selected === null && document.querySelector('#peek').hidden));
+    step(`the tapped animal's card: "${peek.title}" · "${peek.line}"; Details opens the inspector, × closes it`);
 
     // 4. Follow on: taps on (moving) animals land on them. Real frames for this.
     await page.evaluate(() => window.__e2eFrameCap?.(0));
@@ -478,6 +511,56 @@ async function main() {
     await waitFor('the button pinned by the state', () => page.evaluate(() => document.querySelector('#pin-view').classList.contains('active')));
     await page.evaluate(() => window.evo.socket.send({ type: 'clear_view' }));
     step('a pinned view says so (hint, Unpin view), also when pinned by an API call');
+
+    // 7c. View group: the view window goes to each group in turn (playtest 7: a second party saw nothing), then back.
+    await waitFor('unpinned again', () => page.evaluate(() => !window.evo.model.state?.view.pinned));
+    const centre = (g) => page.evaluate((g) => {
+      const os = window.evo.model.state.organisms.filter((o) => (o.group ?? 0) === g);
+      return os.length ? { x: os.reduce((a, o) => a + o.x, 0) / os.length, y: os.reduce((a, o) => a + o.y, 0) / os.length } : null;
+    }, g);
+    const order = await page.evaluate(() => window.evo.model.state.groups.filter((g) => g.members > 0).map((g) => g.id));
+    const seen = [];
+    for (const g of order.slice(0, 2)) {
+      await page.tap('#tools-more');
+      await page.tap('#view-group');
+      await waitFor(`the view on group ${g}`, async () => {
+        const c = await centre(g);
+        return page.evaluate((c) => {
+          const v = window.evo.model.state?.view;
+          return !!c && v?.pinned && Math.hypot(v.x - c.x, v.y - c.y) <= 6 && document.querySelector('#view-group').classList.contains('active');
+        }, c);
+      });
+      seen.push(await page.evaluate(() => document.querySelector('#view-group .tool-label').textContent));
+    }
+    check(/on Group B/.test(await page.evaluate(() => document.querySelector('#hint').textContent)), 'the hint names the viewed group');
+    // Unpin view ends it.
+    await page.tap('#tools-more');
+    await page.tap('#pin-view');
+    await waitFor('back to the lineage', () => page.evaluate(() => !window.evo.model.state?.view.pinned
+      && !document.querySelector('#view-group').classList.contains('active') && document.querySelector('#view-group .tool-label').textContent === 'View group'));
+    step(`View group moves the view window to each group in turn (${seen.join(', ')}); Unpin view goes back to the lineage`);
+
+    // 7d. Naming a species: the price shows, and a refused name keeps the dialog open with why (playtest 7).
+    await page.tap('#tab-world');
+    const nameBtn = await waitFor('the Name it… button', async () => (await page.locator('[data-action="name-species"]').count()) > 0, UI_MS).catch(() => false);
+    if (nameBtn) {
+      await page.locator('[data-action="name-species"]').first().tap();
+      await page.waitForSelector('#species-name', { timeout: UI_MS });
+      const body = await page.textContent('#species-name');
+      check(/costs \d+ renown/.test(body), 'the dialog shows the price', body);
+      await page.fill('#species-name-input', 'ClaudeBot');
+      await page.tap('#species-name-ok');
+      await page.waitForSelector('#species-name-error:not([hidden])', { timeout: UI_MS });
+      const why = await page.textContent('#species-name-error');
+      check(await page.locator('#species-name').isVisible(), 'a refusal keeps the dialog open', why);
+      check(!/Name species|name_species/i.test((await page.textContent('#toasts')) ?? ''), 'and is not toasted as well');
+      await page.tap('#species-name-cancel');
+      await page.waitForSelector('#species-name', { state: 'detached', timeout: 3000 });
+      step(`the species-name dialog shows the price; a refused name stays in it ("${why}")`);
+    } else {
+      step('(no species to name yet: the species-name dialog check skipped)');
+    }
+    await page.tap('#tab-world');
 
     // 8. A returning player in a new browser profile (no local progress): no
     // first-session tour (it came back in every new browser, playtest 4).

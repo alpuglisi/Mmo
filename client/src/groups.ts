@@ -162,25 +162,33 @@ export function homeRangeGroup(groups: GroupView[]): GroupView | null {
  */
 export function homeRangeNote(g: GroupView): string {
   if (!g.home_range || !g.territory) return '';
-  const note = 'Home range: when you log off, members inside this territory are hunted less ' +
-    '(from 10 minutes after you leave, fading after 12 hours, sooner at a fast game clock). Hunger and thirst still bite.';
+  const note = 'Home range: when you log off, members inside this territory are hunted less, from 10 minutes after you leave until the protection runs out (then it fades). Hunger and thirst still bite.';
   const left = protectionLeft(g);
   return left ? `${note} ${left}` : note;
 }
 
+/** Real minutes as "1 h 12 min", "2 h" or "5 min". */
+function realTime(m: number): string {
+  const h = Math.floor(m / 60);
+  const min = Math.floor(m % 60);
+  return h > 0 ? (min > 0 ? `${h} h ${min} min` : `${h} h`) : `${min} min`;
+}
+
 /**
- * The offline protection left, for the home range's note: at most 12 hours
- * in any 24, however often the player reconnects. Empty when the server
- * doesn't say.
+ * The offline protection left, for the home range's note, in real time at
+ * the world's current speed (playtest 7: "12 hours", "1 h 12 min left" and
+ * "at most 12 h in any 24" side by side). Empty when the server doesn't say.
  */
 export function protectionLeft(g: GroupView): string {
   const m = g.protection_left_min;
   if (m === undefined || !Number.isFinite(m)) return '';
-  if (m <= 0) return 'Protection used up for now: it comes back over the next 24 hours.';
-  const h = Math.floor(m / 60);
-  const min = Math.floor(m % 60);
-  const time = h > 0 ? (min > 0 ? `${h} h ${min} min` : `${h} h`) : `${min} min`;
-  return `Protection left: ${time} (at most 12 hours in any 24).`;
+  const budget = g.protection_budget_min;
+  const window = g.protection_window_min;
+  const cap = budget !== undefined && window !== undefined && Number.isFinite(budget) && Number.isFinite(window)
+    ? ` of at most ${realTime(budget)} in any ${realTime(window)}`
+    : '';
+  if (m <= 0) return `Protection used up for now${cap ? ` (you get at most ${realTime(budget!)} in any ${realTime(window!)})` : ''}: it comes back as old spells leave that window.`;
+  return `Protection left: ${realTime(m)}${cap} (real time at this game speed).`;
 }
 
 /** Members of each group among the drawn organisms, by group id. */
@@ -188,4 +196,27 @@ export function memberCounts(s: StateView): Map<number, number> {
   const m = new Map<number, number>();
   for (const o of s.organisms) m.set(o.group ?? 0, (m.get(o.group ?? 0) ?? 0) + 1);
   return m;
+}
+
+/** The middle of a group's agents (`organisms` lists agents only), or null with none in the list. */
+export function groupCenter(s: StateView | null, id: number): { x: number; y: number; n: number } | null {
+  let x = 0, y = 0, n = 0;
+  for (const o of s?.organisms ?? []) {
+    if ((o.group ?? 0) !== id) continue;
+    x += o.x; y += o.y; n++;
+  }
+  return n > 0 ? { x: x / n, y: y / n, n } : null;
+}
+
+/**
+ * The group "View group" moves the view window to next: the groups with
+ * agents in turn, then null (back to following the whole lineage). With one
+ * group or none there is nothing to cycle (null).
+ */
+export function nextViewGroup(s: StateView | null, current: number | null): number | null {
+  const ids = groupsOf(s).filter((g) => g.members > 0 && groupCenter(s, g.id)).map((g) => g.id);
+  if (ids.length < 2) return null;
+  if (current === null) return ids[0];
+  const i = ids.indexOf(current);
+  return i < 0 ? ids[0] : i + 1 < ids.length ? ids[i + 1] : null;
 }

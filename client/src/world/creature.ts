@@ -29,6 +29,7 @@
 //   a crowded wide view.
 
 import type { Appearance, EarShape, NearbyOrganism, OwnOrganism, SizeBucket, TailLook } from '../protocol';
+import { SIZE_WORDS } from '../bodyMath';
 import { HORN_FORMS, PATTERNS, type CoatPattern, type HornForm } from '../morphology';
 
 export type Point = [number, number];
@@ -199,7 +200,6 @@ export function spriteExtent(s: CreatureSpec): number {
   return Math.ceil(bodyRadius(s) * 3.2) + 2;
 }
 
-const SIZE_WORDS = ['tiny', 'small', 'medium', 'large'] as const;
 const LOCOMOTION_WORDS = { walk: 'walks', swim: 'swims', glide: 'glides', fly: 'flies' } as const;
 const COLORING_WORDS = { drab: 'drab', camo: 'camouflaged', bright: 'brightly colored', warning: 'warning colors' } as const;
 

@@ -39,7 +39,7 @@ export function designWarnings(d: DesignSpec, world: Pick<WorldSummary, 'weather
       text: extreme
         ? `Extreme drought: ${share}% of the land is dry. Founders landing away from lakes and rivers can die of thirst within days, and plants are scarce everywhere. Founding after it eases is safer; if you found now, keep them by water (Food layer on the map).`
         : severe
-          ? `Drought: ${share}% of the land is dry. A new lineage founded now can die out within days, whatever its size: founders far from lakes and rivers go thirsty and plants are thin. Founding after it eases is safer; if you found now, keep them by water.`
+          ? `Drought: ${share}% of the land is dry. A new lineage founded now can die out within days, however few its founders: those far from lakes and rivers go thirsty and plants are thin. Founding after it eases is safer; if you found now, keep them by water.`
           : `Drought: ${share}% of the land is dry. Animals far from lakes and rivers go thirsty and plants thin out, whatever the founding size. Keep the founders near water.`,
     });
   }

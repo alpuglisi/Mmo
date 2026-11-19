@@ -1313,8 +1313,8 @@ pub struct Balance {
     /// the cap). 0: the band rule.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v63"))]
     pub prey_larder: f32,
-    // Playtest 7 balance (version 64; off at 0, what snapshots before
-    // version 64 read, `serde_util::before_v64`).
+    // Playtest 7 balance (version 67; off at 0, what snapshots before
+    // version 67 read, `serde_util::before_v67`).
     /// Honest signals, whole: a hunter's avoidance of a bright prey (its
     /// own aversion, the warning-colour group benefit and its lineage's
     /// lesson together) is lowered by hunger (`Balance::hungry_hunters`)
@@ -1322,14 +1322,14 @@ pub struct Balance {
     /// own aversion after a bite fades (half-life about 40 days); and
     /// coloration from 0.6 counts as warning colours (it was above 0.6).
     /// Playtest 7: a pack starved beside a bright toxic herd. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v64"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v67"))]
     pub honest_signals: f32,
     /// A player's lineage and a wild one are less fertile together than
     /// their body plans alone say: the fertility gap between a player-owned
     /// and a wild-owned animal counts `1 + wild_isolation` times (at 0.6,
     /// body sizes 0.19 apart are sterile instead of 0.3), so player herds
     /// of most sizes aren't diluted by a wild species. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v64"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v67"))]
     pub wild_isolation: f32,
 }
 

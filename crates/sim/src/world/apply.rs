@@ -112,6 +112,48 @@ const FLIGHT_THIRST: f32 = 0.35;
 /// (low `activity`) idles cheaply; above full activity (22 °C) every 10 °C
 /// costs `heat_burn` more (`Balance::cold_heat_burn`), so the food discount
 /// of cold blood is largest where the body is cool and slow.
+/// Typical activity cost over a day of grazing (resting 0.8, walking 1.2,
+/// standing 1.0 in [`World::update_needs`]-style accounting): what a held
+/// herd's day averages.
+pub(crate) const MEAN_ACTIVITY: f32 = 1.1;
+
+impl World {
+    /// Hunger `o` gains in a typical day where it stands now: the base rate
+    /// with the multipliers that don't depend on the moment's action
+    /// (toxin upkeep, metabolism, the meat gut's discount, crowding by kin
+    /// and by the lineage's size, warm-body upkeep and cold, pregnancy,
+    /// body size) and [`MEAN_ACTIVITY`]. Food estimates use it; playtest 7's
+    /// 600-animal herds ate about twice the bare rate (crowding), so a
+    /// claim "for 65 days" was eaten in days.
+    pub(crate) fn steady_hunger_per_day(&self, o: &Organism) -> f32 {
+        let bal = &self.config.balance;
+        let toxin_cost = 1.0 + TOXIN_UPKEEP * o.pheno[Gene::Toxins] * bal.toxin_upkeep;
+        let diet = 1.0 - bal.carnivore_hunger_discount * o.traits.meat_efficiency(bal.generalist_tax);
+        let crowd = 1.0 + bal.crowding * (o.kin_nearby as f32 - 8.0).max(0.0) * (1.0 - o.pheno[Gene::GroupTolerance]);
+        let crowd = crowd * self.lineage_crowding(o.lineage)[1];
+        let thermo = if o.traits.warm {
+            (1.0 + bal.warm_upkeep) * (1.0 + 0.04 * o.needs.cold)
+        } else {
+            cold_blooded_thermo(o.activity, 22.0, 0.0)
+        };
+        let pregnant = if o.pregnancy.is_some() {
+            1.0 + bal.pregnancy_cost * o.traits.litter_burden * litter_condition(bal, o)
+        } else {
+            1.0
+        };
+        let size_burn = if bal.size_burn == 0.0 { 1.0 } else { o.traits.body.mass.powf(-bal.size_burn) };
+        bal.hunger_rate
+            * toxin_cost
+            * o.traits.stats.metabolism
+            * diet
+            * crowd
+            * thermo
+            * pregnant
+            * size_burn
+            * MEAN_ACTIVITY
+    }
+}
+
 pub(crate) fn cold_blooded_thermo(activity: f32, body_t: f32, heat_burn: f32) -> f32 {
     (0.4 + 0.6 * activity) * (1.0 + heat_burn * (body_t - 22.0).max(0.0) / 10.0)
 }

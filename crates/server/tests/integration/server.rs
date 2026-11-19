@@ -380,7 +380,10 @@ async fn metrics_count_ticks_connections_and_traffic() {
     wait_for(&mut sock, "state", |v| v["type"] == "state").await;
     srv.step(3).await;
     wait_for(&mut sock, "state", |v| v["type"] == "state").await;
-    let (s, m) = json_req(addr, Method::GET, "/api/metrics", None, None).await;
+    // Connection counts need a login (playtest 7); timings are public.
+    let (_, anon) = json_req(addr, Method::GET, "/api/metrics", None, None).await;
+    assert_eq!((anon["conns"].as_u64(), anon["players_online"].as_u64()), (Some(0), Some(0)), "{anon}");
+    let (s, m) = json_req(addr, Method::GET, "/api/metrics", Some(&token), None).await;
     assert_eq!(s, StatusCode::OK, "{m}");
     assert_eq!(m["ticks"], 3);
     assert_eq!(m["conns"], 1);

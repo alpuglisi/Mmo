@@ -42,7 +42,8 @@ export interface MarketPanel {
   /** Re-render from the latest state (cheap; called on state pushes). */
   render: () => void;
   /** A price from the renown shop, once loaded. */
-  shopPrice: (key: 'species_name_price' | 'nameplate_price') => number | undefined;
+  /** A shop price, fetching the shop if the Market hasn't yet (playtest 7: the species-name dialog hid the price). */
+  shopPrice: (key: 'species_name_price' | 'nameplate_price') => Promise<number | undefined>;
 }
 
 const TICKS_PER_DAY = 48;
@@ -439,7 +440,10 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   const surveyOut = h('ul', { id: 'shop-survey-result', class: 'small', hidden: true });
   surveyBtn.addEventListener('click', async () => {
     const s = shop;
-    if (s && !window.confirm(`Survey for ${s.survey_price ?? '?'} renown? You see where rivals' groups and territories near your main group are now (to the nearest 8 tiles).`)) return;
+    // The app's dialog, as every other shop button (playtest 7: the last native confirm).
+    // (Always asked: before the shop loaded it bought without asking.)
+    if (!(await confirmDialog({ id: 'survey-confirm', title: s?.survey_price !== undefined ? `Survey for ${s.survey_price} renown?` : 'Buy a survey for renown?', ok: 'Survey',
+      body: 'You see where rivals\' groups and territories near your main group are now (to the nearest 8 tiles).' }))) return;
     const r = await deps.send({ type: 'survey' });
     if (!r.ok) return;
     const v = r.data as SurveyView;
@@ -622,5 +626,12 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   }
 
   render();
-  return { el, refresh, render, shopPrice: (key) => shop?.[key] };
+  const shopPrice = async (key: 'species_name_price' | 'nameplate_price'): Promise<number | undefined> => {
+    if (shop?.[key] === undefined) {
+      const r = await deps.send({ type: 'renown_shop' });
+      if (r.ok) shop = parseShopView(r.data) ?? shop;
+    }
+    return shop?.[key];
+  };
+  return { el, refresh, render, shopPrice };
 }
