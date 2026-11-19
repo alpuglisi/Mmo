@@ -326,8 +326,8 @@ async function main() {
         if (await page.locator('#btn-attack').isDisabled()) {
           // Out of reach (more than 8 tiles): the button says so instead of a pointless click.
           // Down its burrow: also said, and another is picked.
-          if (label.includes('in its burrow')) {
-            step(`the inspector of wild #${pick} offers "${label}", disabled: it is in its burrow`);
+          if (label.includes('in its burrow') || label.includes('protected')) {
+            step(`the inspector of wild #${pick} offers "${label}", disabled: ${label.includes('protected') ? 'it is protected' : 'it is in its burrow'}`);
             skip.add(pick);
             continue;
           }

@@ -1532,7 +1532,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           : burrowed ? 'In its burrow: wait for it to come out'
           : reach ? '' : `#${hunter.id} is too far away: get within ${ATTACK_RANGE} tiles`,
         onclick: () => void attackWith(hunter, o.id),
-      }, burrowed ? `Attack with #${hunter.id} (in its burrow)` : guarded || reach ? `Attack with #${hunter.id}` : `Attack with #${hunter.id} (too far)`),
+      // A disabled button says why (e2e: a protected one read just "Attack with #94").
+      }, burrowed ? `Attack with #${hunter.id} (in its burrow)` : guarded ? `Attack with #${hunter.id} (protected)` : reach ? `Attack with #${hunter.id}` : `Attack with #${hunter.id} (too far)`),
       wild ? h('p', { class: 'muted small' }, 'Wild organisms have no owner to consent to a mating.')
         : sterile ? h('p', { class: 'muted small', id: 'insp-sterile' }, 'Its lineage can\'t breed with yours (body plans too far apart): no mating to ask for.')
         : h('button', { id: 'btn-ask-mating', onclick: () => { matingForm.setPartner(o.id); showTab('matings'); } }, 'Request mating…'),
