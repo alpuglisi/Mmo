@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { capInfo, graceText, grouped, LEGACY_EXPLAIN, migrationText, rampText } from './lineageInfo';
+import { boomShareText, capInfo, graceText, grouped, LEGACY_EXPLAIN, migrationText, rampText } from './lineageInfo';
 import type { GroupView } from './protocol';
 
 describe('the population cap row', () => {
@@ -38,7 +38,7 @@ describe('the population cap row', () => {
     const c = { soft_cap: 1500, hard_cap: 2100, count: 900, juvenile_weight: 0.25, litter: 0.2, hunger: 1.3, world_cap: 640, world_share: 0.2 };
     const info = capInfo(1000, 1500, c);
     expect(info.status).toBe("past its share of the world: litters ×0.2, hunger ×1.30");
-    expect(info.explain).toMatch(/20% of the world's animals \(wild included; breeding only, not hunger\): at today's numbers from 640/);
+    expect(info.explain).toMatch(/crowding count reaches 20% of the whole world's, counted the same way \(every lineage and the wild; breeding only, not hunger\): at today's numbers from 640/);
     // Below it: no world note in the status.
     expect(capInfo(500, 1500, { ...c, count: 450, litter: 0.9, hunger: 1 }).status).toBe('breeding slowing: litters ×0.9');
   });
@@ -80,5 +80,13 @@ describe('grace and the founding ramp', () => {
     expect(rampText({ founded_day: 99, weight: 0.4, days: 10 })).toBe('40% of your share counts toward the ranked season now; it rises to 100% over the 10 days after founding (day 100)');
     expect(rampText({ founded_day: 3, weight: 1, days: 10 })).toMatch(/^full/);
     expect(LEGACY_EXPLAIN).toMatch(/stays at 0% until your first young grow up/);
+  });
+});
+
+describe('boomShareText', () => {
+  it('explains a share that falls while the young outnumber the adults', () => {
+    expect(boomShareText(231, 717)).toContain('Most of yours are young (717 of 948)');
+    expect(boomShareText(300, 200)).toBeNull();
+    expect(boomShareText(2, 5)).toBeNull();
   });
 });

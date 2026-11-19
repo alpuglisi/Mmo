@@ -2933,6 +2933,10 @@ pub struct SpeciesView {
     pub founded_day: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extinct_day: Option<u64>,
+    /// Gone because its owner retired its main lineage (that day), not
+    /// extinct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired_day: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged_into: Option<u32>,
     /// The name of the species it merged into (so it reads by name even

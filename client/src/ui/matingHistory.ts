@@ -100,8 +100,10 @@ export function meetText(o: Pick<OfferView, 'from_player' | 'meet'>, me: number 
     const angle = Math.atan2(y - fy, x - fx);
     return COMPASS[((Math.round(angle / (Math.PI / 4)) % 8) + 8) % 8];
   };
+  // A meeting point on your animal has no direction (playtest 11: atan2(0, 0) read "E of yours").
+  const where = (x: number, y: number) => Math.hypot(x - fx, y - fy) < 1.5 ? 'at your animal' : `${dirTo(x, y)} of yours`;
   const at = m.meet_x !== undefined && m.meet_y !== undefined
-    ? ` They meet near ${Math.round(m.meet_x)}, ${Math.round(m.meet_y)} (${dirTo(m.meet_x, m.meet_y)} of yours).` : '';
+    ? ` They meet near ${Math.round(m.meet_x)}, ${Math.round(m.meet_y)} (${where(m.meet_x, m.meet_y)}).` : '';
   const held = m.possessed ? ' One is possessed: the other only walks to the meeting point and waits there.' : ' Possess yours to hurry.';
   return `Walking to meet: the partner is about ${tiles(m.distance)} ${dirTo(tx, ty)} of yours.${at}${held}`;
 }

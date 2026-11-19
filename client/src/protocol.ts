@@ -1405,6 +1405,8 @@ export interface SpeciesView {
   parent?: number;
   founded_day: number;
   extinct_day?: number;
+  /** Gone because its owner retired its main lineage (that day), not extinct. */
+  retired_day?: number;
   merged_into?: number;
   /** The name of the species it merged into. */
   merged_into_name?: string;

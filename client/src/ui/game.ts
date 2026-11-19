@@ -13,7 +13,7 @@ import { apartText, historyRows, meetText, offerLine } from './matingHistory';
 import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
 import { buildFamilyTree, type FamilyModel } from '../familyTree';
-import { actionText, capInfo, graceText, grouped, LEGACY_EXPLAIN, migrationText, rampText } from '../lineageInfo';
+import { actionText, boomShareText, capInfo, graceText, grouped, LEGACY_EXPLAIN, migrationText, rampText } from '../lineageInfo';
 import { droughtNotice } from '../droughtInfo';
 import { markRetired, wasRetired } from '../retired';
 import { awaySummary, seenKey } from '../awaySummary';
@@ -75,7 +75,7 @@ const ATTACK_RANGE = 8;
  */
 function extinctNoticeEl(id: string, onNewLineage: (() => void) | undefined): HTMLElement {
   return h('div', { class: 'notice bad', id, role: 'status' },
-    h('p', { class: 'extinct-text' }, h('strong', {}, 'Your lineage has died out.'), ' None of your organisms are alive. The Genes tab charts what killed them.'),
+    h('p', { class: 'extinct-text' }),
     onNewLineage ? h('p', {}, h('button', { type: 'button', class: 'new-lineage', id: `${id}-new`, onclick: onNewLineage }, 'Start a new lineage'),
       h('span', { class: 'muted small' }, ' Your renown, records and titles stay.')) : null);
 }
@@ -350,7 +350,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       void refreshStats().then(() => { if (model.state) renderExtinct(); });
     }
     extinctAlert.hidden = !gone;
-    if (!gone) return;
+    if (!gone) {
+      // No hidden "died out" words left in the page after founding (playtest 11).
+      extinctTitle.textContent = '';
+      extinctText.textContent = '';
+      return;
+    }
     const retired = retiredNow(st!.lineage);
     const title = retired ? `You retired lineage #${st!.lineage}: start a new lineage` : 'Your lineage died out: start a new lineage';
     if (extinctTitle.textContent !== title) {
@@ -373,6 +378,20 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, notices, hint, legends, fab, peek, possessBar, chooser, toasts);
   // The notices go below the toolbar's last row (it wraps on narrow desktops).
   const measureToolbar = () => stageWrap.style.setProperty('--toolbar-h', `${toolbar.offsetTop + toolbar.offsetHeight}px`);
+  // A tip card at the top of the map (phones, with the sheet open or while
+  // possessing): toasts go below it, not over its text (playtest 11).
+  const measureTip = () => {
+    const card = stageWrap.querySelector<HTMLElement>(':scope > .hint-card');
+    const wrap = stageWrap.getBoundingClientRect();
+    const r = card && !card.hidden ? card.getBoundingClientRect() : null;
+    const below = r && r.height > 0 && r.top - wrap.top < wrap.height / 2 ? Math.round(r.bottom - wrap.top + 6) : 0;
+    stageWrap.style.setProperty('--tip-bottom', `${below}px`);
+  };
+  if (typeof MutationObserver !== 'undefined') {
+    const mo = new MutationObserver(measureTip);
+    mo.observe(stageWrap, { childList: true });
+    cleanups.push(() => mo.disconnect());
+  }
   if (typeof ResizeObserver !== 'undefined') {
     const ro = new ResizeObserver(measureToolbar);
     ro.observe(toolbar);
@@ -1449,6 +1468,23 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     return other ? { other } : {};
   }
 
+  /**
+   * The ended-lineage notice's words: retired or died out, or none at all
+   * while hidden (playtest 11: the hidden "died out" text stayed in the
+   * page after founding).
+   */
+  function setExtinctText(el: HTMLElement, lineage: number | null): void {
+    const want = lineage === null ? '' : retiredNow(lineage) ? 'retired' : 'died';
+    if (el.dataset.ended === want) return;
+    el.dataset.ended = want;
+    el.querySelector('.extinct-text')?.replaceChildren(...(want === 'retired'
+      // Retired, not dead: say so (and no "what killed them").
+      ? [h('strong', {}, `You retired lineage #${lineage}.`), ' Its animals have left the world.']
+      : want === 'died'
+        ? [h('strong', {}, 'Your lineage has died out.'), ' None of your organisms are alive. The Genes tab charts what killed them.']
+        : []));
+  }
+
   function renderInspector(): void {
     const { own, other } = findOrg(model.selected);
     view.selected = model.selected;
@@ -1459,6 +1495,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const st = model.state;
       if (st && st.lineage !== null && st.population === 0) {
         // Kept, not rebuilt, on every state: its button must stay clickable.
+        setExtinctText(inspExtinct, st.lineage);
         if (inspDetails.firstElementChild !== inspExtinct) inspDetails.replaceChildren(inspExtinct);
         return;
       }
@@ -2097,6 +2134,14 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const seasonsEl = h('div', { id: 'season-boards' });
   const listEl = h('div', { id: 'organism-list', class: 'org-list' });
   const listMore = h('p', { class: 'muted small', id: 'organism-list-more' });
+  let listHeld = false;
+  let listPressed: number | null = null;
+  listEl.addEventListener('pointerenter', () => { listHeld = true; });
+  listEl.addEventListener('pointerleave', () => { listHeld = false; listPressed = null; });
+  listEl.addEventListener('pointerdown', (ev) => {
+    const org = (ev.target as HTMLElement).closest<HTMLElement>('.org-item')?.dataset.org;
+    listPressed = org ? Number(org) : null;
+  });
   const groupsEl = h('div', { id: 'group-list' });
   const retireBtn = h('button', { type: 'button', id: 'retire-lineage', class: 'danger' }, 'Retire lineage');
   const retireRule = h('p', { class: 'small', id: 'lineage-retire-rule' }, h('strong', {}, 'Not a free re-roll: '), 'founding again soon after retiring founds fewer founders and costs renown. Founding again within that window also continues your last lineage\'s grace (even one that has run out); it never starts a new one.');
@@ -2245,6 +2290,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       ...(ramp ? [['Season weight', h('span', { id: 'ramp-weight' }, ramp)] as [string, string | Node]] : []),
     ]));
     if (cap.explain && !gone) statsEl.append(h('p', { class: `cap-note small${cap.level === 'ok' ? ' muted' : ''}`, id: 'cap-note' }, cap.explain));
+    const boom = gone ? null : boomShareText(adultsAll, youngAll);
+    if (boom) statsEl.append(h('p', { class: 'muted small', id: 'boom-note' }, boom));
     // Lineage-wide warnings (hunger crash, near the hard cap, starving territories), as the alerts say them.
     const warnings = gone ? [] : mine?.warnings ?? [];
     if (warnings.length) {
@@ -2254,11 +2301,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     // A founded lineage with nobody left: say so plainly, and where to see why.
     // One element, shown or hidden (rebuilding it each state would eat clicks on its button).
     lineageExtinct.hidden = !(s.lineage !== null && s.population === 0);
-    if (!lineageExtinct.hidden && retiredNow(s.lineage) && !lineageExtinct.dataset.retired) {
-      // Retired, not dead: say so (and no "what killed them").
-      lineageExtinct.dataset.retired = '1';
-      lineageExtinct.querySelector('.extinct-text')?.replaceChildren(h('strong', {}, `You retired lineage #${s.lineage}.`), ' Its animals have left the world.');
-    }
+    setExtinctText(lineageExtinct, lineageExtinct.hidden ? null : s.lineage);
     retireEl.hidden = !(s.lineage !== null && s.population > 0);
     // Nothing to end without a living lineage (playtest 7: it stayed after a retire).
     endGraceEl.hidden = !s.grace || gone;
@@ -2274,14 +2317,23 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
             h('td', {}, h('span', { class: 'share-bar', style: `--w:${(r.share * 100).toFixed(1)}%` }, pct(r.share))),
             h('td', {}, pct(r.weighted_share)), h('td', {}, String(r.alive))))))]);
     // Possessed first, then pregnant or gravid ones (so the Eggs line's "about to lay" are all listed), then adults.
-    const shown = [...orgs].sort((a, b) => Number(b.possessed) - Number(a.possessed) || Number(b.pregnant) - Number(a.pregnant)
+    let shown = [...orgs].sort((a, b) => Number(b.possessed) - Number(a.possessed) || Number(b.pregnant) - Number(a.pregnant)
       || Number(b.matured) - Number(a.matured) || a.id - b.id).slice(0, 60);
+    // While the pointer is on the list, rows keep their places (playtest 11:
+    // a re-sort under the pointer opened a neighbouring animal).
+    if (listHeld) {
+      const at = new Map(Array.from(listEl.children, (c, i) => [(c as HTMLElement).dataset.org, i] as const));
+      shown = shown.map((o, i) => ({ o, i, k: at.get(String(o.id)) ?? 1e6 + i })).sort((a, b) => a.k - b.k).map((x) => x.o);
+    }
     // One button per organism, kept and updated in place (no row moves under a click).
     reconcile(listEl, shown, (o) => String(o.id), (o) => {
       const id = o.id;
       return h('button', { class: 'org-item', 'data-org': id, onclick: () => {
-        const cur = model.state?.organisms.find((x) => x.id === id);
-        model.select(id);
+        // The animal pressed, should its row have moved between press and release.
+        const chosen = listPressed ?? id;
+        listPressed = null;
+        const cur = model.state?.organisms.find((x) => x.id === chosen);
+        model.select(chosen);
         view.setFollow(false);
         if (cur) view.centerOn(cur.x, cur.y);
         showTab('organism');
@@ -2392,9 +2444,34 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }
 
   function renderToasts(): void {
+    measureTip();
     clear(toasts);
     // The three newest (playtest 9: a tall stack covered tools and map).
-    for (const t of model.toasts.slice(-3)) append(toasts, [h('div', { class: `toast ${t.kind}` }, t.text, t.count ? h('span', { class: 'toast-more' }, ` (and ${t.count - 1} more like it)`) : null)]);
+    // On phones a long toast shows two lines; a tap opens the rest (playtest 11: 3–4 line toasts covered a third of the map).
+    for (const t of model.toasts.slice(-3)) {
+      const el = h('div', { class: `toast ${t.kind}${openToasts.has(t.text) ? ' open' : ''}`, title: t.text },
+        t.count ? h('span', { class: 'toast-more' }, `(×${t.count}) `) : null, t.text);
+      el.addEventListener('click', () => {
+        if (!narrow()) return;
+        if (openToasts.has(t.text)) openToasts.delete(t.text);
+        else openToasts.add(t.text);
+        el.classList.toggle('open');
+        // An opened toast stays while it is read.
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(clearToasts, 12000);
+      });
+      append(toasts, [el]);
+    }
+    // Which toasts are cut short (they take a tap to open; the rest let taps through to the map).
+    if (narrow()) requestAnimationFrame(() => {
+      for (const el of Array.from(toasts.children) as HTMLElement[]) el.classList.toggle('long', el.scrollHeight > el.clientHeight + 1);
+    });
+  }
+  const openToasts = new Set<string>();
+  function clearToasts(): void {
+    model.toasts = [];
+    openToasts.clear();
+    renderToasts();
   }
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -2439,7 +2516,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     model.on('toast', () => {
       renderToasts();
       if (toastTimer) clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => { model.toasts = []; renderToasts(); }, 6000);
+      toastTimer = setTimeout(clearToasts, 6000);
     }),
   );
   if (model.state) {

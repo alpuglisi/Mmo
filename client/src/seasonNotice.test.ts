@@ -15,6 +15,8 @@ describe('season notice', () => {
     expect(seasonNotice({ days_to_winter: 1, winter_provision: false })).toContain('in 1 day.');
     expect(seasonNotice({ days_to_winter: 1, winter_provision: false })).not.toContain('start fed');
     expect(seasonNotice({ days_to_winter: 0, winter_provision: true })).toContain('It is winter now.');
+    const clock = { tick: 0, day: 357, year: 2, hour: 0, season: 'winter', daytime: true, era: 0, era_days: 360 };
+    expect(seasonNotice({ days_to_winter: 0, winter_provision: true, clock, days_per_year: 120 })).toContain('It is winter now. Spring comes in about 3 days.');
   });
   it('recommends brumation to a cold-blooded design, and says founders sleep their first winter free', () => {
     const cold = seasonNotice({ days_to_winter: 5, winter_provision: true }, 'cold')!;

@@ -26,6 +26,8 @@ describe('speciesTree', () => {
     expect(rows[0].status).toBe('~100 adults');
     expect(rows[4]).toMatchObject({ alive: false, status: 'extinct day 41' });
     expect(rows[5].status).toBe('merged into Voles');
+    // A retired lineage's species: the retire day, not "extinct" from its last detection (playtest 11).
+    expect(speciesTree([sp(6, 'Wayfarers', { extinct_day: 130, retired_day: 133 })])[0]).toMatchObject({ alive: false, status: 'retired day 134' });
   });
 
   it('treats a missing parent as a root and survives bad links', () => {
