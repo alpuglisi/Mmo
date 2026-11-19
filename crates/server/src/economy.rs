@@ -119,6 +119,11 @@ pub const SURVEY_BASE: u64 = 30;
 pub const SURVEY_PER_ANIMALS: u64 = 10;
 pub const SURVEY_RADIUS: f32 = 64.0;
 
+/// Renown to name (or rename) one of your animals (`name_animal`): a
+/// cosmetic sink, shown on its listings and in your own views (playtest 7:
+/// 600–4,700 renown unspent).
+pub const ANIMAL_NAME_PRICE: u64 = 50;
+
 /// The price of a survey for a lineage of `alive` animals.
 pub fn survey_price(alive: usize) -> u64 {
     SURVEY_BASE + alive as u64 / SURVEY_PER_ANIMALS
@@ -300,6 +305,14 @@ pub struct Economy {
     /// window (`Game::refound_terms`: each one doubles the next's fee).
     #[serde(default)]
     pub refound_days: BTreeMap<PlayerId, Vec<u64>>,
+    /// Re-founding fees not yet paid (the balance was short): taken from
+    /// the player's next renown as it comes in (playtest 7: spending the
+    /// renown first made a re-founding free).
+    #[serde(default)]
+    pub refound_debt: BTreeMap<PlayerId, u64>,
+    /// Names players gave their animals (`name_animal`: cosmetic).
+    #[serde(default)]
+    pub animal_names: BTreeMap<OrgId, String>,
     /// Players whose last lineage died out (rather than was retired), for
     /// the wording.
     pub died_out: BTreeSet<PlayerId>,

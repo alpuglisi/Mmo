@@ -100,14 +100,17 @@ pub const EGG_WARNING: &str = "Warm-blooded eggs need a parent's heat: left alon
 /// Drought share of the land from which the design check warns a design
 /// with no drought trait (`DesignCompatView::drought_warning`).
 pub const DROUGHT_DESIGN_WARN: f32 = 0.4;
-/// Estivation from which a design counts as drought-ready.
-pub const DROUGHT_TRAIT: f32 = 0.3;
+/// Estivation from which a design counts as drought-ready: above the gene's
+/// strategy threshold (`evo_sim::stats::STRATEGY_THRESHOLD`, below which it
+/// does nothing) with room for founder variation. Playtest 7: the advice
+/// said 0.3, and a design with 0.4 never estivated.
+pub const DROUGHT_TRAIT: f32 = evo_sim::stats::STRATEGY_THRESHOLD + 0.1;
 
 /// [`DesignCompatView::drought_warning`]'s text.
 pub fn drought_design_text(drought: f32) -> String {
     format!(
         "Drought: {:.0}% of the land is dry. Founders without a drought trait die of thirst within days, even \
-         inside their grace. Add estivation (0.3 or more) so they sleep \
+         inside their grace. Add estivation ({DROUGHT_TRAIT:.1} or more) so they sleep \
          through the dry spell, or wait for the drought to ease.",
         drought * 100.0
     )
@@ -205,6 +208,7 @@ impl Game {
             provisions_max: economy::MAX_PROVISIONS_PER_SEASON,
             provision_blocked: self.provision_terms(player).err().map(|e| e.message),
             survey_price: economy::survey_price(self.owner_population(player)),
+            animal_name_price: economy::ANIMAL_NAME_PRICE,
             reinforce_next_day: self.reinforce_next(player).map(|x| x.0),
             reinforce_next_minutes: self.reinforce_next(player).map(|x| x.1),
         }
@@ -335,6 +339,35 @@ impl Game {
             groups,
             shop: self.shop_view(player),
         })
+    }
+
+    /// `name_animal`: a cosmetic name for one of the player's living
+    /// animals (the species-name filter; not another player's name).
+    pub(super) fn name_animal(
+        &mut self,
+        player: PlayerId,
+        organism: crate::protocol::OrgId,
+        name: &str,
+    ) -> Result<(String, ShopView), ErrorInfo> {
+        let name = names::check(name, crate::design::MAX_NAME_LEN, names::Kind::Species)
+            .map_err(|why| ErrorInfo::new("bad_name", format!("that name can't be used: {why}")))?;
+        if self.impersonates(player, &name, names::Kind::Species) {
+            return Err(ErrorInfo::new("bad_name", "an animal's name can't look like another player's name"));
+        }
+        match self.world.organism(organism) {
+            Some(o) if o.owner == player => {}
+            Some(_) => return Err(ErrorInfo::new("not_owned", format!("#{organism} is not yours"))),
+            None => return Err(ErrorInfo::new("not_found", format!("no living organism #{organism}"))),
+        }
+        if self.economy.animal_names.get(&organism) == Some(&name) {
+            return Err(ErrorInfo::new("same_name", format!("#{organism} is already called {name}")));
+        }
+        self.spend(player, economy::ANIMAL_NAME_PRICE, format!("Named #{organism} \"{name}\""))?;
+        // Names of animals no longer alive are dropped as names are given.
+        let world = &self.world;
+        self.economy.animal_names.retain(|&id, _| world.organism(id).is_some());
+        self.economy.animal_names.insert(organism, name.clone());
+        Ok((name, self.shop_view(player)))
     }
 
     /// `set_nameplate`.

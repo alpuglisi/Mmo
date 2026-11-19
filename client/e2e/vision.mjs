@@ -24,6 +24,7 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cappedBrowser } from './frames.mjs';
+import { stamp } from './names.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -92,7 +93,7 @@ async function main() {
     const pageErrors = [];
     page.on('pageerror', (e) => pageErrors.push(e.message));
     await page.goto(`${base}/?tour=off`);
-    await page.fill('#login-name', `vis_${Date.now().toString(36)}`);
+    await page.fill('#login-name', `vis_${stamp()}`);
     await page.fill('#login-password', 'a long password');
     await page.click('#register-submit');
     await page.waitForSelector('#design-name', { timeout: 45000 });

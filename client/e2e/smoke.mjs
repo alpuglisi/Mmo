@@ -27,6 +27,7 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cappedBrowser, FPS } from './frames.mjs';
+import { stamp } from './names.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -127,7 +128,7 @@ async function main() {
     await page.goto(`${base}/?tour=off`);
 
     // Register.
-    const name = `e2e_${Date.now().toString(36)}`;
+    const name = `e2e_${stamp()}`;
     await page.fill('#login-name', name);
     await page.fill('#login-password', 'a long password');
     await page.click('#register-submit');

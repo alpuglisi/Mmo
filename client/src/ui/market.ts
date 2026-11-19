@@ -69,7 +69,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
 
   // --- list one of my adults (fixed fee or auction)
   // Searchable pickers, not <select>s: a lineage can have thousands of adults.
-  const listPick = createPicker({ id: 'market-list-organism', label: 'Adult to list', placeholder: 'Search your adults: id or words', filters: ['sex', 'notPregnant'], noneLabel: 'Choose an adult to list…' });
+  const listPick = createPicker({ id: 'market-list-organism', label: 'Adult to list', placeholder: 'Search your adults in view: id or words', filters: ['sex', 'notPregnant'], noneLabel: 'Choose an adult to list…' });
   const listOrg = listPick.el;
   const listKind = h('select', { id: 'market-list-kind' },
     h('option', { value: 'fixed' }, 'fixed fee'), h('option', { value: 'auction' }, 'auction'));
@@ -111,7 +111,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   const myListingsEl = h('div', { id: 'my-listings' });
 
   // --- browse
-  const minePick = createPicker({ id: 'market-mine', label: 'For my adult', placeholder: 'Search your adults: id or words', filters: ['sex', 'notPregnant'], noneLabel: '(none picked: compatibility by lineage only)', allowNone: true });
+  const minePick = createPicker({ id: 'market-mine', label: 'For my adult', placeholder: 'Search your adults in view: id or words', filters: ['sex', 'notPregnant'], noneLabel: '(none picked: compatibility by lineage only)', allowNone: true });
   const mineSel = minePick.el;
   const roleSel = h('select', { id: 'market-role' },
     h('option', { value: 'any' }, 'studs and dams'), h('option', { value: 'stud' }, 'studs (male)'), h('option', { value: 'dam' }, 'dams (female)'));
@@ -251,7 +251,9 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     return h('div', { class: 'listing', 'data-listing': id, 'data-organism': l.organism, 'data-kind': l.kind },
       h('div', { class: 'listing-head' },
         h('strong', {}, `${l.role === 'stud' ? 'Stud' : 'Dam'} #${l.organism}`),
+        l.animal_name && h('span', { class: 'animal-name' }, ` “${l.animal_name}”`),
         h('span', { class: 'pregnant-tag', hidden: true }, ' · pregnant: buyers wait until she has given birth'),
+        h('span', { class: 'aging-tag', hidden: true }, ' · old: may die of age before a buyer meets it'),
         h('span', { class: 'muted' }, ` · ${l.owner_name}'s ${l.lineage_name}`),
         h('span', { class: 'fee' })),
       l.auction && h('div', { class: 'small auction-line' }),
@@ -287,6 +289,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     card.classList.toggle('busy', l.busy);
     const preg = card.querySelector<HTMLElement>('.pregnant-tag');
     if (preg) preg.hidden = !(l.pregnant && l.sex === 'female');
+    const aging = card.querySelector<HTMLElement>('.aging-tag');
+    if (aging) aging.hidden = !l.aging;
     card.classList.toggle('auction', !!a);
     setText(card.querySelector('.fee')!, a ? `${a.high_bid ?? a.reserve} renown` : `${l.fee} renown`);
     const auctionLine = card.querySelector('.auction-line');
@@ -405,7 +409,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   });
   reinBtn.addEventListener('click', async () => {
     const s = shop;
-    if (s && !(await confirmDialog({ id: 'reinforce-confirm', title: `Buy reinforcements for ${s.reinforce_price} renown?`, ok: 'Buy',
+    if (!s || !(await confirmDialog({ id: 'reinforce-confirm', title: `Buy reinforcements for ${s.reinforce_price} renown?`, ok: 'Buy',
       body: `${s.reinforce_size} young adults copied from your own join your lineage. The price doubles with each purchase, at most ${s.reinforcements_max ?? 2} within a ranked season's length.` }))) return;
     const r = await deps.send({ type: 'reinforce' });
     if (r.ok) {
@@ -424,7 +428,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     const fresh = await deps.send({ type: 'renown_shop' });
     shop = (fresh.ok && parseShopView(fresh.data)) || shop;
     const s = shop;
-    if (s && !(await confirmDialog({ id: 'provision-confirm', title: `Buy a provision for ${s.provision_price} renown?`, ok: 'Buy',
+    if (!s || !(await confirmDialog({ id: 'provision-confirm', title: `Buy a provision for ${s.provision_price} renown?`, ok: 'Buy',
       body: `Your lineage's ${s.provision_size ?? 20} hungriest or thirstiest adults get 50 off their hunger and thirst, once.` }))) return;
     const r = await deps.send({ type: 'provision' });
     if (r.ok) {
@@ -438,6 +442,9 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   const surveyBtn = h('button', { id: 'shop-survey', class: 'secondary' }) as HTMLButtonElement;
   const surveyNote = h('span', { class: 'muted small' }, 'Where rivals\' groups and territories are within 64 tiles of your main group, roughly, right now.');
   const surveyOut = h('ul', { id: 'shop-survey-result', class: 'small', hidden: true });
+  // The ledger sequence of the survey shown: a newer one (bought elsewhere) hides it (playtest 7: the first
+  // survey's result stayed after later ones).
+  let surveySeq = -1;
   surveyBtn.addEventListener('click', async () => {
     const s = shop;
     // The app's dialog, as every other shop button (playtest 7: the last native confirm).
@@ -448,12 +455,38 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     if (!r.ok) return;
     const v = r.data as SurveyView;
     shop = parseShopView(v.shop) ?? shop;
+    const led = await deps.send({ type: 'ledger', limit: 5 });
+    if (led.ok) ledger = parseLedgerView(led.data) ?? ledger;
+    surveySeq = ledger?.entries.find((e) => e.text.startsWith('Survey:'))?.seq ?? surveySeq;
     surveyOut.hidden = false;
-    surveyOut.replaceChildren(...(v.groups.length
+    // Dated: a survey is a snapshot (playtest 7: an old result looked current).
+    const day = model.state?.clock.day;
+    surveyOut.replaceChildren(h('li', { class: 'muted' }, `Survey taken${day !== undefined ? ` on day ${day + 1}` : ''}:`), ...(v.groups.length
       ? v.groups.map((g) => h('li', {}, `${g.name}: about ${g.members} animals near ${g.x}, ${g.y}${g.territory ? ` · territory at ${g.territory[0]}, ${g.territory[1]} (radius ${g.territory[2]})` : ''}`))
       : [h('li', { class: 'muted' }, `No rival groups within ${v.radius} tiles of ${v.x}, ${v.y}.`)]));
     render();
   });
+  // Naming an animal (cosmetic): shown on its listings.
+  const nameOrg = h('input', { id: 'shop-name-animal-id', type: 'number', min: 1, placeholder: 'Animal #' }) as HTMLInputElement;
+  const nameText = h('input', { id: 'shop-name-animal-name', maxlength: 32, placeholder: 'Name' }) as HTMLInputElement;
+  const nameBtn = h('button', { id: 'shop-name-animal', class: 'secondary' }) as HTMLButtonElement;
+  nameBtn.addEventListener('click', async () => {
+    const organism = Math.floor(Number(nameOrg.value));
+    const name = nameText.value.trim();
+    if (!organism || !name) return model.toast('error', 'Name an animal: give its # and a name.');
+    const s = shop;
+    if (!s || !(await confirmDialog({ id: 'name-animal-confirm', title: `Name #${organism} “${name}” for ${s.animal_name_price ?? '?'} renown?`, ok: 'Name it',
+      body: 'Cosmetic: the name shows on its listings. Renaming costs the same again.' }))) return;
+    const r = await deps.send({ type: 'name_animal', organism, name });
+    if (r.ok) {
+      const d = r.data as { name?: string; shop?: unknown } | undefined;
+      shop = parseShopView(d?.shop) ?? shop;
+      model.dismissErrors(commandLabel('name_animal'));
+      model.toast('info', `#${organism} is now called ${d?.name ?? name}.`);
+      render();
+    }
+  });
+  const nameRow = h('div', { class: 'row', hidden: true }, nameOrg, nameText, nameBtn);
   // The cosmetic nameplate (a sink for leaders): built once, updated in place.
   const plateColor = h('select', { id: 'shop-nameplate-color' }) as HTMLSelectElement;
   const plateTitle = h('input', { id: 'shop-nameplate-title', maxlength: 24, placeholder: 'Title' }) as HTMLInputElement;
@@ -463,7 +496,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   plateBtn.addEventListener('click', async () => {
     const s = shop;
     const title = plateTitle.value.trim();
-    if (s && !(await confirmDialog({ id: 'nameplate-confirm', title: `${s.nameplate ? 'Change' : 'Buy'} your nameplate for ${s.nameplate_price ?? '?'} renown?`, ok: s.nameplate ? 'Change' : 'Buy',
+    if (!s || !(await confirmDialog({ id: 'nameplate-confirm', title: `${s.nameplate ? 'Change' : 'Buy'} your nameplate for ${s.nameplate_price ?? '?'} renown?`, ok: s.nameplate ? 'Change' : 'Buy',
       body: `${plateColor.value}${title ? `, "${title}"` : ', no title'}: it is cosmetic, shown with your name.` }))) return;
     const r = await deps.send({ type: 'set_nameplate', color: plateColor.value, title: plateTitle.value });
     if (r.ok) {
@@ -490,7 +523,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   }
   const provRow = h('div', { class: 'row', hidden: true }, provBtn, provNote);
   const surveyRow = h('div', { hidden: true }, h('div', { class: 'row' }, surveyBtn, surveyNote), surveyOut);
-  const shopBody = h('div', { hidden: true }, shopText_, h('div', { class: 'row' }, slotBtn, slotNote), h('div', { class: 'row' }, reinBtn, reinNote), provRow, surveyRow, plateRow);
+  const shopBody = h('div', { hidden: true }, shopText_, h('div', { class: 'row' }, slotBtn, slotNote), h('div', { class: 'row' }, reinBtn, reinNote), provRow, surveyRow, nameRow, plateRow);
   const shopLoading = h('p', { class: 'muted small' }, 'Loading…');
   shopEl.replaceChildren(shopLoading, shopBody);
 
@@ -506,16 +539,19 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     const blocked = s.reinforce_blocked;
     reinBtn.disabled = blocked !== undefined || s.balance < s.reinforce_price;
     reinBtn.title = blocked ?? `${s.reinforce_size} adults copied from your own join your lineage`;
-    setText(reinBtn, `Reinforcements (${s.reinforce_size} adults): ${s.reinforce_price} renown`);
+    // Blocked, the next price would mislead (playtest 7: "600" while the real one was 150).
+    setText(reinBtn, blocked ? `Reinforcements (${s.reinforce_size} adults): not now` : `Reinforcements (${s.reinforce_size} adults): ${s.reinforce_price} renown`);
     setText(reinNote, blocked ?? `For lineages of at most ${s.reinforce_max_alive}; the price doubles with each, at most ${s.reinforcements_max ?? '?'} a ranked season (${s.reinforcements_bought ?? 0} bought).`);
     provRow.hidden = s.provision_price === undefined;
     if (s.provision_price !== undefined) {
       provBtn.disabled = s.provision_blocked !== undefined || s.balance < s.provision_price;
       const n = s.provision_size ?? 20;
       provBtn.title = s.provision_blocked ?? `The ${n} neediest adults get 50 off hunger and thirst`;
-      setText(provBtn, `Provision (${n} adults fed): ${s.provision_price} renown`);
+      setText(provBtn, s.provision_blocked ? 'Provision: not now' : `Provision (${n} adults fed): ${s.provision_price} renown`);
       setText(provNote, s.provision_blocked ?? `Priced per adult fed (twice as much above ${s.reinforce_max_alive} alive); at most ${s.provisions_max ?? '?'} a ranked season (${s.provisions_bought ?? 0} bought).`);
     }
+    nameRow.hidden = !s.animal_name_price;
+    if (s.animal_name_price) setText(nameBtn, `Name an animal: ${s.animal_name_price} renown`);
     surveyRow.hidden = s.survey_price === undefined;
     if (s.survey_price !== undefined) {
       surveyBtn.disabled = s.balance < s.survey_price;
@@ -585,6 +621,10 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       const [first, l, sh, cp] = await Promise.all([fetchPage(), deps.send({ type: 'ledger', limit: 50 }),
         deps.send({ type: 'renown_shop' }), deps.send({ type: 'compatibility' })]);
       if (l.ok) ledger = parseLedgerView(l.data) ?? ledger;
+      const newest = ledger?.entries.find((e) => e.text.startsWith('Survey:'))?.seq;
+      if (newest !== undefined && newest > surveySeq && !surveyOut.hidden) {
+        surveyOut.replaceChildren(h('li', { class: 'muted' }, 'A newer survey was bought elsewhere: survey again to see it here.'));
+      }
       if (sh.ok) shop = parseShopView(sh.data) ?? shop;
       if (cp.ok) compat = parseCompatibilityView(cp.data) ?? compat;
       if (first) {

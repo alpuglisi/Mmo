@@ -24,6 +24,7 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cappedBrowser, chromiumDevice } from './frames.mjs';
+import { stamp } from './names.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium, devices } = require('playwright');
@@ -179,7 +180,7 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
 
   // Design editor: trait rows, their captions and an opened info panel fit
   // the phone's width (no sideways scrolling).
-  await register(page, base, `m_${tag}_${Date.now().toString(36)}`, `${tag} hoppers`, async () => {
+  await register(page, base, `m_${tag}_${stamp()}`, `${tag} hoppers`, async () => {
     await page.check('input[name="thermo"][value="cold"]');
     await page.$eval('input[data-gene="fur"]', (el) => { el.value = '0.5'; el.dispatchEvent(new Event('input')); });
     await page.tap('[data-trait="fur"] .trait-more');
@@ -541,7 +542,7 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
 async function desktopChecks(browser, base, errors) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
   page.on('pageerror', (e) => errors.push(`desktop: ${e.message}`));
-  await register(page, base, `m_desk_${Date.now().toString(36)}`, 'Desk striders');
+  await register(page, base, `m_desk_${stamp()}`, 'Desk striders');
   const layout = await page.evaluate(() => {
     const r = (s) => document.querySelector(s).getBoundingClientRect();
     return {
@@ -914,7 +915,7 @@ async function worldChecks(browser, base, errors) {
   const sel = await box(page, '#world-select');
   if (!sel || sel.x < 0 || sel.x + sel.width > 412 + 1) throw new Error(`world picker off screen: ${JSON.stringify(sel)}`);
   // Ann picks the isle and plays there.
-  const ann = `ann_${Date.now().toString(36)}`;
+  const ann = `ann_${stamp()}`;
   await page.fill('#login-name', ann);
   await page.fill('#login-password', 'a long password');
   await page.selectOption('#world-select', 'isle');
@@ -938,7 +939,7 @@ async function worldChecks(browser, base, errors) {
   await page.evaluate(() => document.querySelector('#logout').click());
   await page.waitForSelector('#login-name');
   // Bob picks the mainland.
-  const bob = `bob_${Date.now().toString(36)}`;
+  const bob = `bob_${stamp()}`;
   await page.fill('#login-name', bob);
   await page.fill('#login-password', 'a long password');
   await page.waitForSelector('#world-select', { state: 'visible' });

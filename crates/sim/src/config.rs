@@ -1313,8 +1313,18 @@ pub struct Balance {
     /// the cap). 0: the band rule.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v63"))]
     pub prey_larder: f32,
-    // Playtest 7 balance (version 67; off at 0, what snapshots before
-    // version 67 read, `serde_util::before_v67`).
+    /// Playtest 7 founding (version 70; *Playtest 7: rivals
+    /// and drought sleepers* in the README; off at 0, what snapshots before
+    /// version 70 read, `serde_util::before_v70`). A player's founding
+    /// keeps out of other players' territories and away from their animals
+    /// (playtest 7: a late joiner landed inside a rival's territory with
+    /// four rivals within 35 tiles), and an estivator sleeps through a
+    /// drought in spring and autumn too, not only in summer (playtest 7: a
+    /// drought founding with estivation never slept and starved).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v70"))]
+    pub founding_rivals: f32,
+    // Playtest 7 balance (version 71; off at 0, what snapshots before
+    // version 71 read, `serde_util::before_v71`).
     /// Honest signals, whole: a hunter's avoidance of a bright prey (its
     /// own aversion, the warning-colour group benefit and its lineage's
     /// lesson together) is lowered by hunger (`Balance::hungry_hunters`)
@@ -1322,14 +1332,14 @@ pub struct Balance {
     /// own aversion after a bite fades (half-life about 40 days); and
     /// coloration from 0.6 counts as warning colours (it was above 0.6).
     /// Playtest 7: a pack starved beside a bright toxic herd. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v67"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v71"))]
     pub honest_signals: f32,
     /// A player's lineage and a wild one are less fertile together than
     /// their body plans alone say: the fertility gap between a player-owned
     /// and a wild-owned animal counts `1 + wild_isolation` times (at 0.6,
     /// body sizes 0.19 apart are sterile instead of 0.3), so player herds
     /// of most sizes aren't diluted by a wild species. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v67"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v71"))]
     pub wild_isolation: f32,
 }
 
@@ -1629,6 +1639,7 @@ impl Default for Balance {
             speciation_credit: 1.0,
             clutch_cover: 2.1,
             prey_larder: 1.0,
+            founding_rivals: 1.0,
             honest_signals: 1.0,
             wild_isolation: 0.6,
         }
@@ -1636,7 +1647,7 @@ impl Default for Balance {
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 170;
+    pub const FIELD_COUNT: usize = 171;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1814,6 +1825,7 @@ impl Balance {
             ("speciation_credit", &mut self.speciation_credit),
             ("clutch_cover", &mut self.clutch_cover),
             ("prey_larder", &mut self.prey_larder),
+            ("founding_rivals", &mut self.founding_rivals),
             ("honest_signals", &mut self.honest_signals),
             ("wild_isolation", &mut self.wild_isolation),
         ]
