@@ -6,10 +6,7 @@
 import type { Morphology } from '../morphology';
 import type { DesignSpec } from '../protocol';
 import { avatarSvg, captionOf, describeAvatar, morphologyOf } from '../world/avatar';
-import { geneValue } from '../bodyMath';
-import { levelOf, TRAIT_TEXT } from './traitText';
-
-const SIZE_WORD = { low: 'small', mid: 'medium', high: 'large' } as const;
+import { sizeClass } from './traitText';
 import { h } from './dom';
 
 const COLLAPSED_KEY = 'evo.avatarCollapsed';
@@ -71,11 +68,8 @@ export function avatarView(extra?: HTMLElement): AvatarView {
     figure.innerHTML = svg;
     figure.setAttribute('aria-label', `Founder preview: ${describeAvatar(m)}`);
     // The covering the caption names is the one the avatar draws (`captionOf`).
-    // One size scale on the design screen: the body-size slider's word
-    // (small / medium / large), not the world sprite's weight class, which
-    // called a 4.2 kg "medium" body "small" (playtests 4 and 5); with the weight.
-    const word = SIZE_WORD[levelOf(TRAIT_TEXT.body_size, geneValue(design, 'body_size'))];
-    caption.textContent = captionOf(m).replace(/^(\S+)/, `${word} (adult ≈ ${m.mass >= 10 ? Math.round(m.mass) : m.mass.toFixed(1)} kg)`);
+    // One size scale: the world's weight class, as the size slider's caption and the inspector say it; with the weight.
+    caption.textContent = captionOf(m).replace(/^(\S+)/, `${sizeClass(m.mass)} (adult ≈ ${m.mass >= 10 ? Math.round(m.mass) : m.mass.toFixed(1)} kg)`);
   };
   motion?.addEventListener?.('change', () => {
     last = '';
