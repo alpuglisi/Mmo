@@ -513,7 +513,10 @@ pub const STARVING_MIN: u64 = 5;
 pub const DROWNED_MIN: u64 = 3;
 /// Share of a lineage lost over `DECLINE_DAYS` from which the die-off
 /// warning says it is crashing (playtest 9: 45% in 10 days read "slowly").
-const DECLINE_CRASH: f64 = 0.3;
+const DECLINE_CRASH: f64 = 0.25;
+/// Below this share fewer over the window, a decline is no alert
+/// (playtest 12: "dying off slowly" for a 1% dip).
+const DECLINE_SLOW: f64 = 0.05;
 /// Days over which a slow die-off is summed (`Game::slow_decline`)…
 pub const DECLINE_DAYS: u64 = 10;
 /// …and the share of the lineage (as it was then) lost to hunger, thirst
@@ -1100,6 +1103,13 @@ pub struct Game {
     /// Groups told their territory no longer feeds them, and not yet that it
     /// recovered (playtest 11: the two swung every 4–10 days); not saved.
     loose_said: BTreeSet<(PlayerId, u8)>,
+    /// Each player's animals eaten by other lineages' hunters on each of the
+    /// last [`HUNTED_WEEK`] recorded days (the "being hunted" weekly view);
+    /// not saved.
+    hunted_week: BTreeMap<PlayerId, VecDeque<u64>>,
+    /// The day each player was last sent a loss warning (the shared
+    /// [`NEED_BUDGET_DAYS`] budget); not saved.
+    need_said: BTreeMap<PlayerId, u64>,
     /// The territory a group's rally replaced, given back if the rally is
     /// cancelled (playtest 11: checking a rally's warnings cost the claim);
     /// not saved.
@@ -1448,6 +1458,8 @@ impl Game {
             group_peak: BTreeMap::new(),
             claimed_starving: BTreeMap::new(),
             loose_said: BTreeSet::new(),
+            hunted_week: BTreeMap::new(),
+            need_said: BTreeMap::new(),
             rally_replaced: BTreeMap::new(),
             fold_hunted: BTreeMap::new(),
             bare_repeated: BTreeMap::new(),
@@ -6336,6 +6348,17 @@ impl Game {
             }
         }
         self.kills_seen = kills.clone();
+        // The week's view: each player's losses to other lineages' hunters.
+        let players: Vec<PlayerId> = self.lineage_of.keys().copied().collect();
+        for p in players {
+            let own = |l: u32| self.world.lineages.get(l as usize).is_some_and(|x| x.owner == p);
+            let eaten: u64 = by_owner.get(&p).map_or(0, |m| m.iter().filter(|&(&l, _)| !own(l)).map(|(_, &n)| n).sum());
+            let w = self.hunted_week.entry(p).or_default();
+            w.push_back(eaten);
+            while w.len() > HUNTED_WEEK {
+                w.pop_front();
+            }
+        }
         self.hunted = by_owner
             .into_iter()
             .map(|(p, m)| {
@@ -6652,33 +6675,33 @@ impl Game {
             // Within one decline a crash stays a crash (playtest 11: "dying
             // off slowly … 25%" right after "crashing 42%"): measured from
             // the peak of the last two windows.
-            let peak = self.decline_peak(lineage).filter(|&(p, _)| p > then);
-            let from_peak = peak.map(|(p, days)| (p, days, 100.0 * p.saturating_sub(now) as f64 / p.max(1) as f64));
+            // One window and one baseline for every grade (playtest 12: "278 →
+            // 164" then "247 → 131", and "112 → 30", "65 → 30" from moving
+            // peaks): the count DECLINE_DAYS ago. Under DECLINE_SLOW fewer is
+            // no alert; from DECLINE_CRASH it is a crash.
             let text = if now >= then {
-                format!(
+                Some(format!(
                     "Your lineage is losing animals faster than it looks: {lost} died over the \
                      last {DECLINE_DAYS} days ({causes}; {pct:.0}% of the {then} it had), though births kept the count up ({then} → \
                      {now}). {advice}"
-                )
+                ))
             } else if drop >= DECLINE_CRASH * 100.0 {
-                format!(
+                Some(format!(
                     "Your lineage is crashing: {then} → {now} alive over the last {DECLINE_DAYS} days ({drop:.0}% fewer); \
                      {lost} died ({causes}; {pct:.0}% of the {then}). {advice}"
-                )
-            } else if let Some((p, days, d)) = from_peak.filter(|f| f.2 >= DECLINE_CRASH * 100.0) {
-                format!(
-                    "Your lineage is still crashing: {p} → {now} alive over the last {days} days ({d:.0}% fewer; \
-                     {drop:.0}% in the last {DECLINE_DAYS}); {lost} died of hunger, thirst or cold in those {DECLINE_DAYS} \
-                     days. {advice}"
-                )
-            } else {
-                format!(
+                ))
+            } else if drop >= DECLINE_SLOW * 100.0 {
+                Some(format!(
                     "Your lineage is dying off slowly: {then} → {now} alive over the last {DECLINE_DAYS} days ({drop:.0}% \
                      fewer); {lost} died ({causes}; {pct:.0}% of the {then}). Day by day it looks small. \
                      {advice}"
-                )
+                ))
+            } else {
+                None
             };
-            out.push(LineageWarning { kind: "decline".into(), text });
+            if let Some(text) = text {
+                out.push(LineageWarning { kind: "decline".into(), text });
+            }
         }
         // Being hunted (playtest 5: 5–21 eaten a day, and one alert all game).
         if let Some((day, by)) = self.hunted.get(&player) {
@@ -6691,13 +6714,19 @@ impl Game {
             // percent of a big one, or 4% of a small one.
             // At least 1% of a big lineage (playtest 11: alerts every 5–15 s
             // for under 1% a day).
-            if eaten >= HUNTED_MIN.max(alive / 100) || (eaten >= 2 && eaten * 25 >= alive.max(1)) {
+            // A week's view, as a share of the lineage (playtest 12: every 3
+            // days for ~1% losses of a big herd): at least HUNTED_WEEK_SHARE
+            // of it over the last week, or a small lineage's daily rule.
+            let week: u64 = self.hunted_week.get(&player).map_or(eaten, |w| w.iter().sum());
+            let big = week >= HUNTED_MIN && week as f64 >= HUNTED_WEEK_SHARE * alive.max(1) as f64;
+            if eaten > 0 && (big || (eaten >= 2 && eaten * 25 >= alive.max(1))) {
                 let who: Vec<String> =
                     by.iter().take(3).map(|&(l, n)| format!("{} ({n})", self.hunter_words(l, player))).collect();
                 out.push(LineageWarning {
                     kind: "hunted".into(),
                     text: format!(
-                        "Your lineage is being hunted: {eaten} of your animals were eaten on day {}, by {}. Animals that keep \
+                        "Your lineage is being hunted: {eaten} of your animals were eaten on day {} ({week} in the last \
+                         {HUNTED_WEEK} days), by {}. Animals that keep \
                          together, watch (vigilance) or outrun hunters lose fewer; so do burrowers, and toxic prey once \
                          hunters learn. Moving groups away from the hunters' range helps.",
                         (*day).max(1),
@@ -6802,20 +6831,6 @@ impl Game {
         (then >= 10 && now < then && lost as f64 >= DECLINE_SHARE * then as f64).then_some((lost, then, now, by))
     }
 
-    /// The most alive `lineage` had over the last two decline windows
-    /// ([`DECLINE_DAYS`] each) and how many days ago that was.
-    fn decline_peak(&self, lineage: u32) -> Option<(u64, u64)> {
-        let n = self.history.len();
-        let span = (2 * DECLINE_DAYS as usize + 1).min(n);
-        self.history
-            .iter()
-            .skip(n - span)
-            .enumerate()
-            .filter_map(|(i, r)| r.lineages.iter().find(|e| e.lineage == lineage).map(|e| (e.alive as u64, i)))
-            .max_by_key(|&(alive, i)| (alive, std::cmp::Reverse(i)))
-            .map(|(alive, i)| (alive, (span - 1 - i) as u64))
-    }
-
     /// Say each lineage warning as an alert when it starts, and again every
     /// [`WARNING_REPEAT_DAYS`] while it lasts.
     fn warning_alerts(&mut self, day: u64, out: &mut Outbox) {
@@ -6872,6 +6887,7 @@ impl Game {
                 let due = !fold.is_empty()
                     && self.warned.get(&(p, "dormant".to_string())).is_none_or(|&d| day >= d + WARNING_REPEAT_DAYS);
                 if due {
+                    self.need_said.insert(p, day);
                     self.warned.insert((p, "dormant".to_string()), day);
                     for w in &fold {
                         self.warned.insert((p, w.kind.clone()), day);
@@ -6914,10 +6930,16 @@ impl Game {
             } else {
                 now
             };
+            let mut losses: Vec<LineageWarning> = Vec::new();
             for w in now {
                 let key = (p, w.kind.clone());
                 let repeat = w.kind != "near_cap";
                 if self.warned.get(&key).is_some_and(|&d| !repeat || day < d + WARNING_REPEAT_DAYS) {
+                    continue;
+                }
+                // Loss warnings share one budget (below).
+                if NEED_ORDER.contains(&w.kind.as_str()) {
+                    losses.push(w);
                     continue;
                 }
                 self.warned.insert(key, day);
@@ -6927,6 +6949,25 @@ impl Game {
                 let about = matches!(w.kind.as_str(), "starving" | "heat" | "hunted" | "eggs");
                 let stamp = if about { day.saturating_sub(1) } else { self.world.day() };
                 self.alert_on(p, AlertKind::Need, w.text, None, stamp, out);
+            }
+            // At most one loss warning per lineage every NEED_BUDGET_DAYS: the
+            // most severe in full, the others by their headline (playtest 12:
+            // hungry, dying off, thirst and hunted came about one a game day
+            // in a crash, each on its own cool-down).
+            let budget = self.need_said.get(&p).is_none_or(|&d| day >= d + NEED_BUDGET_DAYS);
+            if !losses.is_empty() && budget {
+                losses.sort_by_key(|w| NEED_ORDER.iter().position(|k| *k == w.kind).unwrap_or(NEED_ORDER.len()));
+                let headline = |t: &str| t.split(": ").next().unwrap_or(t).trim_end_matches('.').to_string();
+                let others: Vec<String> = losses[1..].iter().map(|w| headline(&w.text)).collect();
+                let mut text = losses[0].text.clone();
+                if !others.is_empty() {
+                    text.push_str(&format!(" Also: {}.", others.join("; ")));
+                }
+                for w in &losses {
+                    self.warned.insert((p, w.kind.clone()), day);
+                }
+                self.need_said.insert(p, day);
+                self.alert_on(p, AlertKind::Need, text, None, day.saturating_sub(1), out);
             }
         }
     }
@@ -7734,10 +7775,16 @@ impl Game {
                         let regrown = food.is_none_or(|f| f.standing_days >= 2.0 * BARE_DAYS);
                         if self.condition_begins((p, g.id, 1), bare, regrown) && self.territory_alert_due(p, g.id) {
                             let days = days_text(food.map_or(0.0, |f| f.standing_days));
-                            let tail = if starved > 0 {
-                                format!(" {starved} of the group starved yesterday.")
-                            } else {
-                                String::new()
+                            // Asleep, the deaths are the winter sleep's, not the
+                            // ground's (playtest 12: sleepers' starvation blamed
+                            // on a grazed-bare territory).
+                            let tail = match (starved > 0, sleeping) {
+                                (true, true) => format!(
+                                    " {starved} of the group died yesterday in its winter sleep as their fat ran out: \
+                                     the bare ground isn't what kills sleepers. Fatten the herd before its next sleep."
+                                ),
+                                (true, false) => format!(" {starved} of the group starved yesterday."),
+                                _ => String::new(),
                             };
                             texts.push(format!(
                                 "{name}'s {what} at ({x:.0}, {y:.0}) is grazed bare (food for {days}): {fix}.{tail}"
@@ -7745,6 +7792,7 @@ impl Game {
                             self.bare_repeated.insert(key, record.day);
                         } else if bare
                             && starved > 0
+                            && !sleeping
                             && self.bare_repeated.get(&key).is_none_or(|&d| record.day >= d + WARNING_REPEAT_DAYS)
                         {
                             // Still bare and still starving: said again every few
@@ -9072,6 +9120,16 @@ pub const FLOOD_CLEAR: f32 = 0.1;
 /// Animals eaten in a day that raise the "being hunted" warning (fewer do
 /// when they are at least 4% of the lineage).
 pub const HUNTED_MIN: u64 = 5;
+/// Days in the "being hunted" weekly view.
+pub const HUNTED_WEEK: usize = 7;
+/// Share of the lineage eaten over [`HUNTED_WEEK`] days that raises "being
+/// hunted" for a big lineage.
+pub const HUNTED_WEEK_SHARE: f64 = 0.05;
+/// At most one loss warning per lineage in this many days, the day's kinds
+/// merged into one line (playtest 12: about one a game day in a crash).
+pub const NEED_BUDGET_DAYS: u64 = 2;
+/// Loss warnings, most severe first: they share [`NEED_BUDGET_DAYS`].
+pub const NEED_ORDER: [&str; 7] = ["decline", "starving", "hunted", "cold", "heat", "drowning", "eggs"];
 /// A slow decline (`Game::slow_decline`): deaths, the count at the window's
 /// start and now, and the deaths by cause, most first.
 type Decline = (u64, u64, u64, Vec<(&'static str, u64)>);

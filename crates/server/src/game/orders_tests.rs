@@ -1729,3 +1729,56 @@ fn toxin_deaths_count_toward_a_decline() {
     let d = w.iter().find(|w| w.kind == "decline").expect("a decline warning");
     assert!(d.text.contains("of toxins") && d.text.contains("poisonous prey"), "{}", d.text);
 }
+
+/// Loss warnings share one budget: one alert, the most severe in full and
+/// the others by headline, then none for NEED_BUDGET_DAYS (playtest 12:
+/// about one a game day in a crash).
+#[test]
+fn loss_warnings_merge_into_one_alert_per_budget() {
+    let (mut g, _) = game();
+    run_days(&mut g, 1);
+    let r = g.history.back_mut().unwrap();
+    let e = r.lineages.iter_mut().find(|e| e.owner == 1).unwrap();
+    e.alive = 40;
+    e.deaths.insert("starved".into(), 6);
+    e.deaths.insert("thirst".into(), 2);
+    e.deaths.insert("cold".into(), crate::game::COLD_MIN.max(1));
+    let kinds: Vec<String> = g.lineage_warnings(1).into_iter().map(|w| w.kind).collect();
+    assert!(kinds.contains(&"starving".to_string()) && kinds.contains(&"cold".to_string()), "{kinds:?}");
+    let mut out = Outbox::new();
+    g.warning_alerts(10, &mut out);
+    let need = alerts(&g, AlertKind::Need);
+    assert_eq!(need.len(), 1, "{need:?}");
+    assert!(need[0].contains("Also:"), "{}", need[0]);
+    g.warning_alerts(11, &mut out);
+    assert_eq!(alerts(&g, AlertKind::Need).len(), 1, "within the budget");
+}
+
+/// One window, one baseline, graded: a small dip is no alert, a quarter
+/// fewer is a crash (playtest 12: "dying off slowly" for 1% and for 29%).
+#[test]
+fn declines_are_graded_on_one_window() {
+    let (mut g, _) = game();
+    let lineage = g.lineage_of(1).unwrap();
+    let base = g.daily_record();
+    let fill = |g: &mut Game, end: u64| {
+        g.history.clear();
+        for k in 0..=DECLINE_DAYS {
+            let mut r = base.clone();
+            r.day = 100 + k;
+            let e = r.lineages.iter_mut().find(|e| e.lineage == lineage).unwrap();
+            e.alive = (100 - (100 - end) * k / DECLINE_DAYS) as usize;
+            e.deaths.clear();
+            if k > 0 {
+                e.deaths.insert("starved".into(), 3);
+            }
+            g.history.push_back(r);
+        }
+    };
+    fill(&mut g, 98);
+    assert!(g.lineage_warnings(1).iter().all(|w| w.kind != "decline"), "a 2% dip");
+    fill(&mut g, 71);
+    let w = g.lineage_warnings(1);
+    let d = w.iter().find(|w| w.kind == "decline").expect("a decline");
+    assert!(d.text.starts_with("Your lineage is crashing: 100 → 71"), "{}", d.text);
+}
