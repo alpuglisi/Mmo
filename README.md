@@ -9371,7 +9371,7 @@ How the prey-per-hunter bounds were chosen (the six-player study,
 
 Round 8 for `docs/playtest-7.md` findings H3, M4 and the predator and
 warning lows. Snapshot version 72 (provisional; main is at 70). It adds
-`Balance::winter_larder`, off at 0, which is what snapshots of version 71
+`Balance::winter_larder` and `Balance::prey_floor`, off at 0, which is what snapshots of version 71
 and before read (`serde_util::before_v72`).
 
 **H3: predators can't compete.** Playtest 7 ran without round 7's
@@ -9390,6 +9390,12 @@ plateaued at 60–84 and lost 60% in its first winter, inside its grace.
   and with this round's rules they grow through it: 65 at day 80, 74 at
   day 90, 85 at day 120 (seed 1). It is a guarantee for a pack whose prey
   is thin, not a gain where prey is plenty.
+- **Small prey populations aren't counted** (`Balance::prey_floor` 40,
+  version 72). The prey-scaled larder counts a lineage's plant eaters only
+  when it has 40 or more alive (`World::refresh_pack_room`). With round 7's
+  larder the wild newts were lost on 4 of 16 `predlong` seeds against 2
+  without it: a few prey fed a bigger pack that then hunted them out.
+  Measured below (PREY_FLOOR_RESULT).
 - **Balance's H1** (hungry hunters may take bright toxic prey) hadn't landed
   on main when this was measured. Once merged it should feed packs that
   live among toxic herds; it is not measured here.
