@@ -2105,6 +2105,24 @@ minutes, every purchase failed when the buyer's animal died):
   plants fell more than a fifth since the preview, the purchase asks for
   a new one (`quote_changed`).
 
+**Playtest 12 changes** (economy):
+
+- **Offered animals**: an animal past 90% of its lifespan, asleep, or with
+  hunger or thirst at 85 or more can't be offered (`unfit`); offers show
+  the requester's animal's age and lifespan (`OfferView::mine_age`); a
+  pending offer's two animals are spared by the other side's animals only
+  (`World::set_pair_shield`, not saved): no free immunity from anyone
+  else. The Mates tab lists the chosen adult on the market in one tap
+  ("List it for 10"); incoming offers to a lineage say they meet halfway;
+  outgoing pending offers show how far apart; a purchase reads as one.
+- **Restore pasture**: a quote keeps the circle it was made for and the
+  purchase restores there, so the food matches; under 50 food a
+  restoration counts as nothing (refused, priced 0).
+- **Ledger**: a completed mating writes the payer a 0-delta "Escrow paid
+  out" line and totals count it (`LedgerTotals::escrow_paid`); the shop
+  says fixed listings pay no market fee (`listing_fee_percent` 0); the
+  taper line says "balance plus renown held in offers".
+
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.
 

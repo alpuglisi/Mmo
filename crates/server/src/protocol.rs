@@ -1994,6 +1994,9 @@ pub struct ShopView {
     pub reinforce_blocked: Option<String>,
     /// Kept (destroyed) from every stud fee or price paid out, percent.
     pub market_fee_percent: u64,
+    /// What a fixed listing's sale pays (0: listings are fee-free).
+    #[serde(default)]
+    pub listing_fee_percent: u64,
     /// Royalty: renown a day per percentage point of all alleles that are
     /// yours and live in other players' lineages.
     pub royalty_per_point: f64,
@@ -2391,6 +2394,10 @@ pub struct LedgerTotals {
     pub royalties: u64,
     /// Paid into escrow.
     pub escrow: u64,
+    /// Of that, paid out to sellers (matings that ran); the rest came back
+    /// as refunds or is still held.
+    #[serde(default)]
+    pub escrow_paid: u64,
     pub sales: u64,
     pub refunds: u64,
     /// Spent in the shop.
