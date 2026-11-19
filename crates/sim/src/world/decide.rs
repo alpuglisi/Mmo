@@ -985,7 +985,16 @@ impl World {
         // A player's pack hunter strayed from its pack's thickest cluster
         // heads back (`Balance::pack_cohesion`; playtest 9: a pack with
         // pack instinct 1.0 spread over the map), unless starving.
-        let pack_pull = (cfg.balance.pack_cohesion > 0.0 && player_pack(&cfg.balance, o))
+        // Any standing order or rendezvous comes first.
+        let key = (o.owner, o.group);
+        let free = o.order.is_none()
+            && o.possessed_by.is_none()
+            && self.rendezvous_of(o.id).is_none()
+            && !self.migrate_orders.contains_key(&key)
+            && !self.rallies.contains_key(&key)
+            && !self.territories.contains_key(&key)
+            && self.settle_circle(o.owner, o.group).is_none();
+        let pack_pull = (cfg.balance.pack_cohesion > 0.0 && player_pack(&cfg.balance, o) && free)
             .then(|| self.pack_home(o.owner, o.group))
             .flatten()
             .filter(|h| h.dist(o.pos) > super::PACK_STRAY);

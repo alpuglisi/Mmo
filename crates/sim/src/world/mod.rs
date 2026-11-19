@@ -128,7 +128,7 @@ const RIVAL_FORAGE: f32 = 8.0;
 /// within this many tiles of another player's predator (carnivory above
 /// 0.6), wherever its group's centre is (playtest 9: a pack scattered over
 /// the map escaped the group-centre rule; three foundings landed 1–2 tiles
-/// from it).
+/// from it). At most a fifth of the map's shorter side.
 pub const PACK_CLEAR: f32 = 25.0;
 /// Nor within this many tiles of any other player's animal.
 pub const ANIMAL_CLEAR: f32 = 8.0;
@@ -1664,6 +1664,9 @@ impl World {
         // Prey counted per lineage (index), summed in lineage order below.
         let mut per_lineage: Vec<f32> = vec![0.0; self.lineages.len()];
         let mut near: Vec<u32> = Vec::new();
+        // `PACK_CLEAR`, or a fifth of a small map's side (on 64 tiles a pack
+        // anywhere would rule out most of the map).
+        let pack_clear = PACK_CLEAR.min(self.map.width.min(self.map.height) as f32 / 5.0);
         let mut best = (f32::MIN, Map::tile_center(self.map.width / 2, self.map.height / 2));
         // With `founding_safety`, 200 picks on dry land; if none has room,
         // 200 more under the old rules (better somewhere than nowhere).
@@ -1687,19 +1690,30 @@ impl World {
             // In the strict pass (`Balance::rival_clear`): clear of the rival
             // animals themselves, packs farther, and with drinkable water
             // near.
-            if strict && self.config.balance.rival_clear > 0.0 {
-                let mut close = false;
-                rival_animals.near(p, PACK_CLEAR, |q, &pack| {
-                    close |= q.dist(p) < if pack { PACK_CLEAR } else { ANIMAL_CLEAR };
+            // Kept out in the first three quarters of it, then marked down
+            // hard (`clear_cost`), so a crowded map still gets a home with
+            // the strict rules (water, room, drought).
+            let mut packs_close = 0u32;
+            let mut animals_close = 0u32;
+            if self.config.balance.rival_clear > 0.0 {
+                rival_animals.near(p, pack_clear, |q, &pack| {
+                    let d = q.dist(p);
+                    packs_close += u32::from(pack && d < pack_clear);
+                    animals_close += u32::from(d < ANIMAL_CLEAR);
                 });
-                if close {
+            }
+            let water_far = self.config.balance.rival_clear > 0.0 && now && {
+                let (x, y) = self.map.tile_coords(p);
+                self.map.water_dist[self.map.idx(x, y)] > FOUND_WATER_NEAR
+            };
+            if strict && self.config.balance.rival_clear > 0.0 {
+                // Nor beside where this owner's last foundings died or retired.
+                if k < 150 && (packs_close + animals_close > 0 || avoid.iter().any(|h| h.dist(p) < 0.75 * AVOID_RADIUS))
+                {
                     continue;
                 }
-                if now {
-                    let (x, y) = self.map.tile_coords(p);
-                    if self.map.water_dist[self.map.idx(x, y)] > FOUND_WATER_NEAR {
-                        continue;
-                    }
+                if k < 150 && water_far {
+                    continue;
                 }
             }
             // Nor, in the first half of the strict pass, where rival groups
@@ -1856,8 +1870,13 @@ impl World {
                 let gap = (t.center.dist(p) - t.radius).max(0.0);
                 rivalry += RIVAL_LAND_WEIGHT * (1.0 - gap / RIVAL_RANGE).max(0.0);
             }
+            // Rival animals at the spot itself (`Balance::rival_clear`).
+            let clear_cost = 4.0 * (packs_close as f32).min(1.0)
+                + 2.0 * (animals_close as f32).min(1.0)
+                + if water_far { 2.0 } else { 0.0 };
             let score = water + food + comfort + safety
                 - rivalry
+                - clear_cost
                 - 0.05 * crowd_n
                 - (0.3 * danger).min(4.0)
                 - (0.1 * carn * on_top).min(2.0)
@@ -2383,8 +2402,12 @@ mod winter_tests {
         for seed in 1..4 {
             let mut w = small_world(seed);
             // (The spots this test checks were found without the
-            // prey-scaled pack larder, version 58.)
+            // prey-scaled pack larder, version 58, and without
+            // `rival_clear`, version 85: on this crowded 64-tile map
+            // nearly every spot has a rival animal within reach, and the
+            // clearance marks homes down more than the fatal spot does.)
             w.config.balance.prey_larder = 0.0;
+            w.config.balance.rival_clear = 0.0;
             w.run_days(2);
             let found = |w: &mut World| {
                 let ids = w.found_lineage_unchecked(77, &d);
