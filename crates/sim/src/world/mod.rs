@@ -116,7 +116,7 @@ const RIVAL_SCALE: f32 = 200.0;
 const RIVAL_LAND_WEIGHT: f32 = 1.5;
 /// No founding home within this many tiles outside another player's
 /// territory (`Balance::founding_rivals`).
-const RIVAL_TERRITORY_MARGIN: f32 = 4.0;
+pub(crate) const RIVAL_TERRITORY_MARGIN: f32 = 4.0;
 /// How much more a predator (carnivory above 0.6) counts against a founding
 /// home than another rival animal, and how much farther (`Balance::rival_reach`).
 const RIVAL_PACK_WEIGHT: f32 = 3.0;
@@ -124,6 +124,18 @@ const RIVAL_PACK_RANGE: f32 = 2.0;
 /// Tiles a rival group's foraging reaches beyond its home circle, counted
 /// as its ground (`Balance::rival_reach`).
 const RIVAL_FORAGE: f32 = 8.0;
+/// With `Balance::rival_clear`: no founding home or reinforcement site
+/// within this many tiles of another player's predator (carnivory above
+/// 0.6), wherever its group's centre is (playtest 9: a pack scattered over
+/// the map escaped the group-centre rule; three foundings landed 1–2 tiles
+/// from it).
+pub const PACK_CLEAR: f32 = 25.0;
+/// Nor within this many tiles of any other player's animal.
+pub const ANIMAL_CLEAR: f32 = 8.0;
+/// A founding home's drinkable water within this many steps
+/// (`Map::water_dist`; playtest 9: 9 tiles from water outside a drought,
+/// 21 of 60 dead of thirst).
+pub const FOUND_WATER_NEAR: u16 = 6;
 /// Days a new founding's founders lose water more slowly in a drought
 /// (`Balance::founding_drought`).
 pub const FOUNDER_WATER_DAYS: f32 = 6.0;
@@ -149,7 +161,7 @@ const SETTLE_SHARE: f32 = 0.5;
 const EDGE_MARGIN: f32 = 12.0;
 /// No founding home within this many tiles of a map edge
 /// (`Balance::founding_safety`; only the fallback round may go there).
-const EDGE_KEEP: f32 = 6.0;
+pub(crate) const EDGE_KEEP: f32 = 6.0;
 /// Within this many tiles of a corner (both edges) a home is marked down
 /// further (`Balance::founding_safety`).
 const CORNER_MARGIN: f32 = 16.0;
@@ -373,6 +385,9 @@ struct HomeSearch {
     rival_ranges: Vec<groups::Territory>,
     /// Other players' territories (same rule).
     rival_lands: Vec<groups::Territory>,
+    /// Other players' living animals, and whether each is a predator
+    /// (`Balance::rival_clear`; empty without it).
+    rival_animals: PointGrid<bool>,
 }
 
 impl HomeSearch {
@@ -438,7 +453,11 @@ impl HomeSearch {
         let avoid = if w.config.balance.founding_conditions > 0.0 {
             (0..lineage as usize)
                 .filter(|&l| w.lineages[l].owner == probe.owner && w.lineage_alive.get(l).copied().unwrap_or(0) == 0)
+                // Retired ones too (`Balance::rival_clear`; playtest 9).
                 .filter(|&l| {
+                    if w.config.balance.rival_clear > 0.0 {
+                        return true;
+                    }
                     let died: u64 =
                         w.counters.deaths_by_lineage.iter().filter(|((k, _), _)| *k == l as u32).map(|(_, n)| n).sum();
                     2 * died >= w.lineages[l].founders as u64
@@ -467,6 +486,7 @@ impl HomeSearch {
         // four rivals within 35 tiles. Only for a player's founding in a
         // running world, so a new world's founding is unchanged.
         let mut rivals = PointGrid::new(&w.map);
+        let mut rival_animals = PointGrid::new(&w.map);
         let mut rival_lands = Vec::new();
         let mut rival_ranges = Vec::new();
         let reach = w.config.balance.rival_reach > 0.0;
@@ -481,6 +501,9 @@ impl HomeSearch {
                         if pack { (RIVAL_PACK_WEIGHT, RIVAL_RANGE * RIVAL_PACK_RANGE) } else { (1.0, RIVAL_RANGE) };
                     rival_range = rival_range.max(range);
                     rivals.insert(o.pos, (weight, range));
+                    if w.config.balance.rival_clear > 0.0 {
+                        rival_animals.insert(o.pos, o.traits.carnivory > 0.6);
+                    }
                     owners.insert(o.owner);
                 }
             }
@@ -523,6 +546,7 @@ impl HomeSearch {
             rival_range,
             rival_ranges,
             rival_lands,
+            rival_animals,
         }
     }
 }
@@ -1553,6 +1577,7 @@ impl World {
             rival_range,
             rival_ranges,
             rival_lands,
+            rival_animals,
         } = search;
         // Judge the spot as it is now (`Balance::founding_conditions`): only
         // in a running world, so a new world's founding is unchanged.
@@ -1594,6 +1619,24 @@ impl World {
             // (`Balance::founding_rivals`), in any round.
             if rival_lands.iter().any(|t| t.center.dist(p) < t.radius + RIVAL_TERRITORY_MARGIN) {
                 continue;
+            }
+            // In the strict pass (`Balance::rival_clear`): clear of the rival
+            // animals themselves, packs farther, and with drinkable water
+            // near.
+            if strict && self.config.balance.rival_clear > 0.0 {
+                let mut close = false;
+                rival_animals.near(p, PACK_CLEAR, |q, &pack| {
+                    close |= q.dist(p) < if pack { PACK_CLEAR } else { ANIMAL_CLEAR };
+                });
+                if close {
+                    continue;
+                }
+                if now {
+                    let (x, y) = self.map.tile_coords(p);
+                    if self.map.water_dist[self.map.idx(x, y)] > FOUND_WATER_NEAR {
+                        continue;
+                    }
+                }
             }
             // Nor, in the first half of the strict pass, where rival groups
             // range and are headed (`Balance::rival_reach`).
@@ -2498,6 +2541,60 @@ mod winter_tests {
         assert_eq!(payload(pred.pos), (RIVAL_PACK_WEIGHT, RIVAL_RANGE * RIVAL_PACK_RANGE));
         assert_eq!(payload(herb.pos), (1.0, RIVAL_RANGE));
         assert_eq!(search.rival_range, RIVAL_RANGE * RIVAL_PACK_RANGE);
+    }
+
+    /// Playtest 9: a pack scattered over the map escaped the group-centre
+    /// scoring, and three foundings landed 1–2 tiles from it; one landed 9
+    /// tiles from water. With `Balance::rival_clear` a founding keeps
+    /// `PACK_CLEAR` tiles from every rival predator, wherever its group's
+    /// centre is, with drinkable water within `FOUND_WATER_NEAR` steps.
+    #[test]
+    fn foundings_keep_clear_of_a_scattered_pack_and_near_water() {
+        let mut w = World::new(WorldConfig { seed: 9, width: 128, height: 128, ..Default::default() });
+        for (owner, design) in crate::presets::wild_designs() {
+            let n = (design.founders / 3).max(4);
+            w.found_lineage_unchecked(owner, &design.founders(n));
+        }
+        w.run_days(1);
+        // A rival pack, its 12 hunters strung out along one row of the map.
+        let pack =
+            crate::design::FounderDesign::new("pack", crate::design::Thermo::Warm, crate::design::BirthType::Live, 2)
+                .with(crate::Gene::Carnivory, 0.95)
+                .with(crate::Gene::PackInstinct, 1.0)
+                .founders(12);
+        let ids = w.found_lineage_unchecked(50, &pack);
+        for (k, id) in ids.iter().enumerate() {
+            let i = w.index[id];
+            w.organisms[i].pos = w.map.clamp(Vec2::new(8.0 + 10.0 * k as f32, 30.0));
+        }
+        let hunters: Vec<Vec2> = ids.iter().map(|id| w.organism(*id).unwrap().pos).collect();
+        assert!(w.organism(ids[0]).unwrap().traits.carnivory > 0.6);
+        let design =
+            crate::design::FounderDesign::new("late", crate::design::Thermo::Warm, crate::design::BirthType::Live, 2)
+                .founders(20);
+        // The old rules: nearer the pack than that, for some of them.
+        let nearest = |w: &World, owner: PlayerId| {
+            let mut c = w.clone();
+            c.found_lineage_unchecked(owner, &design);
+            let home = c.lineage_homes[c.lineages.len() - 1].unwrap();
+            hunters.iter().map(|h| h.dist(home)).fold(f32::MAX, f32::min)
+        };
+        let mut old = w.clone();
+        old.config.balance.rival_clear = 0.0;
+        let old: Vec<f32> = (60..72).map(|owner| nearest(&old, owner)).collect();
+        assert!(old.iter().any(|&d| d < PACK_CLEAR), "{old:?}");
+        for owner in 60..64 {
+            let mut c = w.clone();
+            c.found_lineage_unchecked(owner, &design);
+            let home = c.lineage_homes[c.lineages.len() - 1].unwrap();
+            let near = hunters.iter().map(|h| h.dist(home)).fold(f32::MAX, f32::min);
+            assert!(near >= PACK_CLEAR, "owner {owner}: home {home:?} {near:.1} tiles from the pack");
+            let (x, y) = c.map.tile_coords(home);
+            assert!(
+                c.map.water_dist[c.map.idx(x, y)] <= FOUND_WATER_NEAR,
+                "owner {owner}: home {home:?} far from water"
+            );
+        }
     }
 
     /// Playtest 8: founders landed old (85 days 11 days after landing).

@@ -93,6 +93,9 @@ impl World {
     pub const REINFORCE_CLUSTER: f32 = 8.0;
 
     pub fn reinforce_lineage(&mut self, lineage: u32, n: u32) -> Vec<OrgId> {
+        // Tiles around the group searched when nothing nearer is clear of
+        // rivals (`Balance::rival_clear`).
+        const WIDE_REINFORCE: f32 = 12.0;
         let adults: Vec<usize> = (0..self.organisms.len())
             .filter(|&i| {
                 let o = &self.organisms[i];
@@ -115,7 +118,7 @@ impl World {
         // (the adult with the most of the lineage's adults within
         // `REINFORCE_CLUSTER` tiles), not a random member: playtest 4's
         // reinforcements landed among predators, 8 of 10 eaten in 5 days.
-        let (mut range, mut tries) = (6.0, 12);
+        let (mut range, mut tries): (f32, usize) = (6.0, 12);
         if self.config.balance.founding_safety > 0.0 {
             let step = (adults.len() / 64).max(1);
             let anchor = (0..adults.len())
@@ -147,26 +150,71 @@ impl World {
             }
             f
         };
+        // With `Balance::rival_clear`, the founding rules (playtest 9:
+        // reinforcements landed inside rival territories, beside packs and on
+        // the map edge): never in or at the edge of another player's
+        // territory, nor at the map's edge; a rival predator near costs
+        // more than any food is worth. A wider search when none is near.
+        let clear = self.config.balance.rival_clear > 0.0;
+        let anchor = probe.pos;
+        let (packs, lands): (Vec<Vec2>, Vec<super::groups::Territory>) = if clear {
+            tries = tries.max(40);
+            (
+                self.organisms
+                    .iter()
+                    .filter(|o| {
+                        o.alive
+                            && o.owner != owner
+                            && o.owner != crate::WILD
+                            && o.traits.carnivory > 0.6
+                            && o.pos.dist(anchor) < super::PACK_CLEAR + WIDE_REINFORCE + 6.0
+                    })
+                    .map(|o| o.pos)
+                    .collect(),
+                self.territories.iter().filter(|(&(p, _), _)| p != owner).map(|(_, &t)| t).collect(),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let mut home = probe.pos;
         let mut best = f32::MIN;
-        for &a in &picks {
-            let base = self.organisms[a].pos;
-            for k in 0..tries {
-                let cand = if k == 0 {
-                    base
-                } else {
-                    self.map.clamp(base + Vec2::new(rng.gen_range(-range..range), rng.gen_range(-range..range)))
-                };
-                if !self.passable_for(probe, cand) {
-                    continue;
-                }
-                let score = food(self, cand);
-                if score > best {
-                    best = score;
-                    home = cand;
+        let passes: &[f32] = if clear { &[range, WIDE_REINFORCE] } else { &[range] };
+        for &range in passes {
+            // Clear ground found (no rival predator near): done.
+            if best > -500.0 {
+                break;
+            }
+            for &a in &picks {
+                let base = self.organisms[a].pos;
+                for k in 0..tries {
+                    let cand = if k == 0 {
+                        base
+                    } else {
+                        self.map.clamp(base + Vec2::new(rng.gen_range(-range..range), rng.gen_range(-range..range)))
+                    };
+                    if !self.passable_for(probe, cand) {
+                        continue;
+                    }
+                    let mut score = food(self, cand);
+                    if clear {
+                        let edge =
+                            cand.x.min(cand.y).min(self.map.width as f32 - cand.x).min(self.map.height as f32 - cand.y);
+                        if edge < super::EDGE_KEEP
+                            || lands.iter().any(|t| t.center.dist(cand) < t.radius + super::RIVAL_TERRITORY_MARGIN)
+                        {
+                            continue;
+                        }
+                        let packs_near = packs.iter().filter(|q| q.dist(cand) < super::PACK_CLEAR).count();
+                        score -= 1000.0 * packs_near as f32;
+                    }
+                    if score > best {
+                        best = score;
+                        home = cand;
+                    }
                 }
             }
         }
+
         let tpd = self.config.ticks_per_day as f32;
         let mut ids = Vec::with_capacity(n);
         for k in 0..n {
@@ -670,5 +718,39 @@ mod tests {
             }
             w.next_id += 7;
         }
+    }
+
+    /// Playtest 9: reinforcements landed inside rival territories, beside
+    /// packs and on the map edge. With `Balance::rival_clear` they land
+    /// outside another player's territory (and its margin) even when the
+    /// group stands at its edge.
+    #[test]
+    fn reinforcements_keep_out_of_rival_territory() {
+        let mut w = presets::standard_world(WorldConfig { seed: 6, width: 64, height: 64, ..Default::default() }, 1);
+        w.run_days(1);
+        let l = w.lineages.iter().position(|l| l.owner == 2).unwrap() as u32;
+        let members: Vec<usize> =
+            (0..w.organisms.len()).filter(|&i| w.organisms[i].alive && w.organisms[i].lineage == l).collect();
+        let herd = w.organisms[members[0]].pos;
+        for &i in &members {
+            w.organisms[i].pos = herd;
+        }
+        // A rival's territory right over the herd.
+        let t = super::super::groups::Territory { center: herd, radius: 5.0, claimed_tick: 0 };
+        w.territories.insert((77, 0), t);
+        let keep = t.radius + super::super::RIVAL_TERRITORY_MARGIN;
+        let mut c = w.clone();
+        let ids = c.reinforce_lineage(l, 6);
+        assert_eq!(ids.len(), 6);
+        for id in ids {
+            let d = c.organism(id).unwrap().pos.dist(herd);
+            // Placed within 3 tiles of a home outside the territory's margin.
+            assert!(d > keep - 3.0, "{d:.1} tiles from the rival territory's centre");
+        }
+        // The old rule: beside the herd, inside it.
+        let mut old = w.clone();
+        old.config.balance.rival_clear = 0.0;
+        let ids = old.reinforce_lineage(l, 6);
+        assert!(ids.iter().any(|&id| old.organism(id).unwrap().pos.dist(herd) < t.radius));
     }
 }

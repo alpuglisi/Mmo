@@ -580,6 +580,14 @@ fn founder_youth_off(b: &mut crate::Balance) {
 /// The playtest 8 founding tunable as snapshots before version 82 read it.
 fn rival_reach_off(b: &mut crate::Balance) {
     b.rival_reach = crate::serde_util::before_v82::OLD_VALUE;
+    playtest9_off(b);
+}
+
+/// The playtest 9 placement and pack tunables as snapshots before version
+/// 85 read them.
+fn playtest9_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v85::OLD_VALUE;
+    (b.rival_clear, b.pack_cohesion) = (old, old);
 }
 
 /// Version 81 snapshots (before the farther-sighted founding search)
@@ -2076,4 +2084,24 @@ fn version_77_snapshots_restore_without_founder_youth() {
     let w = fixture_world();
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.founder_youth, 1.0);
+}
+
+/// Version 82 snapshots (before the playtest 9 placement and pack rules)
+/// restore with them off, and are otherwise the same world.
+#[test]
+fn version_82_snapshots_restore_without_rival_clear() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v82();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 82);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.rival_clear, r.config.balance.pack_cohesion), (0.0, 0.0));
+    assert!(r.snapshot_v82() == old);
+    playtest9_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.rival_clear, r.config.balance.pack_cohesion), (1.0, 1.0));
 }

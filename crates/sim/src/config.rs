@@ -1405,6 +1405,27 @@ pub struct Balance {
     /// territory 8 days later, and beside a pack.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v82"))]
     pub rival_reach: f32,
+    // Playtest 9 placement and packs (version 85; *Playtest 9: placement
+    // and packs* in the README). Off at 0, what snapshots before version 85
+    // read (`serde_util::before_v85`).
+    /// A player's founding in a running world, and reinforcements, keep
+    /// clear of the rival animals themselves, not only their groups'
+    /// centres: no home within `world::PACK_CLEAR` tiles of another
+    /// player's predator or `world::ANIMAL_CLEAR` of any other player's
+    /// animal, and a founding home has drinkable water within
+    /// `world::FOUND_WATER_NEAR` steps; the owner's retired lineages' homes
+    /// are avoided as its died-out ones are (playtest 9: three foundings
+    /// 1–2 tiles from a pack scattered over the map; one 9 tiles from
+    /// water, 21 of 60 dead of thirst). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v85"))]
+    pub rival_clear: f32,
+    /// How strongly a pack hunter (pack instinct) that strays from its
+    /// pack-mates is drawn back to them (`decide`): at 1, one more than
+    /// `world::PACK_STRAY` tiles from the nearest pack-mates heads back
+    /// before it wanders or forages further (playtest 9: 36 founders with
+    /// pack instinct 1.0 spread over 63 tiles in 8 days). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v85"))]
+    pub pack_cohesion: f32,
 }
 
 impl Balance {
@@ -1713,12 +1734,14 @@ impl Default for Balance {
             pack_prey: 40.0,
             founder_youth: 1.0,
             rival_reach: 1.0,
+            rival_clear: 1.0,
+            pack_cohesion: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 178;
+    pub const FIELD_COUNT: usize = 180;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1906,6 +1929,8 @@ impl Balance {
             ("pack_prey", &mut self.pack_prey),
             ("founder_youth", &mut self.founder_youth),
             ("rival_reach", &mut self.rival_reach),
+            ("rival_clear", &mut self.rival_clear),
+            ("pack_cohesion", &mut self.pack_cohesion),
         ]
     }
 
