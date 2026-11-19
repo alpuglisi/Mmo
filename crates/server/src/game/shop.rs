@@ -389,6 +389,9 @@ impl Game {
             // anywhere a lone animal walked gave a census of rivals).
             .filter(|o| self.in_sight(player, o.pos))
             .count();
+        // Rounded up to tens: the price against the shop's own (head count
+        // only) was an exact count of the rivals around (playtest 11).
+        let others = others.div_ceil(10) * 10;
         let size = self.owner_population(player) + others;
         let tick = self.world.tick();
         // A preview's price is honoured for a few seconds (playtest 10: the

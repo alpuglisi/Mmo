@@ -351,6 +351,7 @@ async fn subscriptions_over_http_and_a_mating_offer_reaches_an_offline_player() 
         store: Some(SharedStore(store.clone())),
         world: WorldSettings { seed: 11, width: 64, height: 64, wild: true, ..Default::default() },
         push: config(quick()),
+        admin_token: Some(crate::OPERATOR.into()),
         ..Default::default()
     }
     .fast()
@@ -408,8 +409,7 @@ async fn subscriptions_over_http_and_a_mating_offer_reaches_an_offline_player() 
     let mut online = 2;
     for _ in 0..200 {
         srv.step(1).await;
-        online =
-            req(addr, "GET", "/api/worlds", Some(&ann), None).await.1["worlds"][0]["players_online"].as_u64().unwrap();
+        online = crate::operator_get(addr, "/api/worlds").await["worlds"][0]["players_online"].as_u64().unwrap();
         if online == 1 {
             break;
         }
@@ -445,8 +445,7 @@ async fn subscriptions_over_http_and_a_mating_offer_reaches_an_offline_player() 
     drop(bob_ws);
     for _ in 0..200 {
         srv.step(1).await;
-        let n =
-            req(addr, "GET", "/api/worlds", Some(&ann), None).await.1["worlds"][0]["players_online"].as_u64().unwrap();
+        let n = crate::operator_get(addr, "/api/worlds").await["worlds"][0]["players_online"].as_u64().unwrap();
         if n == 1 {
             break;
         }

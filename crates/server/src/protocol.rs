@@ -1601,8 +1601,8 @@ pub struct WorldListing {
     /// Living organisms (`WorldSummary::organisms`).
     pub population: usize,
     pub lineages: usize,
-    /// Distinct players connected right now: for a logged-in caller only
-    /// (playtest 9: anyone could watch rivals come and go).
+    /// Distinct players connected right now: for the operator token only
+    /// (playtests 9 and 11: rivals watched players come and go).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub players_online: Option<usize>,
 }
