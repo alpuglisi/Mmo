@@ -9529,6 +9529,111 @@ plateaued at 60–84 and lost 60% in its first winter, inside its grace.
 | workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (459), build | | pass |
 | e2e (16 scripts, `E2E_JOBS=2`) | | 14 of 16: smoke and builder failed under load. Alone, builder passed; smoke failed once on a `claim_territory` near water (`mostly_water`, the group's position at that moment) and passed twice after |
 
+### Playtest 8: clutches, sleep and group alerts
+
+Round 9 for `docs/playtest-8.md` findings H4, M8 and M14. Snapshot version
+77 (provisional; main is at 73). It adds `Balance::clutch_split` and
+`Balance::dry_spell`, off at 0, which is what snapshots of version 76 and
+before read (`serde_util::before_v77`).
+
+**H4: large incubated clutches chill entirely.** A warm incubated-egg
+design with litter 8 hatched nothing in ~140 days; at litter 4 it bred
+well.
+- **The cause.** `clutch_cover` (round 6) spread a parent's warmth over the
+  whole clutch: past 4 eggs the clutch sat at `site + (brooded − site) ×
+  (4 / eggs)^2.1`. At 8 eggs that is under a quarter of her warmth, so on
+  any cool nest all 8 chilled together.
+- **A parent warms 4** (`Balance::clutch_split` 1). The 4 eggs she covers
+  (`environment::CLUTCH_COVERED`) get her full warmth. The rest lie at the
+  nest's own temperature and chill one by one: each with chance `(low −
+  nest) × chill rate` an hour (its own `rng_for` stream). A clutch of 8
+  loses its extra eggs, not all of them; at 4 or fewer nothing changes.
+- **Said in the designer.** For incubated eggs with a litter over 4: "A
+  brooding parent warms 4 eggs at most: of each clutch of 8, the other 4
+  chill whenever the nest is cool, so about 4 hatch. The extra eggs still
+  cost points …".
+- **Said in the daily summary.** Chilled eggs of a lineage whose brooders
+  lay more than 4 read "chilled: a brooding parent warms 4 eggs at most,
+  and the rest of each clutch of 8 chill on a cool nest". Otherwise
+  "chilled: the nest was too cold for them (a cold night or season), or
+  the parent left it", no longer blaming straying first.
+
+Measured with `examples/bigclutch.rs`: a warm incubated-egg grazer, 30
+founders, founded into grown 96-tile worlds for 180 days (4 seeds, totals).
+
+| Clutch | `clutch_split` 0 | Default |
+| --- | --- | --- |
+| 4: laid, hatched, chilled; alive at the end | 1,202, 778, 350; 25 | 1,335, 803, 474; 28 |
+| 8: laid, hatched, chilled; alive at the end | 1,785, 944, 768; 30 | 1,773, 1,034, 660; 29 |
+
+- **A modest gain where it was measured.** At litter 8, 10% more eggs
+  hatch and 14% fewer chill. In these worlds the old rule didn't lose
+  every clutch: the nests there are warm often enough. The playtest's total
+  loss (cool nests, every egg under a quarter of the warmth) is the case
+  the unit test `a_big_clutch_keeps_the_eggs_its_parent_warms` covers: on
+  a 10 °C nest a clutch of 8 keeps 4 with the rule and loses all 8
+  without.
+- **Litter 4 moves too**, though a clutch of 4 is unchanged: the litter
+  gene mutates, so some young lay 5 or more, and the runs diverge from
+  there. The lineage's numbers at the end swing widely across seeds (0 to
+  19 alive) in both arms.
+
+**M8: the designer's estivation advice was a trap.** At 40% drought it said
+"Add estivation (0.6 or more)". The estivating lineage slept through spring,
+had no summer births and starved in its second winter, while a plain starter
+thrived.
+- **Drought sleep only in a real dry spell** (`Balance::dry_spell` 1). Out
+  of summer (round 8's `founding_rivals` added spring and autumn), an
+  estivator now sleeps through a drought only with no water beside it
+  (`Map::can_drink_at`) and thirst already at 30 or more
+  (`seasonal::DRY_SPELL_THIRST`). Summer heat and summer drought work as
+  before.
+- **The advice states the costs.** "Keeping them by lasting water (the Food
+  layer) is the surest answer, or wait for the drought to ease. Estivation
+  (0.6 or more) lets them sleep through a real dry spell where no water is
+  near, but it has costs: a sleeping lineage doesn't breed, so a dry spring
+  can cost a season's young, and it wakes needing food."
+- **Chill in the designer.** Incubated eggs designed in winter or spring
+  get a warning that clutches laid in winter, early spring or a cold
+  climate often chill (warm-blooded eggs need the most heat).
+
+**M14: group alerts and orders.**
+- **The group's own deaths.** The grazed-bare and no-water alerts said the
+  whole lineage's hunger or thirst deaths ("46 starved" for a 6-animal
+  group). The server now counts the day's bodies by group just before the
+  world clears them (`Game::group_deaths`) and says "N of the group
+  starved". After a restart, until a day has been counted, it falls back to
+  the lineage's count.
+- **Loosened holds.** When every starving holder's hold is already loosened
+  (round 8 load), the warning says they "already forage past the claim's
+  edge, and it isn't enough", not "obey the claim and stay inside".
+- **A territory kept while migrating.** The migrate reply no longer says it
+  replaces the territory. It carries `territory_kept` and says the group
+  keeps it while away. Each group in the state carries `territory_kept`; the
+  map draws it and the group line says "migrating toward …, keeping its
+  territory at …".
+- **View group** pins the view on the densest cluster of a scattered group
+  (the members in and around the fullest 12-tile cell), not on the mean,
+  which fell on a lake between its parts.
+- **Survey** works from the biggest group when the main group is empty
+  (refused before with 88 alive).
+- **No attack orders asleep.** A possessed animal in its deep sleep is
+  refused with `asleep`.
+
+**Checks** (main at version 73 with balance's round 8, against this round):
+
+| Check | `clutch_split` and `dry_spell` 0 | Defaults |
+| --- | --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | | 11.87 (± 0.16); every lineage 12 of 12 |
+| `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 12/16 (12), 16/16 (16); 4 | 10/16 (9), 16/16 (16); 4 |
+| workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (467), build | | pass |
+| e2e (16 scripts, `E2E_JOBS=2`, beside the studies) | | 14 of 16: mobile and panels timed out under load; both passed alone |
+
+- **The wild fox** survived on 2 fewer seeds with this round's rules. The
+  fox bears live young, so the egg rule doesn't touch it directly; the
+  wild egg layers (newts, frogs) and estivators change its prey. Within
+  the seeds' spread on 16 seeds, but not shown to be noise.
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
