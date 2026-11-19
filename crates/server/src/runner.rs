@@ -589,12 +589,26 @@ impl Runner {
         match req {
             Request::Found { player, name, design, reply } => {
                 self.game.set_name(player, &name);
-                let _ = reply.send(self.game.found(player, &design));
+                let result = self.game.found(player, &design);
+                // The new lineage's name is public before the reply: a
+                // registration right after must see it (`public_names`).
+                if result.is_ok() {
+                    self.republish_season();
+                }
+                let _ = reply.send(result);
             }
             Request::Command { conn, player, id, msg } => {
                 // A connection that went away before the tick: drop its commands.
                 if self.game.conn_player(conn) == Some(player) {
+                    // A name given: public before the reply (`public_names`).
+                    let naming = matches!(
+                        msg,
+                        ClientMsg::SetNameplate { .. } | ClientMsg::NameAnimal { .. } | ClientMsg::NameSpecies { .. }
+                    );
                     let out = self.game.command(conn, player, id, msg);
+                    if naming {
+                        self.republish_season();
+                    }
                     self.dispatch(out);
                 }
             }
