@@ -10791,9 +10791,10 @@ mod tests {
 
     /// Playtests 9 and 10: no cross-player trade completed. A paid offer to
     /// a rival's lineage goes the whole way: offered, accepted with the
-    /// seller's pick of a far animal, met halfway (playtest 10: the point lay
-    /// on the seller's side, 80 tiles from the buyer's animal, and lapsed),
-    /// mated, paid, and the young are born.
+    /// seller's pick of an animal as far as it may (`LINEAGE_PICK_SLACK`),
+    /// met halfway (playtest 10: the point lay on the seller's side, 80
+    /// tiles from the buyer's animal, and lapsed), mated, paid, and the
+    /// young are born.
     #[test]
     fn a_trade_to_a_lineage_completes_end_to_end_and_young_are_born() {
         let (mut g, a, b) = game();
@@ -10817,9 +10818,15 @@ mod tests {
             let m = &g.world.map;
             let far = (0..m.height)
                 .flat_map(|y| (0..m.width).map(move |x| evo_sim::terrain::Map::tile_center(x, y)))
+                // As far as the seller may pick (`LINEAGE_PICK_SLACK` past
+                // the nearest free one, which may stand right by).
                 .filter(|&p| {
                     let t = m.tile_at(p);
-                    t.water_depth == 0.0 && t.ice == 0.0 && m.ground_at(p).slope < 0.3 && m.can_drink_at(p)
+                    t.water_depth == 0.0
+                        && t.ice == 0.0
+                        && m.ground_at(p).slope < 0.3
+                        && m.can_drink_at(p)
+                        && p.dist(mpos) < LINEAGE_PICK_SLACK - 1.0
                 })
                 .max_by(|x, y| x.dist(mpos).total_cmp(&y.dist(mpos)));
             g.world.organisms.iter_mut().find(|o| o.id == partner).unwrap().pos = far.unwrap();
