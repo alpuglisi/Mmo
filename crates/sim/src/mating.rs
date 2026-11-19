@@ -159,6 +159,18 @@ pub fn wild_gap_scale(bal: &crate::Balance, a: crate::genome::PlayerId, b: crate
     }
 }
 
+/// The share of a player × wild litter that comes of it
+/// (`Balance::wild_barrier`): `1 − wild_barrier` when exactly one owner is
+/// wild; 1 otherwise. A gap scale ([`wild_gap_scale`]) can't isolate a
+/// design whose body plan is the wild species' own (a gap near 0).
+pub fn wild_fertility(bal: &crate::Balance, a: crate::genome::PlayerId, b: crate::genome::PlayerId) -> f32 {
+    if (a == crate::WILD) != (b == crate::WILD) {
+        (1.0 - bal.wild_barrier).clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+}
+
 /// [`fertility_with`] with the body-plan gap counted `scale` times
 /// ([`wild_gap_scale`]); the same at 1.
 pub fn fertility_scaled(a: &Genome, b: &Genome, relief: Relief, scale: f32) -> f32 {

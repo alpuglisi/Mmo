@@ -1891,6 +1891,13 @@ pub struct CrowdingView {
     pub litter: f32,
     /// Hunger is multiplied by this (1 below the soft cap).
     pub hunger: f32,
+    /// The lineage also crowds from this crowding count, its share of the
+    /// world's (`Balance::world_crowding`, the world's taken as at least
+    /// the soft cap), when that is below the soft cap; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub world_cap: Option<f32>,
+    /// That share (0.2: a fifth of the world's crowding count).
+    pub world_share: f32,
 }
 
 /// `renown_shop` (and after a purchase): what renown buys.

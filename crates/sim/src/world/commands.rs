@@ -440,6 +440,7 @@ impl World {
         let scale = mating::wild_gap_scale(&self.config.balance, female.owner, male.owner);
         let fertility =
             mating::fertility_scaled(&female.genome, &male.genome, mating::Relief::of(&self.config.balance), scale)
+                * mating::wild_fertility(&self.config.balance, female.owner, male.owner)
                 * self.disease_fertility(f, m);
         (mismatch, cost, failure_chance, fertility)
     }
@@ -470,7 +471,7 @@ impl World {
             body_plan_fertility: mating::fertility_from_gap(
                 mating::fertility_gap(ga, gb, mating::Relief::of(&self.config.balance))
                     * mating::wild_gap_scale(&self.config.balance, oa.owner, ob.owner),
-            ),
+            ) * mating::wild_fertility(&self.config.balance, oa.owner, ob.owner),
             distance_fertility: mating::distance_fertility(ga.distance(gb)),
             body_plan_gaps,
             distance: oa.pos.dist(ob.pos),
@@ -1324,6 +1325,31 @@ mod tests {
             (p.mismatch, p.cost, p.failure_chance, p.fertility),
             (out.mismatch, out.cost, out.failure_chance, out.fertility)
         );
+    }
+
+    /// Playtest 9: a design with a wild species' own body plan (a gap near
+    /// 0, which `wild_isolation`'s scale can't widen) bred true with it.
+    /// `Balance::wild_barrier` cuts a player × wild litter to a tenth; two
+    /// players' animals, or two wild ones, are as fertile as before.
+    #[test]
+    fn wild_barrier_cuts_player_by_wild_litters() {
+        let mut w = World::new(WorldConfig { width: 48, height: 48, ..Default::default() });
+        let d = FounderDesign::new("v", Thermo::Warm, BirthType::Live, 2).founders(2);
+        let mine = w.found_lineage(1, &d).unwrap();
+        let wild = w.found_lineage_unchecked(crate::WILD, &d);
+        let other = w.found_lineage(2, &d).unwrap();
+        let sex = |w: &World, id| w.organism(id).unwrap().sex;
+        let pick = |w: &World, ids: &[OrgId]| *ids.iter().find(|&&c| sex(w, c) != sex(w, mine[0])).unwrap();
+        let (wb, ob) = (pick(&w, &wild), pick(&w, &other));
+        let with_wild = w.mating_preview(mine[0], wb).unwrap();
+        let with_player = w.mating_preview(mine[0], ob).unwrap();
+        assert!((with_player.body_plan_fertility - 1.0).abs() < 1e-6, "{with_player:?}");
+        assert!((with_wild.body_plan_fertility - 0.1).abs() < 1e-4, "{with_wild:?}");
+        assert!((with_wild.fertility - 0.1 * with_player.fertility).abs() < 1e-4, "{with_wild:?}");
+        assert_eq!(mating::wild_fertility(&w.config.balance, crate::WILD, crate::WILD), 1.0);
+        w.config.balance.wild_barrier = 0.0;
+        let off = w.mating_preview(mine[0], wb).unwrap();
+        assert!((off.body_plan_fertility - 1.0).abs() < 1e-6, "{off:?}");
     }
 
     #[test]

@@ -14,7 +14,7 @@
 //! - **Score breakdown** ([`Game::score_breakdown`]): whose genes make up a
 //!   legacy share, from the daily host tally (`World::legacy_hosts`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use evo_sim::genome::Genome;
 use evo_sim::mating::{fertility_gap, plan_weights, Relief, BODY_PLAN_GENES, BODY_PLAN_STERILE};
@@ -125,14 +125,15 @@ pub const CARNIVORE_EGG_WARNING: &str = "An egg-laying hunter leaves its clutch 
 
 /// [`Spread`] over the pairs of `a` × `b` (None when either is empty), the
 /// body-plan gap counted `scale` times (`mating::wild_gap_scale`: a player's
-/// design against a wild lineage).
-pub fn spread(a: &[&Genome], b: &[&Genome], relief: Relief, scale: f32) -> Option<Spread> {
+/// design against a wild lineage), each pair's fertility times `litter`
+/// (`mating::wild_fertility`: the same pair's share of a litter).
+pub fn spread(a: &[&Genome], b: &[&Genome], relief: Relief, scale: f32, litter: f32) -> Option<Spread> {
     let mut fert: Vec<f32> = Vec::with_capacity(a.len() * b.len());
     let mut closest: Option<(f32, &Genome, &Genome)> = None;
     for &x in a {
         for &y in b {
             let gap = fertility_gap(x, y, relief) * scale;
-            fert.push(evo_sim::mating::fertility_scaled(x, y, relief, scale));
+            fert.push(evo_sim::mating::fertility_scaled(x, y, relief, scale) * litter);
             if closest.is_none_or(|(g, _, _)| gap < g) {
                 closest = Some((gap, x, y));
             }
@@ -601,8 +602,36 @@ impl Game {
     }
 
     /// Most living members a reinforced lineage may have.
-    fn reinforce_max_alive(&self) -> usize {
+    pub(super) fn reinforce_max_alive(&self) -> usize {
         (self.world.config.lineage_cap as f64 * economy::REINFORCE_MAX_SHARE).floor() as usize
+    }
+
+    /// The most `player` had alive at a daily record within the last
+    /// ranked season's length of simulated days (0 when none recorded).
+    pub(super) fn season_peak(&self, player: PlayerId) -> usize {
+        let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
+        self.economy
+            .alive_days
+            .get(&player)
+            .map_or(0, |d| d.iter().filter(|&&(day, _)| day + window > today).map(|&(_, n)| n).max().unwrap_or(0))
+    }
+
+    /// Note each player's living count for the day (`season_peak`), and
+    /// drop the days past the window.
+    pub(super) fn note_alive(&mut self, day: u64) {
+        let window = self.cfg.season_days.max(1);
+        let players: BTreeSet<PlayerId> = self.world.lineages.iter().map(|l| l.owner).filter(|&p| p != WILD).collect();
+        for p in players {
+            let alive = self.owner_population(p);
+            let days = self.economy.alive_days.entry(p).or_default();
+            while days.front().is_some_and(|&(d, _)| d + window <= day) {
+                days.pop_front();
+            }
+            if alive > 0 || !days.is_empty() {
+                days.push_back((day, alive));
+            }
+        }
+        self.economy.alive_days.retain(|_, d| !d.is_empty());
     }
 
     /// Reinforcements `player` bought within the last ranked season's
@@ -641,6 +670,17 @@ impl Game {
             return Err(ErrorInfo::new(
                 "too_large",
                 format!("reinforcements are for lineages of at most {max} (yours has {alive})"),
+            ));
+        }
+        let peak = self.season_peak(player);
+        if peak > max {
+            return Err(ErrorInfo::new(
+                "too_large",
+                format!(
+                    "reinforcements are for lineages of at most {max} alive at any time in the last {} days \
+                     (yours had {peak})",
+                    self.cfg.season_days
+                ),
             ));
         }
         let adults = self.world.organisms.iter().any(|o| o.alive && o.matured && o.lineage == lineage);
@@ -741,7 +781,8 @@ impl Game {
                 let lin = &self.world.lineages[l as usize];
                 // `own` is a player's: against a wild lineage the gap counts more.
                 let scale = evo_sim::mating::wild_gap_scale(&self.world.config.balance, 1, lin.owner);
-                let s = spread(own, &theirs, relief, scale)?;
+                let litter = evo_sim::mating::wild_fertility(&self.world.config.balance, 1, lin.owner);
+                let s = spread(own, &theirs, relief, scale, litter)?;
                 Some(CompatibilityRow {
                     lineage: l,
                     lineage_name: lin.name.clone(),
@@ -873,7 +914,8 @@ impl Game {
         for v in views {
             let Some(o) = self.world.organism(v.organism) else { continue };
             let scale = evo_sim::mating::wild_gap_scale(&self.world.config.balance, player, o.owner);
-            if let Some(s) = spread(&own, &[&*o.genome], relief, scale) {
+            let litter = evo_sim::mating::wild_fertility(&self.world.config.balance, player, o.owner);
+            if let Some(s) = spread(&own, &[&*o.genome], relief, scale, litter) {
                 v.compatible = Some(compatible(&s));
                 // Tenths: exact means over a rival's animal solved its body
                 // plan (playtest 8).
@@ -992,8 +1034,13 @@ impl Game {
     /// The soft lineage cap as it stands for `player` (`lineage_stats.crowding`).
     pub(super) fn crowding_view(&self, player: PlayerId) -> Option<CrowdingView> {
         self.lineage_of(player)?;
-        let count = self.world.crowding_counts().get(&player).copied().unwrap_or(0.0);
-        let [litter, hunger] = self.world.crowding_effect(count);
+        let counts = self.world.crowding_counts();
+        let count = counts.get(&player).copied().unwrap_or(0.0);
+        let total: f32 = counts.values().sum();
+        let [litter, hunger] = self.world.crowding_effect_in(count, total);
+        let soft = self.world.config.lineage_cap as f32;
+        let share = self.world.config.balance.world_crowding;
+        let world_cap = Some(share * total.max(soft)).filter(|&c| share > 0.0 && c < soft);
         Some(CrowdingView {
             soft_cap: self.world.config.lineage_cap,
             hard_cap: self.world.player_ceiling(),
@@ -1001,6 +1048,8 @@ impl Game {
             juvenile_weight: self.world.config.balance.crowding_juveniles,
             litter,
             hunger,
+            world_cap,
+            world_share: share,
         })
     }
 }

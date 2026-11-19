@@ -1197,16 +1197,35 @@ impl World {
     /// lineage whose crowding count (adults, plus juveniles at
     /// `crowding_juveniles`) is `count` (`Balance::lineage_crowding`).
     pub fn crowding_effect(&self, count: f32) -> [f32; 2] {
+        self.crowding_effect_in(count, 0.0)
+    }
+
+    /// [`World::crowding_effect`] in a world whose crowding counts sum to
+    /// `total` (every owner's, the wild's too): with
+    /// `Balance::world_crowding` a lineage also counts against that share
+    /// of the world, so it crowds at whichever comes first, the soft cap or
+    /// that share (playtest 9: the leader ran away once the wild shrank,
+    /// under the cap). The world's count is taken as at least the soft
+    /// cap, so only a lineage past `world_crowding` of the soft cap (300 of
+    /// 1,500) crowds by its share. `total` 0: the soft cap alone.
+    pub fn crowding_effect_in(&self, count: f32, total: f32) -> [f32; 2] {
         let bal = &self.config.balance;
         if bal.lineage_crowding <= 0.0 {
             return [1.0, 1.0];
         }
-        let x = count / self.config.lineage_cap.max(1) as f32;
+        let cap = self.config.lineage_cap.max(1) as f32;
+        let mut x = count / cap;
+        if bal.world_crowding > 0.0 && total > 0.0 {
+            // The world's count taken as at least the soft cap: a small
+            // lineage in a small world isn't crowded by its share.
+            x = x.max(count / (bal.world_crowding * total.max(cap)));
+        }
         [1.0 / (1.0 + x.powf(bal.lineage_crowding)), 1.0 + bal.crowding_hunger * (x - 1.0).max(0.0)]
     }
 
     /// Each player's crowding count: adults, plus juveniles at
-    /// `crowding_juveniles` (agents and cohort members alike).
+    /// `crowding_juveniles` (agents and cohort members alike); the wild's
+    /// under [`crate::WILD`].
     pub fn crowding_counts(&self) -> BTreeMap<PlayerId, f32> {
         let jw = self.config.balance.crowding_juveniles;
         // Per lineage first (a vector, cheap on every tick), then per owner.
@@ -1224,9 +1243,7 @@ impl World {
         }
         let mut out: BTreeMap<PlayerId, f32> = BTreeMap::new();
         for (l, &(alive, adults)) in self.lineages.iter().zip(&per) {
-            if l.owner != crate::WILD {
-                *out.entry(l.owner).or_default() += adults as f32 + jw * alive.saturating_sub(adults) as f32;
-            }
+            *out.entry(l.owner).or_default() += adults as f32 + jw * alive.saturating_sub(adults) as f32;
         }
         out
     }
@@ -1243,11 +1260,12 @@ impl World {
             return;
         }
         let counts = self.crowding_counts();
+        let total: f32 = counts.values().sum();
         let crowding: Vec<[f32; 2]> = self
             .lineages
             .iter()
             .map(|l| match counts.get(&l.owner) {
-                Some(&n) if l.owner != crate::WILD => self.crowding_effect(n),
+                Some(&n) if l.owner != crate::WILD => self.crowding_effect_in(n, total),
                 _ => [1.0, 1.0],
             })
             .collect();

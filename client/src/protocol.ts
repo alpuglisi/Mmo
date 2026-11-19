@@ -1108,6 +1108,10 @@ export interface CrowdingView {
   litter: number;
   /** Hunger multiplier (1 below the soft cap). */
   hunger: number;
+  /** It also crowds from this count, `world_share` of the world's (sim `Balance::world_crowding`), when below the soft cap. */
+  world_cap?: number;
+  /** That share of the world's crowding count (0.2). */
+  world_share?: number;
 }
 
 /** `renown_shop`: what renown buys. */
