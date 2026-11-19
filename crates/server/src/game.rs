@@ -255,6 +255,15 @@ pub const STANDING_WARN_DAYS: f32 = 10.0;
 /// A migration expected to take at least this many days warns when the
 /// land along it can't feed the group, and always at twice it.
 pub const JOURNEY_WARN_DAYS: f32 = 7.0;
+/// Share of its food on the way under which a journey of any length is
+/// warned about.
+pub const JOURNEY_BARE_SHARE: f32 = 0.3;
+
+/// The ground a group of `members` forages from its home after a
+/// migration: twice its home circle (`World::forage_bound`).
+fn home_forage_radius(members: usize) -> f32 {
+    2.0 * World::home_radius(members)
+}
 /// A territory or rally circle farther than this from its group's middle
 /// draws a warning (playtest 3: a claim 85 tiles off).
 pub const FAR_CIRCLE_TILES: f32 = 30.0;
@@ -2080,12 +2089,13 @@ impl Game {
                     data["route"] = serde_json::to_value(route).unwrap_or_default();
                 }
                 let mut warnings = self.travel_warnings(player, group, true);
-                // What waits at the destination, rated for the ground a group
-                // its size spreads over there (the rally circle), not the small
-                // home circle: a big herd grazes far wider.
+                // What waits at the destination, rated for the ground the group
+                // forages there (twice its home circle), the ground the daily
+                // home check rates too (playtest 7: rated at the rally circle,
+                // then "grazed bare" for the home circle four days in).
                 let members = self.world.groups(player).iter().find(|g| g.id == group).map_or(0, |g| g.members);
                 let mut dest = serde_json::json!({});
-                let there = self.circle_report_at(player, group, to, World::rally_radius(members), &mut dest, false);
+                let there = self.circle_report_at(player, group, to, home_forage_radius(members), &mut dest, false);
                 warnings.extend(there.into_iter().map(|w| format!("At the destination: {w}")));
                 dest.as_object_mut().map(|o| o.remove("distance"));
                 data["destination"] = dest;
@@ -2156,21 +2166,30 @@ impl Game {
                         put_warnings(&mut data, warnings);
                         data
                     }
-                    ClaimOutcome::Migrating { target, radius } => {
+                    ClaimOutcome::Migrating { target, radius: r } => {
                         self.plan_route(player, group);
+                        let cut = if (r - radius).abs() > 0.01 {
+                            if r > radius {
+                                format!(" (radius raised to the smallest territory, {r:.0} tiles)")
+                            } else {
+                                format!(" (radius cut to the group's limit, {r:.1} tiles)")
+                            }
+                        } else {
+                            String::new()
+                        };
                         let mut data = serde_json::json!({
-                            "x": x, "y": y, "radius": radius, "pending": true,
+                            "x": x, "y": y, "radius": r, "pending": true,
                             "migrating_to": { "x": target.x, "y": target.y },
                             "note": format!(
                                 "the circle is more than {FAR_CLAIM_TILES:.0} tiles from the group: it migrates there \
-                                 first and claims the territory when it arrives"
+                                 first and claims the territory when it arrives{cut}"
                             ),
                         });
                         if let Some((_, route)) = self.routes.get(&(player, group)) {
                             data["route"] = serde_json::to_value(route).unwrap_or_default();
                         }
                         let mut warnings = self.travel_warnings(player, group, true);
-                        warnings.extend(self.circle_report(player, group, Vec2::new(x, y), radius.max(3.0), &mut data));
+                        warnings.extend(self.circle_report(player, group, Vec2::new(x, y), r, &mut data));
                         put_warnings(&mut data, warnings);
                         data
                     }
@@ -2216,11 +2235,15 @@ impl Game {
                     ));
                 }
                 let out = self.world.split_group(player, group, organisms.as_deref()).map_err(e)?;
-                Ok(Some(serde_json::json!({ "group": out.group, "moved": out.moved, "kept": out.kept })))
+                let mut data = serde_json::json!({ "group": out.group, "moved": out.moved, "kept": out.kept });
+                self.group_counts_report(player, &mut data);
+                Ok(Some(data))
             }
             ClientMsg::MergeGroups { from, into } => {
                 let moved = self.world.merge_groups(player, from, into).map_err(e)?;
-                Ok(Some(serde_json::json!({ "moved": moved })))
+                let mut data = serde_json::json!({ "moved": moved });
+                self.group_counts_report(player, &mut data);
+                Ok(Some(data))
             }
             ClientMsg::SetView { x, y, radius } => {
                 finite(&[x, y, radius])?;
@@ -5422,10 +5445,16 @@ impl Game {
                     never_moved,
                     gained,
                     pending_claim,
+                    territory_kept,
                 } => {
                     self.routes.remove(&(player, group));
                     let (why, short) = timeout_reason(dormant_share, basking_share, needy_share, never_moved, gained);
                     let claim = if pending_claim { " The territory it was to claim there is dropped too." } else { "" };
+                    let claim = if territory_kept {
+                        format!("{claim} It is still on the territory it left, and holds it again.")
+                    } else {
+                        claim.to_string()
+                    };
                     let text = format!(
                         "{} didn't gather at its migration target ({:.0}, {:.0}) (half the group is still more than \
                          {:.0} tiles away); the order has ended: {why}.{claim}",
@@ -5438,6 +5467,54 @@ impl Game {
                         (player, group),
                         format!("migration to ({:.0}, {:.0}) ended: {short}", target.x, target.y),
                     );
+                    self.alert(player, AlertKind::Group, text, None, out);
+                }
+                GroupEvent::HoldLoosened { player, group, hungry_share, parched_share } => {
+                    let what = match (hungry_share >= 0.05, parched_share >= 0.05) {
+                        (true, true) => format!(
+                            "{:.0}% of it is starving and {:.0}% parched",
+                            hungry_share * 100.0,
+                            parched_share * 100.0
+                        ),
+                        (false, true) => format!("{:.0}% of it is parched", parched_share * 100.0),
+                        _ => format!("{:.0}% of it is starving", hungry_share * 100.0),
+                    };
+                    let text = format!(
+                        "{}'s territory no longer feeds it ({what}): the hold is loosened, and the group forages \
+                         beyond the edge until it recovers. Claim better ground, or abandon the territory to move on.",
+                        group_name(group)
+                    );
+                    self.alert(player, AlertKind::Group, text, None, out);
+                }
+                GroupEvent::Displaced { player, group, by, territory: t } => {
+                    self.territory_alerted.retain(|&(p, g, _)| (p, g) != (player, group));
+                    let who = self.name(by);
+                    let text = format!(
+                        "{}'s territory at ({:.0}, {:.0}) was taken over by a far larger group of {who}'s: a group of \
+                         {} or fewer can't hold ground against one ten times its size.",
+                        group_name(group),
+                        t.center.x,
+                        t.center.y,
+                        evo_sim::world::groups::SQUAT_MEMBERS
+                    );
+                    self.alert(player, AlertKind::Group, text, None, out);
+                }
+                GroupEvent::ClaimBlocked { player, group, target } => {
+                    self.routes.remove(&(player, group));
+                    self.drift_alerted.remove(&(player, group));
+                    let text = format!(
+                        "{} reached ({:.0}, {:.0}), but another player's territory covers that ground now, so it \
+                         claimed none; it keeps the place as its home ground. Claim a circle clear of it.",
+                        group_name(group),
+                        target.x,
+                        target.y
+                    );
+                    self.outcomes
+                        .insert((player, group), format!("reached ({:.0}, {:.0}), claim blocked", target.x, target.y));
+                    self.alert(player, AlertKind::Group, text, None, out);
+                }
+                GroupEvent::HoldRestored { player, group } => {
+                    let text = format!("{} has recovered: it keeps inside its territory again.", group_name(group));
                     self.alert(player, AlertKind::Group, text, None, out);
                 }
             }
@@ -5537,6 +5614,31 @@ impl Game {
         warnings
     }
 
+    /// Add every group's members and adults (`groups`, as the state's
+    /// group list counts them) and the lineage's `population` to a split or
+    /// merge reply, with a note when the two differ (playtest 7: the reply's
+    /// counts didn't match the state's). Eggs aren't counted; animals far
+    /// from every player may be simulated in aggregate, outside any group.
+    fn group_counts_report(&self, player: PlayerId, data: &mut serde_json::Value) {
+        let groups = self.world.groups(player);
+        let in_groups: usize = groups.iter().map(|g| g.members).sum();
+        data["groups"] = groups
+            .iter()
+            .map(|g| serde_json::json!({ "id": g.id, "members": g.members, "adults": g.adults }))
+            .collect::<Vec<_>>()
+            .into();
+        let population = self.owner_population(player);
+        data["population"] = population.into();
+        if population > in_groups {
+            data["note"] = format!(
+                "{} of your {population} animals are far from every player and lived out in aggregate, outside any \
+                 group; they rejoin the main group when someone comes near",
+                population - in_groups
+            )
+            .into();
+        }
+    }
+
     /// Warnings for a group about to travel: much of it dormant, and (with
     /// `route`) its planned way over open water. Shared by migrate, far
     /// claims and rallies.
@@ -5556,10 +5658,13 @@ impl Game {
                 if let Some(j) = self.world.journey_check(player, group, &way) {
                     let pace = World::group_pace(j.members);
                     let starve = j.food_share < 1.0;
-                    if j.days >= JOURNEY_WARN_DAYS && (starve || j.days >= 2.0 * JOURNEY_WARN_DAYS) {
+                    // A short trip over bare land warns too (playtest 7: 6.2
+                    // days at 18% of the food the group needs, no warning).
+                    let long = j.days >= JOURNEY_WARN_DAYS && (starve || j.days >= 2.0 * JOURNEY_WARN_DAYS);
+                    if long || j.food_share < JOURNEY_BARE_SHARE {
                         let food = if starve {
                             format!(
-                                "the land along the way holds about {:.0}% of the food the group needs for it; expect \
+                                "The land along the way holds about {:.0}% of the food the group needs for it; expect \
                                  heavy losses. ",
                                 j.food_share * 100.0
                             )
@@ -5647,8 +5752,10 @@ impl Game {
                 // last migration gave it while no other order takes it away.
                 let held = match (g.territory, g.settle) {
                     (Some(t), _) => Some((t.center, t.radius, "territory")),
+                    // The ground it forages from home: twice the home circle
+                    // (`World::forage_bound`), as the destination was rated.
                     (None, Some(h)) if g.rally.is_none() && g.migration.is_none() => {
-                        Some((h.center, h.radius, "home ground"))
+                        Some((h.center, 2.0 * h.radius, "home ground"))
                     }
                     _ => None,
                 };
@@ -11326,7 +11433,11 @@ mod tests {
             escrow: g.escrow(player),
             grace: g.grace_view(player),
             poisonous: (0..g.world.lineages.len() as u32).filter(|&l| g.world.looks_poisonous_to(player, l)).collect(),
-            territories: g.rival_territories(player, view),
+            territories: g.rival_territories(
+                player,
+                view,
+                &states::group_middles(g.world.organisms.iter().filter(|o| o.owner == player)),
+            ),
         }
     }
 

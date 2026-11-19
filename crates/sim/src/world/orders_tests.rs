@@ -943,3 +943,246 @@ fn a_journey_check_paces_big_groups_slower() {
     assert!((j.days - j.tiles / World::group_pace(j.members)).abs() < 1e-3);
     assert!(j.food_share > 0.0);
 }
+
+/// A big herd: `n` adults cloned from `HERD`'s animals around their middle,
+/// on a 128-tile standard world after 20 days.
+fn big_herd(seed: u64, n: usize) -> World {
+    let mut w = presets::standard_world(WorldConfig { seed, width: 128, height: 128, ..Default::default() }, 1);
+    w.run_days(20);
+    let src: Vec<_> = w
+        .organisms
+        .iter()
+        .filter(|o| o.alive && o.owner == HERD)
+        .map(|o| (o.genome.clone(), o.lineage, o.id))
+        .collect();
+    let mut rng = crate::rng::rng_for(seed, crate::rng::stream::APPLY, 0, 0);
+    let c = w.group_middle(HERD, 0).unwrap();
+    for k in 0..n {
+        let (g, l, id) = src[k % src.len()].clone();
+        let a = k as f32 * 2.399;
+        let r = 6.0 * ((k as f32 + 0.5) / n as f32).sqrt();
+        let p = w.map.clamp(c + Vec2::new(a.cos() * r, a.sin() * r));
+        let nid = w.spawn_newborn(g, HERD, l, p, 1, id, id, 1.0, &mut rng);
+        let i = w.index[&nid];
+        w.organisms[i].matured = true;
+    }
+    w
+}
+
+/// Calibration against play (playtest 7: claims "for 65.7 days" starved
+/// in 4): a 640-animal herd held in a territory among wild grazers eats
+/// what the food check says it needs (crowding by kin and lineage size
+/// counted, other grazers' share taken out), and the circle's food lasts
+/// about as long as the claim said. Before, the herd ate about twice the
+/// need the check counted.
+#[test]
+fn a_big_held_herd_eats_what_the_food_check_says() {
+    let mut w = big_herd(7, 600);
+    let c = w.group_middle(HERD, 0).unwrap();
+    let t = w.claim_territory(HERD, 0, c, 30.0).unwrap();
+    // A day in: the herd has felt its crowd.
+    w.run_days(1);
+    let inside: Vec<usize> = (0..w.map.tiles.len())
+        .filter(|&k| Map::tile_center(k % w.map.width, k / w.map.width).dist(t.center) <= t.radius)
+        .collect();
+    let sum = |w: &World| inside.iter().map(|&k| w.map.tiles[k].veg).sum::<f32>();
+    let claim = w.food_check(HERD, 0, t.center, t.radius).unwrap();
+    assert!(claim.others > 0, "wild grazers share the circle");
+    let (_, claim_need) = w.plant_need(HERD, 0).unwrap();
+    let mut ratios = Vec::new();
+    for _ in 0..4 {
+        let before = sum(&w);
+        let f = w.food_check(HERD, 0, t.center, t.radius).unwrap();
+        let (_, need) = w.plant_need(HERD, 0).unwrap();
+        // Everyone's need in the circle (the herd's and the other grazers'),
+        // and the regrowth before the check takes their share out.
+        let all_need = before / f.standing_days;
+        let regrowth = f.regrowth * all_need / need;
+        w.run_days(1);
+        ratios.push((before - sum(&w) + regrowth) / all_need);
+    }
+    let mean = ratios.iter().sum::<f32>() / ratios.len() as f32;
+    eprintln!("eaten/need by day {ratios:.2?}: mean {mean:.2}");
+    assert!((0.7..=1.3).contains(&mean), "the circle's grazers eat {mean:.2}x the need counted");
+    // Predicted days of standing food (with the regrowth's help) against
+    // the day the circle's plants ran out.
+    let predicted = claim.standing_days / (1.0 - (claim.regrowth / claim_need).min(0.9));
+    let mut actual = 5.0;
+    for day in 6..=30 {
+        w.run_days(1);
+        actual = day as f32;
+        if w.food_check(HERD, 0, t.center, t.radius).unwrap().standing_days < 1.0 {
+            break;
+        }
+    }
+    eprintln!("predicted {predicted:.1} days of standing food, ran out on day {actual:.0}");
+    assert!(actual >= 0.6 * predicted && actual <= 2.0 * predicted, "{predicted:.1} predicted, {actual} actual");
+}
+
+/// A crowded lineage (past its soft cap) burns food faster, and the food
+/// check counts it.
+#[test]
+fn the_plant_need_counts_a_crowded_lineage() {
+    let mut w = standard();
+    w.run_days(1);
+    let (_, base) = w.plant_need(HERD, 0).unwrap();
+    w.config.lineage_cap = 10;
+    w.step();
+    let (_, crowded) = w.plant_need(HERD, 0).unwrap();
+    if w.config.balance.lineage_crowding > 0.0 && w.config.balance.crowding_hunger > 0.0 {
+        assert!(crowded > 1.2 * base, "{base} -> {crowded}");
+    }
+}
+
+/// A territory whose holders starve or go thirsty loosens: the group
+/// forages beyond the edge, and the hold tightens once they recover
+/// (playtest 7: a held territory trapped a starving herd, 1,144 -> 449).
+#[test]
+fn a_starving_territory_loosens_its_hold_until_the_group_recovers() {
+    use super::groups::{HOLD_LOOSEN_SHARE, HOLD_LOOSE_REACH};
+    let mut w = standard();
+    let c = w.group_middle(HERD, 0).unwrap();
+    let t = w.claim_territory(HERD, 0, c, 5.0).unwrap();
+    w.take_group_events();
+    let hour = w.config.ticks_per_hour().max(1);
+    // Through the next hourly check.
+    let to_hour = |w: &mut World| {
+        while !w.tick.is_multiple_of(hour) {
+            w.step();
+        }
+        w.step();
+    };
+    // A fifth of the group starving: loosened, and said so.
+    let ids: Vec<usize> =
+        (0..w.organisms.len()).filter(|&i| w.organisms[i].alive && w.organisms[i].owner == HERD).collect();
+    let n = (ids.len() as f32 * (HOLD_LOOSEN_SHARE + 0.1)).ceil() as usize;
+    for &i in &ids[..n] {
+        w.organisms[i].needs.hunger = 95.0;
+    }
+    // Keep them starving until the hourly check runs.
+    while !w.hold_loosened(HERD, 0) && w.tick < 5 * hour + 10 {
+        for &i in &ids[..n] {
+            w.organisms[i].needs.hunger = w.organisms[i].needs.hunger.max(95.0);
+        }
+        w.step();
+    }
+    assert!(w.hold_loosened(HERD, 0));
+    let ev = w.take_group_events();
+    assert!(
+        ev.iter().any(|e| matches!(e, GroupEvent::HoldLoosened { player: HERD, group: 0, hungry_share, .. } if *hungry_share >= HOLD_LOOSEN_SHARE)),
+        "{ev:?}"
+    );
+    // A member not yet hungry enough to stray may roam past the edge.
+    let fed = ids[n];
+    w.organisms[fed].needs.hunger = 10.0;
+    w.organisms[fed].needs.thirst = 10.0;
+    let (_, r) = w.roam_bound(&w.organisms[fed]).unwrap();
+    assert_eq!(r, t.radius + t.radius.max(HOLD_LOOSE_REACH));
+    // Fed again: tightened.
+    for &i in &ids {
+        w.organisms[i].needs.hunger = 0.0;
+        w.organisms[i].needs.thirst = 0.0;
+    }
+    to_hour(&mut w);
+    assert!(!w.hold_loosened(HERD, 0));
+    assert!(w.take_group_events().iter().any(|e| matches!(e, GroupEvent::HoldRestored { player: HERD, group: 0 })));
+    assert_eq!(w.roam_bound(&w.organisms[fed]).unwrap().1, t.radius);
+}
+
+/// A migration keeps the territory it left (public ground no rival can
+/// claim over) until it arrives; clearing the order holds it again
+/// (playtest 7: a probe migrate cost the territory, and the cooldown
+/// locked it out).
+#[test]
+fn a_migration_keeps_its_territory_until_it_arrives() {
+    let mut w = standard();
+    w.set_claim_cooldown_min_ticks(100_000);
+    let c = w.group_middle(HERD, 0).unwrap();
+    let t = w.claim_territory(HERD, 0, c, 5.0).unwrap();
+    let away = w.map.clamp(c + Vec2::new(12.0, 0.0));
+    w.command_migrate_group(HERD, 0, away).unwrap();
+    assert_eq!((w.territory(HERD, 0), w.territory_away(HERD, 0)), (None, Some(t)));
+    // Still public: a rival can't claim over it.
+    assert!(w.all_territories().any(|(p, g, x)| (p, g) == (HERD, 0) && *x == t));
+    assert_eq!(w.claim_territory(1, 0, t.center, 4.0), Err(CommandError::Overlaps));
+    // Cleared: held again, without waiting out the cooldown.
+    w.clear_migration_group(HERD, 0);
+    assert_eq!((w.territory(HERD, 0), w.territory_away(HERD, 0)), (Some(t), None));
+    // Clearing every group's order does the same.
+    w.command_migrate_group(HERD, 0, away).unwrap();
+    w.clear_migration(HERD);
+    assert_eq!(w.territory(HERD, 0), Some(t));
+    // Arrived: the ground left behind is given up.
+    w.command_migrate_group(HERD, 0, away).unwrap();
+    for _ in 0..20 * w.config.ticks_per_day {
+        w.step();
+        if w.migration_order(HERD, 0).is_none() {
+            break;
+        }
+    }
+    let ev = w.take_group_events();
+    if ev.iter().any(|e| matches!(e, GroupEvent::Arrived { player: HERD, group: 0, .. })) {
+        assert_eq!((w.territory(HERD, 0), w.territory_away(HERD, 0)), (None, None));
+    }
+}
+
+/// A tiny group's territory can't deny ground to a group ten times its
+/// size (playtest 7: a 2-animal splinter could squat a key water spot for
+/// good); a holder past `SQUAT_MEMBERS` keeps its ground.
+#[test]
+fn a_much_larger_group_claims_over_a_tiny_squat() {
+    use super::groups::SQUAT_MEMBERS;
+    let mut w = standard();
+    let mine = w.group_middle(HERD, 0).unwrap();
+    // Player 1's whole lineage but two animals moves out of group 0.
+    let theirs: Vec<usize> =
+        (0..w.organisms.len()).filter(|&i| w.organisms[i].alive && w.organisms[i].owner == 1).collect();
+    assert!(theirs.len() > SQUAT_MEMBERS);
+    for (k, &i) in theirs.iter().enumerate() {
+        w.organisms[i].group = if k < 2 { 1 } else { 0 };
+        if k < 2 {
+            w.organisms[i].pos = mine;
+        }
+    }
+    let squat = w.claim_territory(1, 1, mine, 4.0).unwrap();
+    w.take_group_events();
+    let herd = w.groups(HERD)[0].members;
+    assert!(herd >= 20, "{herd}");
+    let t = w.claim_territory(HERD, 0, mine, 5.0).unwrap();
+    assert_eq!(w.territory(1, 1), None);
+    assert_eq!(w.territory(HERD, 0), Some(t));
+    let ev = w.take_group_events();
+    assert!(
+        ev.iter().any(
+            |e| matches!(e, GroupEvent::Displaced { player: 1, group: 1, by: HERD, territory } if *territory == squat)
+        ),
+        "{ev:?}"
+    );
+    // A real holder (more than SQUAT_MEMBERS) keeps its ground.
+    let mut w = standard();
+    w.tick = 5000;
+    let at = w.group_middle(1, 0).unwrap();
+    assert!(w.groups(1)[0].members > SQUAT_MEMBERS);
+    w.claim_territory(1, 0, at, 4.0).unwrap();
+    assert_eq!(w.claim_territory(HERD, 0, at, 4.0), Err(CommandError::Overlaps));
+}
+
+/// A far claim reports the radius it will get, not the one typed
+/// (playtest 7: "radius 300, food_supports 6,211" for a 31-animal group).
+#[test]
+fn a_far_claim_reports_the_radius_it_gets() {
+    use super::groups::ClaimOutcome;
+    let mut w = standard();
+    let middle = w.group_middle(HERD, 0).unwrap();
+    let limit = World::territory_radius_limit(w.groups(HERD)[0].adults);
+    let far = (0..64 * 64)
+        .map(|k| Map::tile_center(k % 64, k / 64))
+        .find(|&p| {
+            p.dist(middle) > super::groups::FAR_CLAIM_TILES + 2.0 && w.water_check(HERD, 0, p, limit).water_share == 0.0
+        })
+        .unwrap();
+    match w.claim_or_migrate(HERD, 0, far, 300.0) {
+        Ok(ClaimOutcome::Migrating { radius, .. }) => assert_eq!(radius, limit),
+        other => panic!("{other:?}"),
+    }
+}
