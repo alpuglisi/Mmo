@@ -9025,6 +9025,79 @@ around it.
 
 
 
+### Playtest 9: balance
+
+Playtest 9 (`docs/playtest-9.md`, findings 1, 6 and part of 12 here).
+Playtest 8's warm, small, incubated-egg, toxic, bright hibernator was held in
+era 1 (5.9% mean share) but won era 2 with a 24% mean. Over the same years
+the wild shrank from 3,800 to 1,250. Some designs near a wild species' body
+plan still bred with it (58% fertile with the Meadow vole). The leader bought
+cheap reinforcements every spring after winter took it under 300.
+
+**Why the wild shrank** (`dominance --trace`: the wild's numbers, deaths by
+cause and who ate them, each season of one seed). With no players, the wild
+stays at its caps for seven years: about 5,000 in autumn, 3,600 in spring.
+Playtest 8's herd alone reaches 2,100 and the wild stays at its caps. With
+ApexHunter8's pack alone (40 founders, live-bearing pure carnivores) the
+antelope fall from 988 to about 30 within two years and the newts are held
+down. In the six-player replay (pack, herd, a copy of it, the copy's
+sleepers, a cold flier, a grazer) the pack ate 1,400–3,600 wild animals a
+season, growing as it went. The antelope fell from 988 to 3 and the newts
+from 1,400 to 49, while several herbivore players took the plants. The wild
+ended at 1,200, and every player's share of a smaller world grew.
+Competition between plant eaters alone did not shrink the wild; a player's
+pack hunting each wild species to its last animals did. The share was then
+the herd's because the cap was a number, not a share.
+
+Three rules, version 83 (each off at 0):
+
+- **Wild refuge** (`Balance::wild_refuge`, 0.3). A player's hunters give up
+  on a wild lineage that falls below 30% of its wild cap. A hunter passes it
+  up for the day with chance `1 − r⁴` (`r` its count over 30% of its cap),
+  whatever its pickiness, and agents and cohorts follow the same rule
+  (`World::wild_refuge_skip`). The wild's own hunters keep prey switching
+  alone.
+- **Crowding by share of the world** (`Balance::world_crowding`, 0.2). A
+  player's lineage crowds as at the soft cap (smaller litters, then hunger)
+  at a fifth of the world's crowding count, the wild included, when that
+  comes before the soft cap. The world's count is taken as at least the soft
+  cap, so a lineage under 300 never crowds by its share. The Lineage tab
+  says when this applies ("past its share of the world").
+- **Wild barrier** (`Balance::wild_barrier`, 0.9). A litter or clutch with
+  one player-owned and one wild-owned parent is a tenth of the size its
+  fertility gives. `wild_isolation` scales the body-plan gap, and a gap near
+  0 (a design with the vole's own body plan) stays fertile however it is
+  scaled. The designer's estimate, listings and the mating preview show the
+  same tenth.
+
+**Verification replay** (`dominance --only Herd,Sleepers,Cold,Pack,LoopHerd,Broker`,
+six players; Herd is Herdmaster6/8/9's herd, LoopHerd its copy, Sleepers
+PocketNomad7's copy of the class, Pack ApexHunter8's pack; 840 days, two
+eras). "Era mean" is the highest mean share over a whole era on any seed.
+
+| Player | Playtest 9 rules (v83 tunables off): era mean, seeds capped | v83 rules: era mean, seeds capped |
+| --- | --- | --- |
+| Herd | 54.7%, 4 of 6 | 24.6%, 0 |
+| LoopHerd | 43.0%, 3 of 6 | 23.3%, 0 |
+| Cold | 25.3%, 1 of 6 | 18.7%, 0 |
+| Broker | 11.3%, 0 | 12.8%, 0 |
+| Pack | 5.6%, 0 | 11.8%, 0 |
+| Sleepers | 9.3%, 1 of 6 | 3.0%, 0 |
+
+(Seeds 1–6, two eras each.) No design holds more than 25% for an era under
+v83 rules, in either era. The wild in the trace (seed 1): antelope hold at 130–220 instead of going
+extinct, newts at 140–620 instead of 49. The wild's spring low is 1,630
+instead of 1,200, and its autumn high 2,600–3,350 in years 4–7. The voles
+still fall from 2,250 to about 1,000 by year 7 as the pack, now 250 strong,
+turns to them. With scarce wild prey spared, more of the pack's pressure
+falls on small player lineages: Sleepers (20 founders, a re-found in spring)
+stays small on every seed. The 12-seed sweep scores 11.88 (11.95 before).
+
+**Reinforcements** go by the season's peak: a lineage is refused if it had
+more than the limit (a fifth of the soft cap) alive at any daily record
+within a ranked season's length, not only today (`Economy::alive_days`,
+`Game::season_peak`).
+
 ### Playtest 8: balance
 
 Playtest 8 (`docs/playtest-8.md`, finding 1 verified, 12 and 13 here) ran

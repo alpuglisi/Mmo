@@ -4950,6 +4950,7 @@ impl Game {
         if legacy_day != self.last_legacy_day {
             self.last_legacy_day = legacy_day;
             let record = self.daily_record();
+            self.note_alive(record.day);
             self.count_hunted(record.day);
             // Before a rollover: a catastrophe ending at the boundary counts
             // for the season it fell in, not the next one.
@@ -10203,6 +10204,30 @@ mod tests {
         let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
         assert_eq!((shop.reinforce_price, shop.reinforcements_bought), (economy::REINFORCE_BASE_PRICE, 0));
         // (The lineage may have grown past the size limit; only the window is checked here.)
+    }
+
+    /// Playtest 9: the leader bought cheap reinforcements each spring after
+    /// winter took it under the limit. The limit goes by the most alive at a
+    /// daily record within a ranked season's length, and lapses after it.
+    #[test]
+    fn reinforcements_go_by_the_seasons_peak() {
+        let (mut g, _, _) = game();
+        g.cfg.season_days = 4;
+        let _ = g.post(1, 5000, LedgerKind::Income, "test".into(), None, None);
+        let alive = g.owner_population(1);
+        // A peak of 100 two days ago, under the limit today.
+        let today = g.world.day();
+        g.economy.alive_days.insert(1, [(today.saturating_sub(2), 100), (today, alive)].into());
+        g.world.config.lineage_cap = 5 * (alive + 5);
+        assert!(alive <= g.reinforce_max_alive());
+        let out = g.command(10, 1, None, ClientMsg::Reinforce);
+        assert_eq!(result(&out).1.as_deref(), Some("too_large"));
+        assert!(format!("{out:?}").contains("yours had 100"), "{out:?}");
+        // The peak lapses with the window.
+        run_days(&mut g, 4);
+        assert!(g.season_peak(1) < 100, "{:?}", g.economy.alive_days.get(&1));
+        g.world.config.lineage_cap = 5 * (g.owner_population(1).max(g.season_peak(1)) + 5);
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)), (true, None));
     }
 
     /// A provision feeds and waters a lineage's neediest adults, priced per

@@ -59,7 +59,10 @@ export function capInfo(population: number, cap: number | undefined, crowding?: 
 function softCapInfo(population: number, c: CrowdingView): CapInfo {
   const full = population >= c.hard_cap;
   const nearHard = !full && population >= CAP_NEAR * c.hard_cap;
-  const past = c.count >= c.soft_cap;
+  // Crowded by its share of the world before the soft cap (playtest 9).
+  const worldCap = c.world_cap !== undefined && c.world_cap < c.soft_cap ? c.world_cap : null;
+  const pastWorld = worldCap !== null && c.count >= worldCap;
+  const past = c.count >= c.soft_cap || pastWorld;
   const slowed = c.litter <= LITTER_SLOWED;
   const young = c.juvenile_weight < 1 ? `young count as ${c.juvenile_weight.toFixed(2).replace(/0$/, '')} of an adult` : 'young count in full';
   const hungrier = c.hunger > 1.005 ? `, and they get ${Math.round((c.hunger - 1) * 100)}% hungrier` : '';
@@ -68,11 +71,14 @@ function softCapInfo(population: number, c: CrowdingView): CapInfo {
     : nearHard
       ? `near the hard cap: births stop at ${grouped(c.hard_cap)}`
     : past
-      ? `past the soft cap: litters ${times(c.litter)}${hungrier ? `, hunger ${times(c.hunger)}` : ''}`
+      ? `past ${pastWorld && c.count < c.soft_cap ? 'its share of the world' : 'the soft cap'}: litters ${times(c.litter)}${hungrier ? `, hunger ${times(c.hunger)}` : ''}`
       : slowed ? `breeding slowing: litters ${times(c.litter)}` : null;
   const explain = `Breeding slows as your lineage grows. Its crowding count (adults, ${young}) is ${grouped(c.count)}; `
     + `litters shrink toward the soft cap of ${grouped(c.soft_cap)} (half size at it, smaller past it) and past it members compete for food. `
     + `Births stop only at the hard cap of ${grouped(c.hard_cap)} living organisms, young included. `
+    + (worldCap !== null
+      ? `A lineage also crowds as at the soft cap once it holds ${Math.round((c.world_share ?? 0.2) * 100)}% of the world's animals (wild included): at today's numbers from ${grouped(worldCap)}. `
+      : '')
     + (full
       ? 'You are at it: no young are born until some of yours die. A bigger number no longer raises your share; healthier breeding adults and their genes do.'
       : past

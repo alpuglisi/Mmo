@@ -147,12 +147,16 @@ impl World {
     /// Prey switching for a hunting cohort (`Balance::prey_switching`): the
     /// share of prey lineage `l` it still hunts, `1 − min(1, 2 ×
     /// pickiness) × prey_scarcity(l)` (`decide::gives_up_on`, in
-    /// expectation); 1 with the rule off.
+    /// expectation), or less for a player's cohort hunting a scarce wild
+    /// lineage (`Balance::wild_refuge`); 1 with both rules off.
     pub(super) fn cohort_switch(&self, probe: &Organism, l: u32) -> f32 {
-        if self.config.balance.prey_switching <= 0.0 {
-            return 1.0;
-        }
-        1.0 - (2.0 * probe.pheno[Gene::Pickiness]).min(1.0) * self.prey_scarcity(l)
+        let refuge = if probe.owner != crate::WILD { self.wild_refuge_skip(l) } else { 0.0 };
+        let picky = if self.config.balance.prey_switching > 0.0 {
+            (2.0 * probe.pheno[Gene::Pickiness]).min(1.0) * self.prey_scarcity(l)
+        } else {
+            0.0
+        };
+        1.0 - picky.max(refuge)
     }
 
     /// Leave `meat` (food units) as a carcass on the centre tile of region

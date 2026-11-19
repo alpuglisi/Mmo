@@ -5,7 +5,12 @@
 //!
 //! `cargo run --release -p evo-server --example dominance -- [--seeds N]
 //!  [--first-seed N] [--days D] [--size N] [--late-year Y] [--flier-day D]
-//!  [--baseline playtest2] [--set NAME=V ..] [--new-only]`
+//!  [--baseline playtest2] [--set NAME=V ..] [--new-only] [--only A,B,..]
+//!  [--trace]`
+//!
+//! `--trace` prints, each season of the first seed's new arm, the wild
+//! species' numbers, the players', and the wild's births, deaths by cause
+//! and who ate them (playtest 9: why the wild shrank).
 //!
 //! Ten players through the server's own rules (`Game`: founding with the
 //! winter provision, the renown shop, seasons) on the standard world with
@@ -35,8 +40,8 @@
 //! - **Loophole** founds Rulebender5's small egg-incubating cold flier as a
 //!   half-size re-found (22 founders) on `--loophole-day` (default 334).
 //!
-//! Two arms on the same seeds. **Playtest 7 rules**: the version 64
-//! tunables off (`honest_signals`, `wild_isolation`), or with `--baseline playtest2`
+//! Two arms on the same seeds. **Playtest 9 rules**: the version 83
+//! tunables off (`wild_barrier`, `world_crowding`, `wild_refuge`), or with `--baseline playtest2`
 //! playtest 2's (the balance rules since version 43 off, the old soft cap),
 //! each founded at any price. **New rules**:
 //! today's defaults, each design fitted to today's prices by dropping
@@ -90,6 +95,8 @@ struct Args {
     new_only: bool,
     /// `--only A,B,..`: found only these players (by name).
     only: Option<Vec<String>>,
+    /// Print the wild's numbers and deaths each season (first seed, new rules).
+    trace: bool,
 }
 
 fn args() -> Args {
@@ -107,6 +114,7 @@ fn args() -> Args {
         sets: Vec::new(),
         new_only: false,
         only: None,
+        trace: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -128,6 +136,7 @@ fn args() -> Args {
                 a.sets.push((k.to_string(), x.parse().expect("--set value")));
             }
             "--new-only" => a.new_only = true,
+            "--trace" => a.trace = true,
             "--only" => a.only = Some(v().split(',').map(|x| x.trim().to_string()).collect()),
             _ => panic!("unknown argument {k}"),
         }
@@ -384,13 +393,13 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         }
     }
     if !new_rules {
-        // Default: playtest 7's rules (the version 64 tunables off: hunger
-        // and the cap lower only the learned lesson, a bite's aversion to
-        // bright prey lasts for life, player and wild lineages fertile by
-        // body plan alone).
+        // Default: playtest 9's rules (the version 83 tunables off: player
+        // × wild litters full size, crowding by the soft cap alone, player
+        // hunters taking a wild species to its last animals).
         let b = &mut g.world.config.balance;
-        (b.honest_signals, b.wild_isolation) = (0.0, 0.0);
+        (b.wild_barrier, b.world_crowding, b.wild_refuge) = (0.0, 0.0, 0.0);
         if a.playtest2_baseline {
+            (b.honest_signals, b.wild_isolation) = (0.0, 0.0);
             (b.toxin_upkeep, b.hungry_hunters, b.toxin_source, b.speciation_credit, b.clutch_cover) =
                 (0.0, 0.0, 0.0, 0.0, 0.0);
             (b.thermo_hybrid, b.flight_upkeep, b.avoid_cap, b.cold_heat, b.species_credit) = (0.0, 0.0, 0.0, 0.0, 0.0);
@@ -426,6 +435,7 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
     let mut founded: Option<u64> = None;
     let mut records = Vec::new();
     let mut adults_by_day: Vec<usize> = Vec::new();
+    let mut trace_prev = TracePrev::default();
     for day in 0..a.days {
         if day == a.flier_day {
             found(&mut g, FLIER, flier(), &mut o);
@@ -471,6 +481,9 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
             if let evo_server::game::PersistEvent::Daily(r) = ev {
                 records.push(r);
             }
+        }
+        if a.trace && new_rules && seed == a.first_seed && (day + 1) % SEASON == 0 {
+            trace_season(&g, day + 1, &mut trace_prev);
         }
         for p in 1..=PLAYERS {
             let alive = g.world.owner_count(p);
@@ -597,7 +610,7 @@ fn main() {
         }
     });
     let results = results.into_inner().unwrap();
-    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 7 rules" };
+    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 9 rules" };
     for (new, title) in [(false, old_title), (true, "New rules")] {
         if a.new_only && !new {
             continue;
@@ -657,4 +670,65 @@ fn main() {
             "  (* from Eggs' founding on: mean share over those days; legacy titles of the whole seasons after it)"
         );
     }
+}
+
+/// Wild counters at the last trace line, to print each season's change.
+#[derive(Default)]
+struct TracePrev {
+    deaths: BTreeMap<evo_sim::organism::DeathCause, u64>,
+    kills: BTreeMap<PlayerId, u64>,
+    born: u64,
+}
+
+/// One season's line for `--trace`: the wild species' numbers, the
+/// players', and the wild's births, deaths by cause and who ate them.
+fn trace_season(g: &Game, day: u64, prev: &mut TracePrev) {
+    let w = &g.world;
+    let wild = |l: u32| w.lineages.get(l as usize).is_some_and(|x| x.owner == evo_sim::WILD);
+    let mut species: BTreeMap<String, usize> = BTreeMap::new();
+    for o in w.organisms.iter().filter(|o| o.alive && o.owner == evo_sim::WILD) {
+        *species.entry(w.lineages[o.lineage as usize].name.clone()).or_default() += 1;
+    }
+    let mut deaths: BTreeMap<evo_sim::organism::DeathCause, u64> = BTreeMap::new();
+    for (&(l, c), &n) in &w.counters.deaths_by_lineage {
+        if wild(l) {
+            *deaths.entry(c).or_default() += n;
+        }
+    }
+    let mut kills: BTreeMap<PlayerId, u64> = BTreeMap::new();
+    for (&(v, k), &n) in &w.counters.kills_by_lineage {
+        if wild(v) {
+            let owner = w.lineages.get(k as usize).map_or(evo_sim::WILD, |x| x.owner);
+            *kills.entry(owner).or_default() += n;
+        }
+    }
+    let born: u64 = w.counters.born.iter().filter(|(&l, _)| wild(l)).map(|(_, n)| n).sum();
+    let total: usize = species.values().sum();
+    let sp: Vec<String> =
+        species.iter().map(|(n, c)| format!("{}:{c}", n.split_whitespace().last().unwrap_or(n))).collect();
+    let players: Vec<String> = (1..=PLAYERS)
+        .filter_map(|p| Some(w.owner_count(p)).filter(|&n| n > 0).map(|n| format!("{}:{n}", NAMES[p as usize - 1])))
+        .collect();
+    let d: Vec<String> = deaths
+        .iter()
+        .map(|(c, n)| (c, n - prev.deaths.get(c).copied().unwrap_or(0)))
+        .filter(|&(_, n)| n > 0)
+        .map(|(c, n)| format!("{c:?}:{n}"))
+        .collect();
+    let k: Vec<String> = kills
+        .iter()
+        .map(|(p, n)| (p, n - prev.kills.get(p).copied().unwrap_or(0)))
+        .filter(|&(_, n)| n > 0)
+        .map(|(&p, n)| format!("{}:{n}", if p == evo_sim::WILD { "wild" } else { NAMES[p as usize - 1] }))
+        .collect();
+    println!(
+        "day {day:4} {:?}: wild {total} [{}] born {} | players [{}] | wild deaths [{}] eaten by [{}]",
+        w.season(),
+        sp.join(" "),
+        born - prev.born,
+        players.join(" "),
+        d.join(" "),
+        k.join(" ")
+    );
+    *prev = TracePrev { deaths, kills, born };
 }
