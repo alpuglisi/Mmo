@@ -795,7 +795,8 @@ export interface WorldListing {
   season: string;
   population: number;
   lineages: number;
-  players_online: number;
+  /** Players connected now: only for a logged-in caller. */
+  players_online?: number;
 }
 
 /** `GET /api/worlds`: the worlds the server hosts, the default first. */

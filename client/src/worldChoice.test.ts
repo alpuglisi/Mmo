@@ -36,6 +36,8 @@ describe('world choice', () => {
     expect(pickWorld(list, null)).toBe('main');
     expect(describeWorld(list.worlds[1])).toBe('64×64, day 9 (summer), 300 organisms, 4 players online');
     expect(describeWorld(list.worlds[0])).toContain('1 player online');
+    // Logged out, the server leaves players online out (playtest 9).
+    expect(describeWorld({ ...list.worlds[1], players_online: undefined })).toBe('64×64, day 9 (summer), 300 organisms');
   });
 
   it('adds the chosen world to per-world paths and the socket', () => {

@@ -1253,12 +1253,14 @@ fn market_key(sort: MarketSort, l: &Listing, preview: Option<&MatingPreviewView>
     (key, newest)
 }
 
-/// Tiles in the cells listings report positions in ([`coarse`]).
-const LISTING_CELL: f32 = 16.0;
+/// Tiles in the regions listings report positions in, and to which the
+/// distance to an unseen listed partner is rounded ([`coarse_in`]): open to
+/// every player, a 16-tile cell found a listed herd (playtest 9).
+const LISTING_REGION: f32 = 32.0;
 
-/// A coordinate as the center of its [`LISTING_CELL`] cell.
-fn coarse(v: f32) -> f32 {
-    (v / LISTING_CELL).floor() * LISTING_CELL + LISTING_CELL / 2.0
+/// A coordinate as the center of its `cell`-tile cell.
+fn coarse_in(v: f32, cell: f32) -> f32 {
+    (v / cell).floor() * cell + cell / 2.0
 }
 
 fn finite(v: &[f32]) -> Result<(), ErrorInfo> {
@@ -1941,6 +1943,13 @@ impl Game {
     /// renown, ledger, records and seen alerts stay, the old lineage stays in
     /// the history as extinct, and the dead lineage's group orders go.
     pub fn found(&mut self, player: PlayerId, design: &FounderDesign) -> Result<FoundOk, FoundError> {
+        // A player with a living lineage learns that first: the name checks
+        // below (rivals' and wild names) were a free probe (playtest 9).
+        if let Some(&lineage) = self.lineage_of.get(&player) {
+            if !self.is_extinct(player) {
+                return Err(FoundError::AlreadyFounded { lineage });
+            }
+        }
         design.validate().map_err(FoundError::Design)?;
         // The design's name is the lineage's (and its founding species'):
         // the shared name filter, and not another player's name.
@@ -2171,6 +2180,22 @@ impl Game {
     fn unpin_views(&mut self, player: PlayerId) {
         for c in self.conns.values_mut().filter(|c| c.player == player) {
             c.view = None;
+        }
+    }
+
+    /// Pinned views follow what the player can still see, every tick: one
+    /// whose centre no living animal of theirs (nor their largest group)
+    /// sees any more is dropped, one they see less of narrows (playtest 9:
+    /// a view pinned where the animals had been kept watching after they
+    /// left or died, one camera per connection).
+    fn recheck_views(&mut self) {
+        let pinned: Vec<(u64, PlayerId, ViewWindow)> =
+            (self.conns.iter()).filter_map(|(&id, c)| c.view.map(|v| (id, c.player, v))).collect();
+        for (id, player, v) in pinned {
+            let reach = self.view_reach(player, Vec2::new(v.x, v.y));
+            if let Some(c) = self.conns.get_mut(&id) {
+                c.view = (reach >= 1.0).then(|| ViewWindow { radius: v.radius.min(reach), ..v });
+            }
         }
     }
 
@@ -2502,7 +2527,14 @@ impl Game {
                             if let Some(d) = f.destination {
                                 data["journey"]["destination_food_share"] = r2(d).into();
                             }
-                            data["journey"]["others_on_the_way"] = f.others.into();
+                            // A band, not a count: a route drawn anywhere
+                            // counted the animals along it (playtest 9).
+                            let band = match f.others {
+                                0..20 => "few",
+                                20..100 => "some",
+                                _ => "many",
+                            };
+                            data["journey"]["others_on_the_way"] = band.into();
                         }
                         let water = self.route_water(player, group, &way);
                         data["journey"]["dry_stretch_tiles"] = ((water.dry_tiles * 10.0).round() / 10.0).into();
@@ -3246,7 +3278,7 @@ impl Game {
             }
         }
         if a.sex == b.sex {
-            return Err(e(CommandError::SameSex));
+            return Err(self.same_sex(player, partner));
         }
         if a.sex == Sex::Female && a.pregnancy.is_some() {
             return Err(e(CommandError::AlreadyPregnant));
@@ -3723,10 +3755,10 @@ impl Game {
             offspring_raised: o.offspring_raised,
             age_days: o.age_days(tpd),
             health: o.health,
-            // The region (16 tiles) it is in, not its live position: a
+            // The region (32 tiles) it is in, not its live position: a
             // predator player could otherwise hunt listed animals down.
-            x: coarse(o.pos.x),
-            y: coarse(o.pos.y),
+            x: coarse_in(o.pos.x, LISTING_REGION),
+            y: coarse_in(o.pos.y, LISTING_REGION),
             traits: LISTING_TRAITS.iter().map(|&g| TraitView { gene: gene_key(g), value: o.pheno[g] }).collect(),
             preview,
             compatible: None,
@@ -4168,6 +4200,20 @@ impl Game {
         .with_detail(serde_json::json!({ "organism": partner })))
     }
 
+    /// A same-sex pair's refusal: `same_sex` where the partner's sex is
+    /// already shown to the player (theirs, in their view, or on the
+    /// market), else the generic `partner_unavailable` (playtest 9: naming
+    /// a rival's animal beyond the view, within the naming margin, told its
+    /// sex).
+    fn same_sex(&self, player: PlayerId, partner: OrgId) -> ErrorInfo {
+        let shown = self.world.organism(partner).is_some_and(|b| b.owner == player || self.in_sight(player, b.pos))
+            || self.economy.listings.values().any(|l| l.organism == partner);
+        if shown {
+            return ErrorInfo::from(&CommandError::SameSex);
+        }
+        ErrorInfo::new("partner_unavailable", format!("#{partner} can't mate with that animal now"))
+    }
+
     /// What a request for `mine` × `partner` would give; see
     /// [`ClientMsg::PreviewMating`].
     fn preview_mating(&self, player: PlayerId, mine: OrgId, partner: OrgId) -> Result<MatingPreviewView, ErrorInfo> {
@@ -4185,7 +4231,10 @@ impl Game {
                 return Err(e(CommandError::NotMature(id)));
             }
         }
-        let p = self.world.mating_preview(mine, partner).map_err(e)?;
+        let p = self.world.mating_preview(mine, partner).map_err(|err| match err {
+            CommandError::SameSex => self.same_sex(player, partner),
+            err => e(err),
+        })?;
         // Exact numbers only for one's own pair: with a few of one's own
         // animals (whose genes the Genes tab shows) the exact gaps and
         // fertilities against one rival animal solved its body plan
@@ -4205,7 +4254,7 @@ impl Game {
             failure_chance: r(p.failure_chance),
             // Exact only for a partner the player can see: distances to
             // hidden organisms would locate them (rounded up to 16 tiles).
-            distance: if partner_seen { p.distance } else { (p.distance / LISTING_CELL).ceil() * LISTING_CELL },
+            distance: if partner_seen { p.distance } else { (p.distance / LISTING_REGION).ceil() * LISTING_REGION },
             meeting_distance: MEETING_DISTANCE,
             problem: incompatibility(&p),
         })
@@ -4869,6 +4918,7 @@ impl Game {
     /// have met, expire offers at a season change, record a new legacy day.
     pub fn after_tick(&mut self) -> Outbox {
         let mut out = std::mem::take(&mut self.pending_out);
+        self.recheck_views();
         let open: Vec<u64> = self.offers.values().filter(|o| o.status.is_open()).map(|o| o.id).collect();
         let tick = self.world.tick();
         for id in open {
@@ -5552,9 +5602,10 @@ impl Game {
         self.world.owner_count(player) + cohorts
     }
 
-    /// Where a player's lineage lives: the mean position of its agents, or,
-    /// with none (all of it abstract), of its cohorts by region; the map's
-    /// center for a player with neither.
+    /// Where a player's lineage lives: the centre of its largest group of
+    /// agents ([`Game::lineage_center_of`]), or, with none (all of it
+    /// abstract), the mean of its cohorts by region; the map's center for a
+    /// player with neither.
     /// Whether `player` may look at point `p`: within the largest view
     /// radius of one of their living organisms, or of their lineage's center
     /// (the default view, which also finds a lineage living as cohorts).
@@ -5637,12 +5688,30 @@ impl Game {
     }
 
     /// [`Game::lineage_center`] given the player's living organisms (indices
-    /// in organism order).
+    /// in organism order): the centre of their largest group, the mean of
+    /// those in the 3×3 block of 16-tile cells holding the most of them (the
+    /// mean of all could fall between two groups, where none of them sees:
+    /// playtest 9).
     fn lineage_center_of(&self, player: PlayerId, own: &[u32]) -> Vec2 {
+        const CELL: f32 = 16.0;
+        let cell = |p: Vec2| ((p.x / CELL).floor() as i64, (p.y / CELL).floor() as i64);
+        let mut cells: BTreeMap<(i64, i64), u32> = BTreeMap::new();
+        for &i in own {
+            *cells.entry(cell(self.world.organisms[i as usize].pos)).or_default() += 1;
+        }
+        let around = |(cx, cy): (i64, i64)| (-1..=1).flat_map(move |dy| (-1..=1).map(move |dx| (cx + dx, cy + dy)));
+        let best = (cells.keys())
+            .map(|&k| (around(k).map(|n| cells.get(&n).copied().unwrap_or(0)).sum::<u32>(), k))
+            .max_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)))
+            .map(|(_, k)| k);
         let (mut sum, mut n) = (Vec2::ZERO, 0.0f32);
         for &i in own {
-            sum += self.world.organisms[i as usize].pos;
-            n += 1.0;
+            let p = self.world.organisms[i as usize].pos;
+            let (cx, cy) = cell(p);
+            if best.is_some_and(|(bx, by)| (cx - bx).abs() <= 1 && (cy - by).abs() <= 1) {
+                sum += p;
+                n += 1.0;
+            }
         }
         if n == 0.0 {
             let m = &self.world.map;
@@ -10770,6 +10839,9 @@ mod tests {
         let out = g.command(10, 1, None, ClientMsg::SetNameplate { color: "amber".into(), title: singular.clone() });
         assert_eq!(result(&out).1.as_deref(), Some("bad_title"));
         assert!(g.found(1, &design("Grazers of the north")).is_ok());
+        // With a living lineage, "already founded" comes before any name
+        // check (playtest 9: the name checks were a free probe).
+        assert!(matches!(g.found(1, &design(&singular)), Err(FoundError::AlreadyFounded { .. })));
         // Nor a copy of another player's living lineage's name (playtest 7).
         g.set_name(2, "bob");
         let copy = g.found(2, &design("The Grazers of the north 2"));
@@ -12662,6 +12734,63 @@ mod tests {
         assert!(!g.state_for(10).unwrap().view.pinned, "found unpins");
     }
 
+    /// Playtest 9: a same-sex pair with a rival's animal beyond the view
+    /// (named within the naming margin) doesn't tell its sex.
+    #[test]
+    fn same_sex_is_told_only_where_the_sex_is_shown() {
+        let (mut g, a, b) = game();
+        let here = Vec2::new(12.0, 32.0);
+        let reach =
+            (g.world.organisms.iter()).filter(|o| o.alive && o.owner == 1).map(|o| g.sight(o)).fold(0.0f32, f32::max)
+                + VIEW_MARGIN;
+        for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+            (o.pos, o.matured) = (here, true);
+        }
+        let mine = a[0];
+        let sex = g.world.organism(mine).unwrap().sex;
+        let rival = *b.iter().find(|&&id| g.world.organism(id).unwrap().sex == sex).expect("a rival of the same sex");
+        let i = g.world.organism_index(rival).unwrap();
+        g.world.organisms[i].matured = true;
+        // Beyond the view, within the naming margin: no sex told.
+        g.world.organisms[i].pos = here + Vec2::new(reach + 4.0, 0.0);
+        assert!(!g.in_sight(1, g.world.organisms[i].pos));
+        assert_eq!(g.preview_mating(1, mine, rival).unwrap_err().code, "partner_unavailable");
+        // In view, where its sex is shown anyway: `same_sex`.
+        g.world.organisms[i].pos = here + Vec2::new(2.0, 0.0);
+        assert_eq!(g.preview_mating(1, mine, rival).unwrap_err().code, "same_sex");
+    }
+
+    /// Playtest 9: a pinned view follows sight every tick (dropped once the
+    /// animals have left), and the default view centres on the largest group,
+    /// not the mean of two groups far apart.
+    #[test]
+    fn a_pinned_view_is_dropped_once_the_animals_leave() {
+        let (mut g, a, _) = game();
+        let p = g.world.organism(a[0]).unwrap().pos;
+        let pin = g.command(10, 1, Some(1), ClientMsg::SetView { x: p.x, y: p.y, radius: 8.0 });
+        assert!(result(&pin).0, "{pin:?}");
+        let _ = g.after_tick();
+        assert!(g.state_for(10).unwrap().view.pinned, "still in sight");
+        let (w, h) = (g.world.map.width as f32, g.world.map.height as f32);
+        // Far from the pin: the opposite corner.
+        let far = Vec2::new(if p.x < w / 2.0 { w - 3.0 } else { 3.0 }, if p.y < h / 2.0 { h - 3.0 } else { 3.0 });
+        let near = Vec2::new(if far.x < w / 2.0 { w - 3.0 } else { 3.0 }, far.y);
+        let mine: Vec<usize> = (0..g.world.organisms.len())
+            .filter(|&i| g.world.organisms[i].alive && g.world.organisms[i].owner == 1)
+            .collect();
+        assert!(mine.len() >= 4);
+        for (k, &i) in mine.iter().enumerate() {
+            // Two groups: a few at `near`, the most at `far`.
+            g.world.organisms[i].pos = if k < 2 { near } else { far };
+        }
+        let center = g.lineage_center(1);
+        assert!((center - far).len() < 2.0, "the largest group's centre, not the mean: {center:?}");
+        let _ = g.after_tick();
+        let view = g.state_for(10).unwrap().view;
+        assert!(!view.pinned, "dropped once out of sight: {view:?}");
+        assert!((Vec2::new(view.x, view.y) - far).len() < 2.0, "back on the largest group: {view:?}");
+    }
+
     /// Info leaks: the map image shows a player only what they may see,
     /// `set_view` only looks where their organisms are, listings give the
     /// region rather than the live position, and a rival's pregnancy is
@@ -12722,21 +12851,21 @@ mod tests {
         let edge = g.command(10, 1, Some(2), ClientMsg::SetView { x: 4.5 + 30.0, y: 4.5, radius: 32.0 });
         assert_eq!(result(&edge).1, Some("out_of_sight".into()));
         assert!(!g.in_sight(1, Vec2::new(4.5 + sight + VIEW_MARGIN + 1.0, 4.5)));
-        // A listing gives the 16-tile region, not the live position.
+        // A listing gives the 32-tile region, not the live position.
         let dam = female(&g, &a);
         let i = g.world.organism_index(dam).unwrap();
         g.world.organisms[i].pos = Vec2::new(3.3, 13.7);
         let out = g.command(10, 1, Some(3), ClientMsg::CreateListing { organism: dam, fee: 5, expires_days: None });
         let l = &reply_data(&out)["listing"];
-        assert_eq!((l["x"].as_f64(), l["y"].as_f64()), (Some(8.0), Some(8.0)));
+        assert_eq!((l["x"].as_f64(), l["y"].as_f64()), (Some(16.0), Some(16.0)));
         // A preview needs the partner in sight, on the market or in an
-        // offer; the distance to one out of sight is rounded up to 16 tiles.
+        // offer; the distance to one out of sight is rounded up to 32 tiles.
         let stud = male(&g, &b);
         assert_eq!(g.preview_mating(1, dam, stud).unwrap_err().code, "out_of_sight");
         let out = g.command(20, 2, Some(9), ClientMsg::CreateListing { organism: stud, fee: 5, expires_days: None });
         assert!(result(&out).0, "{out:?}");
         let p = g.preview_mating(1, dam, stud).unwrap();
-        assert_eq!(p.distance % 16.0, 0.0, "{}", p.distance);
+        assert_eq!(p.distance % 32.0, 0.0, "{}", p.distance);
         let tenths = |x: f32| ((x * 10.0).round() - x * 10.0).abs() < 1e-4;
         assert!(p.body_plan_gaps.iter().all(|g| tenths(g.gap)), "{:?}", p.body_plan_gaps);
         assert!([p.fertility, p.mismatch, p.failure_chance, p.distance_fertility].iter().all(|&x| tenths(x)), "{p:?}");

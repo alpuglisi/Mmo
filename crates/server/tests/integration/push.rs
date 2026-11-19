@@ -408,7 +408,8 @@ async fn subscriptions_over_http_and_a_mating_offer_reaches_an_offline_player() 
     let mut online = 2;
     for _ in 0..200 {
         srv.step(1).await;
-        online = req(addr, "GET", "/api/worlds", None, None).await.1["worlds"][0]["players_online"].as_u64().unwrap();
+        online =
+            req(addr, "GET", "/api/worlds", Some(&ann), None).await.1["worlds"][0]["players_online"].as_u64().unwrap();
         if online == 1 {
             break;
         }
@@ -444,7 +445,8 @@ async fn subscriptions_over_http_and_a_mating_offer_reaches_an_offline_player() 
     drop(bob_ws);
     for _ in 0..200 {
         srv.step(1).await;
-        let n = req(addr, "GET", "/api/worlds", None, None).await.1["worlds"][0]["players_online"].as_u64().unwrap();
+        let n =
+            req(addr, "GET", "/api/worlds", Some(&ann), None).await.1["worlds"][0]["players_online"].as_u64().unwrap();
         if n == 1 {
             break;
         }

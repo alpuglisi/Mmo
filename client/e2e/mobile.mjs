@@ -907,7 +907,15 @@ async function worldChecks(browser, base, errors) {
   const context = await browser.newContext({ ...device('Pixel 7') });
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push(e.message));
-  const online = async () => Object.fromEntries((await (await fetch(`${base}/api/worlds`)).json()).worlds.map((w) => [w.id, w.players_online]));
+  // Players online are told to a logged-in caller only (playtest 9): a
+  // watcher account reads them.
+  const watcher = await (await fetch(`${base}/api/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: `obs_${stamp()}`, password: 'a long password' }),
+  })).json();
+  const auth = { headers: { authorization: `Bearer ${watcher.token}` } };
+  const online = async () => Object.fromEntries((await (await fetch(`${base}/api/worlds`, auth)).json()).worlds.map((w) => [w.id, w.players_online]));
   await page.goto(`${base}/?tour=off`);
   await page.waitForSelector('#world-select', { state: 'visible', timeout: 20000 });
   const options = await page.$$eval('#world-select option', (os) => os.map((o) => [o.value, o.textContent]));

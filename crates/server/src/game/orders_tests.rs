@@ -1249,9 +1249,10 @@ fn rival_outlines_follow_each_group_and_splits_count_like_the_state() {
     g.found(2, &design("B")).unwrap();
     g.connect(10, 1, "ann");
     let mine = g.world.group_middle(1, 0).unwrap();
-    // Half of ann's founders walk far off and split.
+    // Two of ann's six founders walk far off and split (fewer than half:
+    // the default view centres on the largest group).
     let far = land_away(&g, mine, g.cfg.default_view_radius + 40.0);
-    let half: Vec<OrgId> = a[..3].to_vec();
+    let half: Vec<OrgId> = a[..2].to_vec();
     for o in g.world.organisms.iter_mut().filter(|o| half.contains(&o.id)) {
         o.pos = far;
     }
