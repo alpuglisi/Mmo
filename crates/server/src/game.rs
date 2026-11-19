@@ -1252,6 +1252,11 @@ impl Game {
         g.world.set_claim_cooldown_min_ticks(claim);
         let cap = (g.cfg.grace_max_days * g.world.config.ticks_per_day as f64).round() as u64;
         g.world.set_attack_grace_min_ticks(minutes(g.cfg.grace_min_minutes).min(cap));
+        // A grace carries over (never starts afresh) through the whole
+        // re-founding window (playtest 8: chained small re-foundings just
+        // past twice the grace each got a fresh one).
+        let carry = g.refound_window_days() * g.world.config.ticks_per_day as u64;
+        g.world.set_grace_carry_min_ticks(carry);
         // Offline protection: real hours, but at most so many game days.
         if g.cfg.offline_max_days > 0.0 {
             let days = |d: f64| (d * g.world.config.ticks_per_day as f64).round() as u64;
@@ -2010,11 +2015,15 @@ impl Game {
                 },
             ));
         }
-        let homes: BTreeMap<PlayerId, u32> = self
+        // Each receiver takes no more than its room under the soft cap
+        // (playtest 8: a feeder account bred ~470 animals off the leader's
+        // studs and retired, handing them all over, to the hard cap).
+        let cap = self.world.config.lineage_cap;
+        let homes: BTreeMap<PlayerId, (u32, usize)> = self
             .lineage_of
             .iter()
             .filter(|&(&p, _)| p != player && !self.is_extinct(p))
-            .map(|(&p, &l)| (p, l))
+            .map(|(&p, &l)| (p, (l, cap.saturating_sub(self.world.owner_count(p)))))
             .collect();
         self.settle_agreements_on_retire(player, out);
         let before: BTreeMap<PlayerId, usize> = homes.keys().map(|&p| (p, self.world.owner_count(p))).collect();
@@ -2027,7 +2036,8 @@ impl Game {
             if got > 0 {
                 let (animals, carry) = if got == 1 { ("animal", "carries") } else { ("animals", "carry") };
                 let text = format!(
-                    "{} retired their lineage: {got} of its {animals}, which {carry} at least {:.0}% of your genes, joined yours.",
+                    "{} retired their lineage: {got} of its {animals}, which {carry} at least {:.0}% of your genes, joined yours \
+                     (as many as fit under your lineage's cap; they bring no legacy share until your herd breeds from them).",
                     self.name(player),
                     RETIRE_TRANSFER_SHARE * 100.0
                 );
@@ -5633,7 +5643,7 @@ impl Game {
         }
         let tpd = w.config.ticks_per_day.max(1) as f64;
         let now = w.tick();
-        let soon = (2.0 * w.grace_length() as f64 / tpd).round();
+        let soon = (w.grace_carry_ticks() as f64 / tpd).round();
         let days = |t: u64| t as f64 / tpd;
         let real = |t: u64| {
             let min = t as f64 * self.cfg.tick_ms / 60_000.0;

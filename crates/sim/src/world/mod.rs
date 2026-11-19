@@ -645,6 +645,11 @@ pub struct World {
     /// (`World::set_attack_grace_min_ticks`); not saved.
     #[cfg_attr(feature = "serde", serde(skip))]
     grace_min_ticks: u64,
+    /// The shortest span after a founding within which the owner's next
+    /// founding continues its grace (`World::set_grace_carry_min_ticks`:
+    /// the server's re-founding window); not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    grace_carry_min_ticks: u64,
     /// Each lineage's grace start (`World::grace_start`), derived from
     /// `lineage_founded`; rebuilt on founding and restore, not saved.
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -836,6 +841,7 @@ impl World {
             lod,
             offline: Default::default(),
             grace_min_ticks: 0,
+            grace_carry_min_ticks: 0,
             grace_starts: Vec::new(),
             grace_starts_cooldown: 0,
             grace_waived: Default::default(),

@@ -202,16 +202,20 @@ impl World {
     /// Retire `player`'s animals ([`World::retire_player`]), but first hand
     /// each agent whose alleles are at least `min_share` another player's
     /// (the most of any other player, who has a living lineage in `homes`)
-    /// to that player: it joins their lineage (`homes[p]`) and main group.
-    /// Retiring used to delete rivals' alleles living in the lineage, the
-    /// very alleles the royalty pays for. Cohort members and eggs are
-    /// removed as before. Returns (removed, transferred).
+    /// to that player: it joins their lineage (`homes[p].0`) and main group,
+    /// at most `homes[p].1` of them (the receiver's room under its cap; the
+    /// rest leave with the retiree). Every player's alleles in a transferred
+    /// animal become the wild's: a transfer credits no legacy to anyone
+    /// (playtest 8: a feeder account bred ~470 animals off the leader's studs
+    /// and retired, taking the leader to the hard cap). Cohort members and
+    /// eggs are removed as before. Returns (removed, transferred).
     pub fn retire_player_sparing(
         &mut self,
         player: PlayerId,
-        homes: &BTreeMap<PlayerId, u32>,
+        homes: &BTreeMap<PlayerId, (u32, usize)>,
         min_share: f64,
     ) -> (usize, usize) {
+        let mut room: BTreeMap<PlayerId, usize> = homes.iter().map(|(&p, &(_, r))| (p, r)).collect();
         let morph = self.config.balance.morph_in_legacy();
         let mut counts = Vec::new();
         let mut moves: Vec<(usize, PlayerId, u32)> = Vec::new();
@@ -229,8 +233,10 @@ impl World {
             // three quarters the retiree's no longer goes to a rival.
             let own = counts.iter().find(|&&(p, _)| p == player).map_or(0, |c| c.1);
             if let Some(&(p, n)) = best {
-                if total > 0 && n as f64 >= min_share * total as f64 && n > own {
-                    moves.push((k, p, homes[&p]));
+                let left = room.get_mut(&p).expect("a home");
+                if total > 0 && n as f64 >= min_share * total as f64 && n > own && *left > 0 {
+                    *left -= 1;
+                    moves.push((k, p, homes[&p].0));
                 }
             }
         }
@@ -242,8 +248,12 @@ impl World {
             // The retiree's alleles in it become nobody's (the wild's): no
             // royalty or legacy for the retiree from it, and none gifted to
             // the receiver either (playtest 4: re-tagged as the receiver's,
-            // colluding players handed each other legacy share).
-            std::sync::Arc::make_mut(&mut o.genome).retag_origin(player, crate::WILD);
+            // colluding players handed each other legacy share). Nor do the
+            // receiver's own (playtest 8): the animal joins its herd, but its
+            // legacy grows only by what the herd breeds from it.
+            let g = std::sync::Arc::make_mut(&mut o.genome);
+            g.retag_origin(player, crate::WILD);
+            g.retag_origin(p, crate::WILD);
             o.group = 0;
             o.possessed_by = None;
             o.order = None;
@@ -408,7 +418,7 @@ mod tests {
         }
         let n1 = w.organisms.iter().filter(|o| o.alive && o.owner == 1).count();
         let n2 = w.owner_count(2);
-        let (removed, moved) = w.retire_player_sparing(1, &BTreeMap::from([(2, l2)]), 0.25);
+        let (removed, moved) = w.retire_player_sparing(1, &BTreeMap::from([(2, (l2, usize::MAX))]), 0.25);
         assert_eq!((removed, moved), (n1 - 3, 3));
         assert_eq!(w.owner_count(1), 0);
         assert_eq!(w.owner_count(2), n2 + 3);
@@ -445,16 +455,42 @@ mod tests {
         for (&id, g) in ids.iter().zip([&mostly_rival, &mostly_own]) {
             w.organisms.iter_mut().find(|o| o.id == id).unwrap().genome = std::sync::Arc::new(g.clone());
         }
-        let (_, moved) = w.retire_player_sparing(1, &BTreeMap::from([(2, l2)]), 0.25);
+        let (_, moved) = w.retire_player_sparing(1, &BTreeMap::from([(2, (l2, usize::MAX))]), 0.25);
         assert_eq!(moved, 1, "only the animal mostly the rival's");
         let o = w.organism(ids[0]).unwrap();
         assert_eq!(o.owner, 2);
         assert_eq!(share(&o.genome, 1), 0.0, "none of the retiree's alleles left in it");
-        // They went to the wild, not to the receiver: its share of the
-        // animal is what it bred in, no more.
-        assert_eq!(share(&o.genome, 2), share(&mostly_rival, 2));
-        assert!((share(&o.genome, crate::WILD) - share(&mostly_rival, 1)).abs() < 1e-9);
+        // They went to the wild, not to the receiver, and so did the
+        // receiver's own: a transfer credits no legacy (playtest 8).
+        assert_eq!(share(&o.genome, 2), 0.0);
+        assert!((share(&o.genome, crate::WILD) - 1.0).abs() < 1e-9);
         assert!(w.organism(ids[1]).is_none());
+    }
+
+    /// A transfer fills only the receiver's room under its cap; the rest
+    /// leave with the retiree (playtest 8: a feeder account's retirement took
+    /// the leader to the hard cap).
+    #[test]
+    fn a_retirement_hands_over_no_more_than_the_receivers_room() {
+        let mut w = presets::standard_world(WorldConfig { seed: 6, width: 64, height: 64, ..Default::default() }, 1);
+        let l2 = w.lineages.iter().position(|l| l.owner == 2).unwrap() as u32;
+        let rival = w.organisms.iter().find(|o| o.owner == 2).unwrap().genome.clone();
+        let ids: Vec<u64> = w.organisms.iter().filter(|o| o.alive && o.owner == 1).map(|o| o.id).take(3).collect();
+        for &id in &ids {
+            w.organisms.iter_mut().find(|o| o.id == id).unwrap().genome = rival.clone();
+        }
+        let n2 = w.owner_count(2);
+        let (_, moved) = w.retire_player_sparing(1, &BTreeMap::from([(2, (l2, 1))]), 0.25);
+        assert_eq!(moved, 1);
+        assert_eq!(w.owner_count(2), n2 + 1);
+        assert_eq!(w.owner_count(1), 0);
+        let (_, none) = {
+            let mut w2 =
+                presets::standard_world(WorldConfig { seed: 6, width: 64, height: 64, ..Default::default() }, 1);
+            let l2 = w2.lineages.iter().position(|l| l.owner == 2).unwrap() as u32;
+            w2.retire_player_sparing(1, &BTreeMap::from([(2, (l2, 0))]), 0.25)
+        };
+        assert_eq!(none, 0, "a receiver at its cap gets none");
     }
 
     /// A rendezvous brings two animals far apart together on their own.
