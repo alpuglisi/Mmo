@@ -28,6 +28,10 @@ fn busy_world() -> World {
     // would hold no cohorts (`staggered_busy_world_continues_exactly`
     // covers staggering).
     config.balance.decide_interval = 1.0;
+    // (The states this test asserts at its tick were found without pack
+    // cohesion, version 85; `a_world_with_pack_cohesion_continues_exactly`
+    // covers it.)
+    config.balance.pack_cohesion = 0.0;
     config.scoring.catastrophes = true;
     config.scoring.catastrophe_first_year = 0;
     config.scoring.species_interval_days = 1;
@@ -283,6 +287,23 @@ fn restored_world_continues_exactly() {
     assert_same(&a, &b);
     assert_same(&a, &c);
     assert_same(&a, &d);
+}
+
+/// Pack cohesion's homes (`World::refresh_pack_homes`) are recomputed as
+/// each tick starts, not saved: a restored world with packs pulled together
+/// continues exactly.
+#[test]
+fn a_world_with_pack_cohesion_continues_exactly() {
+    let mut a = presets::standard_world(WorldConfig { seed: 12, width: 64, height: 64, ..Default::default() }, 1);
+    a.config.balance.pack_cohesion = 1.0;
+    a.run_days(3);
+    let bytes = a.snapshot();
+    let mut b = World::restore(&bytes, Some(a.map.terrain().clone())).expect("restore");
+    for _ in 0..2 * a.config.ticks_per_day {
+        a.step();
+        b.step();
+    }
+    assert_same(&a, &b);
 }
 
 #[test]
@@ -2174,7 +2195,7 @@ fn version_83_snapshots_restore_without_rival_clear() {
     assert!(r.snapshot() == w.snapshot());
     let w = fixture_world();
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
-    assert_eq!((r.config.balance.rival_clear, r.config.balance.pack_cohesion), (1.0, 0.0));
+    assert_eq!((r.config.balance.rival_clear, r.config.balance.pack_cohesion), (1.0, 0.3));
 }
 
 /// Version 89 snapshots (before the playtest 10 placement rules) restore
