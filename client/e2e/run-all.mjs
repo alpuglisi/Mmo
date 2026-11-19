@@ -29,7 +29,10 @@ const jobs = Math.max(1, Number.parseInt(process.env.E2E_JOBS ?? '', 10) || Math
 function run(name) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const child = spawn(process.execPath, [path.join(here, `${name}.mjs`)], { stdio: ['ignore', 'pipe', 'pipe'] });
+    // Scripts running side by side share the machine: their waits stretch
+    // (`E2E_TIME_SCALE`, read by the phone and mobile scripts).
+    const env = { ...process.env, E2E_TIME_SCALE: process.env.E2E_TIME_SCALE ?? String(jobs > 1 ? 1.5 : 1) };
+    const child = spawn(process.execPath, [path.join(here, `${name}.mjs`)], { stdio: ['ignore', 'pipe', 'pipe'], env });
     const out = [];
     child.stdout.on('data', (d) => { out.push(d); if (jobs === 1) process.stdout.write(d); });
     child.stderr.on('data', (d) => { out.push(d); if (jobs === 1) process.stderr.write(d); });

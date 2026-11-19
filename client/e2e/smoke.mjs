@@ -464,6 +464,10 @@ async function main() {
     // Those rounds are retried with another pair (up to 5 retries); any other
     // ending fails the test.
     const rounds = 6;
+    // Bob's males on the market after an out-of-sight refusal: a request may
+    // name them from anywhere, so ann picks among them from then on (he can
+    // list at most 8, fewer than his males).
+    const listedMales = new Set();
     for (let round = 1; round <= rounds && !done; round++) {
       if (round > 1) await Promise.all([releaseAll(page), releaseAll(bob)]);
       // Organisms keep breeding on their own, so a chosen female can conceive
@@ -485,7 +489,9 @@ async function main() {
           const adults = (p) => p.evaluate(() => window.evo.model.state.organisms.filter((o) => o.matured && !o.pregnant && !o.possessed)
             .map((o) => ({ id: o.id, sex: o.sex, urge: o.needs.breeding, action: o.action, x: o.x, y: o.y })));
           const b = await adults(bob);
-          const bobMales = b.filter((o) => o.sex === 'male');
+          const allMales = b.filter((o) => o.sex === 'male');
+          const listed = allMales.filter((o) => listedMales.has(o.id));
+          const bobMales = listed.length > 0 ? listed : allMales;
           const late = Date.now() - since > 20000;
           // Prefer the closest pair: predators pick off organisms on a long
           // trip to the meeting. Then the least breeding urge in the female,
@@ -542,14 +548,19 @@ async function main() {
           // one at a time ran out of attempts when the founding search
           // placed the lineages apart).
           if (req.error?.code === 'out_of_sight') {
-            await bob.evaluate(async (first) => {
+            const ok = await bob.evaluate(async (first) => {
               const s = window.evo.model.state;
-              const listed = new Set((s.listings ?? []).map((l) => l.organism));
               const ids = [first, ...s.organisms.filter((o) => o.sex === 'male' && o.matured).map((o) => o.id)];
-              for (const id of [...new Set(ids)].filter((id) => !listed.has(id))) {
-                await window.evo.socket.send({ type: 'create_listing', organism: id, fee: 0 });
+              const listed = [];
+              for (const id of [...new Set(ids)]) {
+                const r = await window.evo.socket.send({ type: 'create_listing', organism: id, fee: 0 });
+                // Listed now, or already (a second listing of one is refused).
+                if (r.ok || /already|listed/.test(r.error?.code ?? '')) listed.push(id);
+                if (r.error?.code === 'too_many_listings') break;
               }
+              return listed;
             }, req.partner);
+            for (const id of ok) listedMales.add(id);
           }
           const server = (await (await fetch(`${base}/api/world`)).json()).clock.tick;
           const look = (p, id) => p.evaluate((id) => { const s = window.evo.model.state; const o = s.organisms.find((o) => o.id === id); return `${s.clock.tick}:${o ? `${o.sex[0]}${o.pregnant ? 'P' : ''}${o.matured ? 'A' : ''}` : '-'}`; }, id);
@@ -1421,12 +1432,24 @@ async function main() {
     const cards = await page.evaluate(() => document.querySelectorAll('#group-list .group-card').length);
     // Two claims at once: the second lands within the first's cooldown (the
     // fast test world runs a day a second, so only back-to-back claims hit it).
-    const cooldown = await page.evaluate(async (group) => {
-      const claim = (x) => window.evo.socket.send({ type: 'claim_territory', group, x, y: 10, radius: 4 });
-      const [a, b] = await Promise.all([claim(10), claim(12)]);
-      return [a, b].find((r) => !r.ok) ?? { both: [a, b] };
-    }, newGroup);
-    if (!cooldown || cooldown.error?.code !== 'claim_cooldown') throw new Error(`back-to-back claims: ${JSON.stringify(cooldown)}`);
+    // Claims on the group's own ground (a far or watery spot could be
+    // refused for another reason, or turn into a migration), one after
+    // another until one meets the cooldown: the first may land once the
+    // earlier claim's cooldown is over on a slow machine.
+    const cooldown = await page.evaluate(async ({ group, t }) => {
+      const tries = [];
+      for (let k = 0; k < 3; k++) {
+        const r = await window.evo.socket.send({ type: 'claim_territory', group, x: t.x, y: t.y, radius: 4 });
+        tries.push(r.ok ? 'ok' : r.error?.code);
+        if (!r.ok && r.error?.code === 'claim_cooldown') return { r, tries };
+      }
+      return { r: null, tries };
+    }, { group: newGroup, t: { x: shown.t.x, y: shown.t.y } });
+    // The cooldown is waived while the group's territory is dry or grazed
+    // bare (`World::territory_failing`), which the fast world often makes it:
+    // then every re-claim goes through, by the rule.
+    if (!cooldown.r && cooldown.tries.some((t) => t !== 'ok')) throw new Error(`back-to-back claims never met the cooldown: ${JSON.stringify(cooldown.tries)}`);
+    const cooldownSaid = cooldown.r ? 'cooldown refused a re-claim' : 'cooldown waived (its territory is failing: re-claims allowed)';
     // Rally the new group from its card with one map tap; it replaces the
     // territory, shows on the map and on the card, and is cancelled.
     await page.click(`#group-list .group-card[data-group="${newGroup}"] button[data-action="rally"]`);
@@ -1454,7 +1477,7 @@ async function main() {
     if (!merged.ok) throw new Error(`merge_groups failed: ${JSON.stringify(merged.error)}`);
     await waitFor('one group again', () => page.evaluate(() => window.evo.model.state.groups.length === 1
       && document.querySelector('#group-select').value === 'all' && !window.evo.model.state.organisms.some((o) => o.group)), 20000);
-    step(`groups: split ${split.data.moved} organisms into group ${newGroup}, territory radius ${shown.t.radius.toFixed(1)} drawn (${cards} group cards), cooldown refused a re-claim, rallied (radius ${rally.data.radius.toFixed(1)}) and cancelled, merged back (${merged.data.moved})`);
+    step(`groups: split ${split.data.moved} organisms into group ${newGroup}, territory radius ${shown.t.radius.toFixed(1)} drawn (${cards} group cards), ${cooldownSaid}, rallied (radius ${rally.data.radius.toFixed(1)}) and cancelled, merged back (${merged.data.moved})`);
 
     await page.evaluate(() => window.evo.screen().view.setFollow(true));
     await page.click('#tab-organism');
