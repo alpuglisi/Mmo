@@ -1495,6 +1495,28 @@ pub struct Balance {
     /// 10: a split founding landed in two clusters 110 tiles apart). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v90"))]
     pub founding_together: f32,
+    /// A graced hunter may hunt rivals' unprotected animals (its own grace
+    /// no longer spares them), and its first attack on one ends its
+    /// owner's grace (version 92, off at 0, `serde_util::before_v92`).
+    /// Playtest 11: a graced pack starved, 24 → 16, beside 170 rival
+    /// animals whose grace had ended.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v92"))]
+    pub graced_hunting: f32,
+    /// The legacy share counts against the world as big as it has been
+    /// lately: each day's total of alleles is at least their running mean
+    /// over about this many days (`LegacySnapshot::world_alleles`, an
+    /// exponential mean), so a lineage doesn't gain share just because the
+    /// world shrank around it (version 92, off at 0,
+    /// `serde_util::before_v92`). Playtest 11: in a drought the wild fell
+    /// 3,472 → 1,015 and a shrinking leader's share rose 25% → 31%.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v92"))]
+    pub share_memory: f32,
+    /// A wild species below its refuge (`wild_refuge` of its wild cap)
+    /// breeds faster: its litters are `1 + wild_rebound × (1 − r)` times
+    /// the size (`r` its count over the refuge), so the wild recovers from
+    /// a drought or a pack (version 92, off at 0, `serde_util::before_v92`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v92"))]
+    pub wild_rebound: f32,
 }
 
 impl Balance {
@@ -1813,12 +1835,15 @@ impl Default for Balance {
             refuge_ramp: 1.0,
             reinforce_clear: 1.0,
             founding_together: 1.0,
+            graced_hunting: 1.0,
+            share_memory: 120.0,
+            wild_rebound: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 188;
+    pub const FIELD_COUNT: usize = 191;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -2016,6 +2041,9 @@ impl Balance {
             ("refuge_ramp", &mut self.refuge_ramp),
             ("reinforce_clear", &mut self.reinforce_clear),
             ("founding_together", &mut self.founding_together),
+            ("graced_hunting", &mut self.graced_hunting),
+            ("share_memory", &mut self.share_memory),
+            ("wild_rebound", &mut self.wild_rebound),
         ]
     }
 

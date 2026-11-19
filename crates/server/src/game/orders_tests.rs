@@ -306,6 +306,8 @@ fn the_newcomer_grace_is_in_the_state_and_lasts_real_minutes() {
     // lasts the configured 30 minutes instead, but at most 60 game days.
     let (mut g, a) = game_with(GameConfig { tick_ms: 100.0, ..Default::default() });
     g.world.config.balance.attack_grace = 20.0;
+    // The two-sided grace (`graced_hunting` off; its own test is in the sim).
+    g.world.config.balance.graced_hunting = 0.0;
     assert_eq!(g.grace_view(1), None, "founded at tick 0: no grace");
     for _ in 0..3 {
         tick(&mut g);

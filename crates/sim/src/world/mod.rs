@@ -2370,8 +2370,46 @@ mod tests {
         assert!(w.alive_count() > start / 4, "population collapsed: {} -> {}", start, w.alive_count());
         assert!(!w.legacy.is_empty());
         let s = w.latest_legacy().unwrap();
+        // At least the alleles counted (more when the world has shrunk:
+        // `Balance::share_memory`).
         let total: f64 = s.alleles.values().sum();
-        assert!((total - s.total_alleles).abs() < 1e-6);
+        assert!(s.total_alleles >= total - 1e-6 && s.world_alleles > 0.0);
+    }
+
+    /// Playtest 11: a shrinking leader's share rose as a drought took the
+    /// wild. With `Balance::share_memory` a day's totals count against the
+    /// world's running mean size: when the world shrinks, every share
+    /// falls with it, and the mean follows the world down over time.
+    #[test]
+    fn shares_count_against_the_world_as_big_as_it_has_been() {
+        let mut w = small_world(3);
+        let snap = |total: f64| crate::legacy::LegacySnapshot {
+            total_alleles: total,
+            weighted_total: total / 2.0,
+            alleles: [(1, total / 4.0), (crate::WILD, 3.0 * total / 4.0)].into(),
+            ..Default::default()
+        };
+        w.legacy.clear();
+        let mut first = snap(1000.0);
+        w.smooth_legacy(&mut first);
+        assert_eq!((first.world_alleles, first.total_alleles), (1000.0, 1000.0));
+        w.legacy.push(first);
+        // The world halves overnight: the total stays near the mean.
+        let mut half = snap(500.0);
+        w.smooth_legacy(&mut half);
+        let m = 1000.0 + (500.0 - 1000.0) / 120.0;
+        assert!((half.world_alleles - m).abs() < 1e-9 && (half.total_alleles - m).abs() < 1e-9);
+        assert!((half.weighted_total - 250.0 * m / 500.0).abs() < 1e-9);
+        assert!(half.share(1) < 0.13, "{}", half.share(1));
+        // A growing world counts as it is.
+        let mut grown = snap(2000.0);
+        w.smooth_legacy(&mut grown);
+        assert_eq!(grown.total_alleles, 2000.0);
+        // Off: today's world.
+        w.config.balance.share_memory = 0.0;
+        let mut off = snap(500.0);
+        w.smooth_legacy(&mut off);
+        assert_eq!((off.total_alleles, off.world_alleles), (500.0, 0.0));
     }
 
     /// The daily legacy snapshots are a window, not a history: a long-running

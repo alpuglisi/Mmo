@@ -711,9 +711,14 @@ impl RefoundTerms {
     /// rounded up (at least 2), whatever the budget. (Playtest 6: "founders
     /// cost double" took nothing from a design of 20 founders or fewer,
     /// and players re-founded four times in 45 minutes.)
+    ///
+    /// At most [`REFOUND_MAX_FOUNDERS`] (half the base price's founders):
+    /// halving the request alone was undone for free by asking for twice
+    /// as many, which cost no more points up to 40 (playtest 11: ask 40,
+    /// get 20 for the points of 20).
     pub fn founders(&self, design: &FounderDesign) -> u32 {
         let n = design.founders;
-        n.div_ceil(2).max(2).min(n)
+        n.div_ceil(2).clamp(2, REFOUND_MAX_FOUNDERS).min(n)
     }
 
     /// Points `design` with `founders` founders costs (its plain cost).
@@ -721,6 +726,10 @@ impl RefoundTerms {
         design.clone().founders(founders).point_cost()
     }
 }
+
+/// The most founders a re-founding within the window lands
+/// ([`RefoundTerms::founders`]): half the founders the base price includes.
+pub const REFOUND_MAX_FOUNDERS: u32 = evo_sim::design::BASE_FOUNDERS / 2;
 
 /// Renown a re-founding within the window costs: [`REFOUND_FEE`] for the
 /// first, doubling with each one already made in the window.
@@ -2148,7 +2157,7 @@ impl Game {
                 minutes_left: minutes_left as u64,
                 reason: format!("your last lineage {how} on day {}: {}", ended + 1, self.refound_rule()),
                 short: format!(
-                    "your last lineage {how} on day {}, and a re-founding within {window} days of that gets half the founders",
+                    "your last lineage {how} on day {}, and a re-founding within {window} days of that gets half the founders (at most {REFOUND_MAX_FOUNDERS})",
                     ended + 1
                 ),
                 // The fee is for a re-roll: in full after a retirement, half
@@ -2171,7 +2180,7 @@ impl Game {
     pub fn refound_rule(&self) -> String {
         let window = self.refound_window_days();
         format!(
-            "re-founding within {window} days ({}) founds half your founders (rounded up) and costs {REFOUND_FEE} renown after a retirement (half after a lineage that died out young), doubling with each re-founding in that time; renown you don't have is owed from your next",
+            "re-founding within {window} days ({}) founds half your founders (rounded up, at most {REFOUND_MAX_FOUNDERS}) and costs {REFOUND_FEE} renown after a retirement (half after a lineage that died out young), doubling with each re-founding in that time; renown you don't have is owed from your next",
             real_minutes(window as f64 * self.world.config.ticks_per_day as f64 * self.cfg.tick_ms / 60_000.0)
         )
     }
@@ -6421,9 +6430,22 @@ impl Game {
                         .into()
                 } else if self.lineage_hunts(player) {
                     // Hunters (playtest 9: a pack was sent to the Food layer).
-                    "Their prey has run short: move the pack to where prey is (the herds on the map; a group's orders \
-                     say how much it can take there), split it, or order hunts."
-                        .into()
+                    let graced = self.lineage_of(player).and_then(|l| self.world.lineage_grace_left(l)).is_some();
+                    // Playtest 11: a graced pack starved beside rival animals
+                    // and no alert said why.
+                    let grace = if !graced {
+                        ""
+                    } else if self.world.config.balance.graced_hunting > 0.0 {
+                        " Your newcomer grace is still on: your hunters may take rivals' unprotected animals, and the \
+                         first such attack ends your grace (as End my grace now in the Lineage tab does)."
+                    } else {
+                        " Your newcomer grace is still on, and it keeps your hunters off rivals' animals too: End my \
+                         grace now (Lineage tab) lets them hunt."
+                    };
+                    format!(
+                        "Their prey has run short: move the pack to where prey is (the herds on the map; a group's \
+                         orders say how much it can take there), split it, or order hunts.{grace}"
+                    )
                 } else {
                     "Move groups to better ground (the Food layer shows it), split big herds, keep them near water."
                         .into()
@@ -11725,6 +11747,25 @@ mod tests {
         assert!(t.reason.contains("died out"), "{}", t.reason);
         let ok = g.found(2, &design("B2").founders(10)).unwrap();
         assert_eq!((ok.founders.len(), ok.refound_fee), (5, 0), "no fee after dying out");
+    }
+
+    /// Playtest 11: asking for 40 founders got 20 for the points of 20, so
+    /// the halving only bit above 40. A re-founding gets half the request,
+    /// at most `REFOUND_MAX_FOUNDERS` (half the base price's 20).
+    #[test]
+    fn a_refounding_lands_at_most_half_the_base_founders() {
+        let t = RefoundTerms {
+            until_day: 0,
+            minutes_left: 0,
+            reason: String::new(),
+            short: String::new(),
+            fee: 0,
+            count: 0,
+        };
+        assert_eq!(REFOUND_MAX_FOUNDERS, 10);
+        for (asked, got) in [(40, 10), (80, 10), (20, 10), (12, 6), (6, 3), (2, 2)] {
+            assert_eq!(t.founders(&design("R").founders(asked)), got, "asked {asked}");
+        }
     }
 
     /// The window is at least 30 real minutes: a 4-day season at 1 s a tick

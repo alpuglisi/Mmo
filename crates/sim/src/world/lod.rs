@@ -1618,6 +1618,8 @@ impl World {
                 }
                 // The soft lineage cap (`Balance::lineage_crowding`).
                 lambda *= self.lineage_crowding(lineage)[0];
+                // A wild species under its refuge recovers (`Balance::wild_rebound`).
+                lambda *= self.wild_rebound(lineage);
                 // Litters follow condition, one litter at a time per breeding
                 // territory (`lod_meat`).
                 let share = lod_meat::litter_share(&bal, c.hunger, c.fat, rep.litter);
@@ -1848,8 +1850,10 @@ mod tests {
         // Legacy counts the cohorts.
         let s = w.latest_legacy().unwrap();
         assert!(s.breeding_adults > 0 && s.total_alleles > 0.0);
+        // At least the alleles counted (more when the world has shrunk:
+        // `Balance::share_memory`).
         let total: f64 = s.alleles.values().sum();
-        assert!((total - s.total_alleles).abs() < 1e-6);
+        assert!(s.total_alleles >= total - 1e-6 && s.world_alleles > 0.0);
     }
 
     #[test]
