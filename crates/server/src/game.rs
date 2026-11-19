@@ -3130,19 +3130,20 @@ impl Game {
             .ok_or_else(|| self.unknown_offer(request, player, "no offer {request} involving you"))
     }
 
-    /// Refuse a migrate or rally to `group` within
-    /// [`GameConfig::order_cooldown_ms`] of the last one that was taken.
-    fn move_order_cooldown(&self, player: PlayerId, group: u8) -> Result<(), ErrorInfo> {
+    /// Refuse a migrate or rally within [`GameConfig::order_cooldown_ms`] of
+    /// the player's last one that was taken, to any of their groups
+    /// (playtest 12: per group, N groups gave N rated probes a second).
+    fn move_order_cooldown(&self, player: PlayerId, _group: u8) -> Result<(), ErrorInfo> {
         if self.cfg.order_cooldown_ms <= 0.0 {
             return Ok(());
         }
         let ticks = (self.cfg.order_cooldown_ms / self.cfg.tick_ms.max(1.0)).ceil() as u64;
         let now = self.world.tick();
-        if self.last_move_order.get(&(player, group)).is_some_and(|&t| now < t + ticks) {
+        if self.last_move_order.range((player, 0)..=(player, u8::MAX)).any(|(_, &t)| now < t + ticks) {
             return Err(ErrorInfo::new(
                 "order_cooldown",
                 format!(
-                    "one migrate or rally order a group every {:.0} second{}: wait a moment",
+                    "one migrate or rally order every {:.0} second{}: wait a moment",
                     self.cfg.order_cooldown_ms / 1000.0,
                     if self.cfg.order_cooldown_ms == 1000.0 { "" } else { "s" }
                 ),
@@ -5304,9 +5305,9 @@ impl Game {
         for t in ts {
             let p = self.world.meeting_point_toward(a, b, t)?;
             if clear(p) {
-                let side = if t > toward { "toward the partner" } else { "toward your animal" };
-                let note =
-                    format!("moved {:.0} tiles {side} to keep clear of a predator near the usual point", p.dist(usual));
+                // Without how far or which way: that placed the predator,
+                // out of sight too (playtest 12).
+                let note = "moved to keep clear of a predator near the usual point".to_string();
                 return Some((p, Some(note)));
             }
         }
@@ -5326,15 +5327,20 @@ impl Game {
     /// (`World::set_rendezvous`), and a player may possess theirs to hurry.
     fn meet_view(&self, o: &Offer) -> Option<MeetView> {
         let (a, b) = (self.world.organism(o.mine)?, self.world.organism(o.partner)?);
-        let coarse = |v: f32| (v / 8.0).floor() * 8.0 + 4.0;
+        // A listing's purchase: its listing's 32-tile regions, so buying
+        // doesn't stream the seller's animal to the buyer (playtest 12);
+        // other agreements in 8-tile cells.
+        let (cell, step) = if o.listing.is_some() { (LISTING_REGION, LISTING_REGION / 2.0) } else { (8.0, 4.0) };
+        let coarse = |v: f32| coarse_in(v, cell);
         let asleep = |x: &Organism| matches!(x.dormancy, Dormancy::Winter | Dormancy::Summer);
         Some(MeetView {
             mine_x: coarse(a.pos.x),
             mine_y: coarse(a.pos.y),
             partner_x: coarse(b.pos.x),
             partner_y: coarse(b.pos.y),
-            // In 4-tile steps: exact distances located the other animal.
-            distance: (a.pos.dist(b.pos) / 4.0).round() * 4.0,
+            // In 4-tile steps (16 for a listing's): exact distances located
+            // the other animal.
+            distance: (a.pos.dist(b.pos) / step).round() * step,
             meet_x: o.meet.map(|m| coarse(m.0)),
             meet_y: o.meet.map(|m| coarse(m.1)),
             asleep: asleep(a) || asleep(b),
@@ -7526,8 +7532,18 @@ impl Game {
             let t = (((p.x - from.x) * d.x + (p.y - from.y) * d.y) / l2).clamp(0.0, 1.0);
             p.dist(from + d * t)
         };
-        let rival_lands: Vec<(PlayerId, evo_sim::world::groups::Territory)> =
-            self.world.all_territories().filter(|&(p, _, _)| p != player).map(|(p, _, t)| (p, *t)).collect();
+        // Only territories the player sees (the state's outline rule: within
+        // [`states::OUTLINES_NEAR_GROUP`] of a group of theirs); others are
+        // not mentioned (playtest 12: any point on the map named the
+        // territories there).
+        let middles: Vec<Vec2> =
+            self.world.groups(player).iter().filter_map(|g| self.world.group_middle(player, g.id)).collect();
+        let rival_lands: Vec<(PlayerId, evo_sim::world::groups::Territory)> = (self.world.all_territories())
+            .filter(|&(p, _, t)| {
+                p != player && middles.iter().any(|m| m.dist(t.center) <= states::OUTLINES_NEAR_GROUP + t.radius)
+            })
+            .map(|(p, _, t)| (p, *t))
+            .collect();
         if let Some((p, _)) = rival_lands.iter().find(|(_, t)| t.contains(to)) {
             out.push(format!(
                 "That ground lies inside {}'s territory: its holders harass intruders, and your animals there are \
@@ -8854,8 +8870,12 @@ impl Game {
             protected: self
                 .lineage_of
                 .iter()
+                // Living lineages only, to whole days (playtest 12: exact
+                // days for everyone, a retired lineage among them, in a
+                // public summary).
+                .filter(|&(&player, _)| !self.is_extinct(player))
                 .filter_map(|(&player, &lineage)| {
-                    let days_left = self.world.lineage_grace_left(lineage)?;
+                    let days_left = self.world.lineage_grace_left(lineage)?.ceil();
                     Some(crate::protocol::ProtectedLineage { player, lineage, days_left })
                 })
                 .collect(),
@@ -10234,6 +10254,8 @@ mod tests {
         assert_eq!(code(&mut g, ClientMsg::Rally { group: 9, x: 1.0, y: 1.0 }).as_deref(), Some("no_such_group"));
         assert_eq!(code(&mut g, ClientMsg::Migrate { x: 30.0, y: 30.0, group: Some(0) }), None);
         assert_eq!(code(&mut g, ClientMsg::Rally { group: 0, x: 30.0, y: 31.0 }).as_deref(), Some("order_cooldown"));
+        // Per player, not per group (playtest 12).
+        assert_eq!(code(&mut g, ClientMsg::Rally { group: 1, x: 30.0, y: 31.0 }).as_deref(), Some("order_cooldown"));
         let ticks = (1000.0 / g.cfg.tick_ms).ceil() as u64;
         for _ in 0..ticks {
             g.world.step();
