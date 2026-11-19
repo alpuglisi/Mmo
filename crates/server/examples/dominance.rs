@@ -62,13 +62,16 @@ const LOOPHOLE: PlayerId = 7;
 const HERD: PlayerId = 8;
 const SLEEPERS: PlayerId = 9;
 const LOOPHERD: PlayerId = 10;
-const PLAYERS: u32 = 10;
-const NAMES: [&str; 10] =
-    ["Steady", "Big", "Broker", "Eggs", "Flier", "Cold", "Loophole", "Herd", "Sleepers", "LoopHerd"];
+const PACK: PlayerId = 11;
+const PLAYERS: u32 = 11;
+const NAMES: [&str; 11] =
+    ["Steady", "Big", "Broker", "Eggs", "Flier", "Cold", "Loophole", "Herd", "Sleepers", "LoopHerd", "Pack"];
 const SEASON: u64 = 60;
 /// PocketNomad7's and Rulebender7's founding days (playtest 7).
 const SLEEPERS_DAY: u64 = 234;
 const LOOPHERD_DAY: u64 = 34;
+/// ApexHunter8's founding day (playtest 8).
+const PACK_DAY: u64 = 37;
 
 struct Args {
     seeds: u64,
@@ -85,6 +88,8 @@ struct Args {
     sets: Vec<(String, f32)>,
     /// `--new-only`: run only the new-rules arm.
     new_only: bool,
+    /// `--only A,B,..`: found only these players (by name).
+    only: Option<Vec<String>>,
 }
 
 fn args() -> Args {
@@ -101,6 +106,7 @@ fn args() -> Args {
         playtest2_baseline: false,
         sets: Vec::new(),
         new_only: false,
+        only: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -122,6 +128,7 @@ fn args() -> Args {
                 a.sets.push((k.to_string(), x.parse().expect("--set value")));
             }
             "--new-only" => a.new_only = true,
+            "--only" => a.only = Some(v().split(',').map(|x| x.trim().to_string()).collect()),
             _ => panic!("unknown argument {k}"),
         }
     }
@@ -290,6 +297,32 @@ fn loopherd() -> FounderDesign {
     d
 }
 
+/// ApexHunter8's "Ninefold Fang Pack" (`docs/playtest-8-logs/ApexHunter8.md`,
+/// the best predator of the playtests: 27 → 149): a warm, live-bearing pure
+/// carnivore pack of 40, founded on day 37.
+fn pack() -> FounderDesign {
+    use Gene::*;
+    FounderDesign::new("Fang Pack", Thermo::Warm, BirthType::Live, 3)
+        .with(Carnivory, 1.0)
+        .with(PackInstinct, 1.0)
+        .with(GroupTolerance, 0.9)
+        .with(BodySize, 0.45)
+        .with(Muscle, 0.9)
+        .with(Fangs, 0.9)
+        .with(Claws, 0.6)
+        .with(Nose, 0.8)
+        .with(LegLength, 0.45)
+        .with(FatStores, 0.6)
+        .with(Fur, 0.5)
+        .with(Hibernation, 0.55)
+        .with(Caching, 0.4)
+        .with(Eyes, 0.3)
+        .with(Aggression, 0.85)
+        .with(Obedience, 0.9)
+        .with(Boldness, 0.7)
+        .founders(40)
+}
+
 /// Rulebender5's "Loophole Fliers" (`docs/playtest-5-logs/Rulebender5.md`):
 /// a small cold-blooded, egg-incubating, brumating, toxic, bright flier,
 /// re-founded at half size (22 of 44 founders) on day 334.
@@ -331,6 +364,8 @@ struct Outcome {
     founded_day: u64,
     /// Players whose lineage reached 95% of the hard cap.
     capped: BTreeMap<PlayerId, bool>,
+    /// Each player's highest mean legacy share over an era (all its days).
+    era_mean: BTreeMap<PlayerId, f64>,
 }
 
 fn data(out: &[(evo_server::game::Target, ServerMsg)]) -> Option<serde_json::Value> {
@@ -372,6 +407,9 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
     }
     let mut o = Outcome::default();
     let found = |g: &mut Game, p: PlayerId, d: FounderDesign, o: &mut Outcome| {
+        if a.only.as_ref().is_some_and(|only| !only.iter().any(|n| n == NAMES[p as usize - 1])) {
+            return;
+        }
         let d = if new_rules { fitted(d) } else { d };
         o.founders.insert(p, d.founders);
         if new_rules {
@@ -406,6 +444,9 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         }
         if day == LOOPHERD_DAY {
             found(&mut g, LOOPHERD, loopherd(), &mut o);
+        }
+        if day == PACK_DAY {
+            found(&mut g, PACK, pack(), &mut o);
         }
         if founded.is_none() && day >= a.late_year * year && g.world.season() == Season::Winter {
             found(&mut g, EGGS, eggrunner(), &mut o);
@@ -447,6 +488,22 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
     if let Some(r) = records.last() {
         for e in r.legacy.iter().filter(|e| e.player != 0) {
             o.final_share.insert(e.player, e.share);
+        }
+    }
+    // Mean share per era (era-long windows from day 0), each player's best.
+    let era_days = g.world.config.era_days().max(1);
+    let mut eras: BTreeMap<u64, (u64, BTreeMap<PlayerId, f64>)> = BTreeMap::new();
+    for r in &records {
+        let e = eras.entry(r.day / era_days).or_default();
+        e.0 += 1;
+        for x in r.legacy.iter().filter(|x| x.player != 0) {
+            *e.1.entry(x.player).or_default() += x.share;
+        }
+    }
+    for (days, sums) in eras.values() {
+        for (&p, &sum) in sums {
+            let m = o.era_mean.entry(p).or_default();
+            *m = m.max(sum / (*days).max(1) as f64);
         }
     }
     let after: Vec<_> = records.iter().filter(|r| r.day >= start).collect();
@@ -491,8 +548,19 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
 
 fn main() {
     let a = args();
-    for d in [steady(), big(), broker(), eggrunner(), flier(), cold_flier(), loophole(), herd(), sleepers(), loopherd()]
-    {
+    for d in [
+        steady(),
+        big(),
+        broker(),
+        eggrunner(),
+        flier(),
+        cold_flier(),
+        loophole(),
+        herd(),
+        sleepers(),
+        loopherd(),
+        pack(),
+    ] {
         let f = fitted(d.clone());
         println!(
             "{}: {:.1} points at today's prices, {} of {} founders fit",
@@ -544,17 +612,18 @@ fn main() {
             os.iter().map(|o| o.founded_day as f64).sum::<f64>() / n
         );
         println!(
-            "  player   founders  final share  peak share  mean share*  peak alive  final alive  extinct  capped  titles*"
+            "  player   founders  final share  peak share  mean share*  era mean†  peak alive  final alive  extinct  capped  titles*"
         );
         for p in 1..=PLAYERS {
             let avg = |f: &dyn Fn(&Outcome) -> f64| os.iter().map(|o| f(o)).sum::<f64>() / n;
             println!(
-                "  {:<8} {:>8.0}  {:>10.1}%  {:>9.1}%  {:>10.1}%  {:>10.0}  {:>11.0}  {:>7}  {:>6}  {}/{}",
+                "  {:<8} {:>8.0}  {:>10.1}%  {:>9.1}%  {:>10.1}%  {:>8.1}%  {:>10.0}  {:>11.0}  {:>7}  {:>6}  {}/{}",
                 NAMES[p as usize - 1],
                 avg(&|o| o.founders.get(&p).copied().unwrap_or(0) as f64),
                 100.0 * avg(&|o| o.final_share.get(&p).copied().unwrap_or(0.0)),
                 100.0 * avg(&|o| o.peak_share.get(&p).copied().unwrap_or(0.0)),
                 100.0 * avg(&|o| o.mean_share.get(&p).copied().unwrap_or(0.0)),
+                100.0 * os.iter().map(|o| o.era_mean.get(&p).copied().unwrap_or(0.0)).fold(0.0, f64::max),
                 avg(&|o| o.peak_alive.get(&p).copied().unwrap_or(0) as f64),
                 avg(&|o| o.final_alive.get(&p).copied().unwrap_or(0) as f64),
                 os.iter().filter(|o| o.final_alive.get(&p).copied().unwrap_or(0) == 0).count(),
@@ -583,6 +652,7 @@ fn main() {
         println!(
             "  warm egg-laying hibernators as a class (Eggs + Herd + Sleepers + LoopHerd): {eggers}/{seasons} titles"
         );
+        println!("  († the highest mean share over a whole era on any seed)");
         println!(
             "  (* from Eggs' founding on: mean share over those days; legacy titles of the whole seasons after it)"
         );
