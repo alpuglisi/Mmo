@@ -9069,6 +9069,70 @@ around it.
 
 
 
+### Playtest 10: balance
+
+Playtest 10 (`docs/playtest-10.md`, findings 7 and 8) had no runaway, with
+era-2 means from 2.1% to 7.1% and the wild at about 70%. The pack peaked at
+112 (playtest 9: 261). Four of six players ran near-identical warm egg herds,
+and the era-1 winner went from 1,372 to extinct in about 130 days.
+
+What the replay (`dominance --only Herd,Sleepers,Cold,Pack,LoopHerd,Broker
+--trace`) showed:
+- With the wild refuge, a replayed pack (40 founders, day 37) still peaks
+  near 250: 244 against 258 with the refuge off. The refuge costs a pack
+  little once the wild has grown.
+- In a fresh world, though, every wild species starts far below its cap.
+  The playtest's antelope were 150 on day 14, so a pack founded then found
+  most prey under the refuge.
+- The pack's other larder, the warm egg herds, is toxic and bright. Their
+  clutches carried no toxin, but no hunter went looking for them: eggs were
+  raided only when a hungry carnivore happened to step on the nest.
+- The leader's crash: crowding by share of the world made a lineage past
+  its share hungrier, not only slower to breed. The world's count falls
+  every winter with the wild, so the share tightened just when food did.
+
+Three rules, version 89 (each off at 0):
+
+- **Nest raids** (`Balance::nest_raids`, 1). A hungry hunter (carnivory
+  above 0.7) with no prey in sight goes for the nearest rival clutch it
+  smells, within `nest_raids × carcass_scent × (0.5 + nose)` tiles, and
+  raids it on arrival (`World::scent_clutch`). This skips its own
+  lineage's clutches and those of species it has given up on. An egg
+  herd, toxic or not, now feeds a pack through its nests: a counter to the
+  warm egg class.
+- **Share slows breeding only** (`Balance::share_litters`, 1). Past its
+  share of the world a lineage's litters shrink as before, but hunger comes
+  from the soft cap alone. The brake limits growth and no longer starves a
+  leader through its winter.
+- **Refuge ramp** (`Balance::refuge_ramp`, 1). The wild refuge comes in
+  over the world's first year, from none on day 0 to full on day 360.
+
+**Replay** (seeds 1–4, 840 days, two eras; "era mean" is the highest mean
+share over a whole era on any seed):
+
+| Player | Playtest 10 rules (v89 tunables off): era mean, peak alive, final alive, extinct | v89 rules |
+| --- | --- | --- |
+| LoopHerd (warm egg herd) | 23.6%, 904, 376, 0 | 24.0%, 1,028, 446, 0 |
+| Herd (warm egg herd) | 20.9%, 1,652, 446, 0 | 17.5%, 812, 73, 0 |
+| Cold (cold flier) | 5.3%, 288, 167, 0 | 16.8%, 605, 442, 0 |
+| Broker (live grazer) | 13.3%, 944, 20, 2 | 11.8%, 846, 11, 1 |
+| Pack | 5.9%, 217, 164, 0 | 12.3%, 236, 175, 0 |
+| Sleepers (re-found) | 2.0%, 141, 12, 2 | 3.2%, 172, 4, 1 |
+
+(Peak and final alive are means over the seeds.)
+
+The era means spread more evenly: the cold flier and the pack roughly
+double or triple, the herd falls, and no leader dies out. The pack peaks at
+236 on average and reaches 264 on seed 1 (target 200–300). The 12-seed sweep scores 11.90 (11.88 before). The wild in the
+trace (seed 1) keeps 1,900–3,300, with antelope at 150–205. Late in that
+seed the 260-strong pack raids the egg herds' nests hard. Herd's
+second-winter crashes (838 → 247, 857 → 99) were winter's, as before, but
+it then failed to breed back (12 alive at day 840). A pack this size is now
+a real threat to an egg herd. Packs still scatter (`pack_cohesion` stays
+off), and the replay's pack doesn't reproduce the playtest's 112: a played
+pack also starved through its first autumn. The ramp is aimed at that
+fresh-world start.
+
 ### Playtest 9: balance
 
 Playtest 9 (`docs/playtest-9.md`, findings 1, 6 and part of 12 here).
@@ -10116,6 +10180,86 @@ before then." Without hunters near, only the first sentence.
   includes a player pack lineage: kept together it hunts one patch,
   instead of spreading over the map and thinning every prey species at
   once. That run had cohesion on; the shipped default has it off.
+
+### Playtest 10: landings and alerts
+
+Round 11 for `docs/playtest-10.md` findings M9, M12 and M14. Snapshot version
+90 (main is at 89). It adds `Balance::reinforce_clear` and
+`Balance::founding_together`, off at 0, which is what snapshots of version 89
+and before read (`serde_util::before_v90`).
+
+**M9: reinforcements landed inside a rival territory** where the pack lived,
+with no hint that the rule was relaxed, and 2 tiles from a territory's edge.
+- **Never inside** (`Balance::reinforce_clear` 1). Round 10's search rejected
+  spots in a rival territory, but when nothing near the group was clear it
+  fell back to the group's own spot, inside. Now, when nothing within 12
+  tiles is clear, it searches outward ring by ring, 2 tiles apart, to
+  `World::REINFORCE_REACH` (60) tiles. The reinforcements land on the
+  nearest clear ring, at its best-fed spot.
+- **The margin counts their scatter.** The reinforcements scatter up to 3
+  tiles from where they land, so a spot must clear the territory by its
+  margin (4) plus 3.
+- **Said in the reply.** `World::reinforce_lineage_report` returns where the
+  group stood and how far they landed. The `reinforce` reply carries a
+  `note`: "your group stands in or beside another player's territory, so
+  they landed on the nearest clear ground, 26 tiles from it". The toast
+  shows it.
+- Tested with an 18-tile rival territory right over the herd
+  (`reinforcements_leave_a_rival_territory_the_group_lives_in`): every
+  newcomer lands beyond the territory and its margin, and the move is
+  reported. Under the old rule they land inside it.
+
+**M14: landings and long moves.**
+- **A split founding stays together** (`Balance::founding_together` 1). A
+  founding big enough to spread over several homes (`founding_food`, 48 a
+  home) keeps its later homes within `FOUNDING_TOGETHER` (20) tiles of the
+  first, in the strict picks. In `a_split_founding_stays_together` a
+  140-founder founding on a 128-tile map keeps every founder within 36
+  tiles of the first home. Under the old rule the farthest is further out
+  (playtest 10: two clusters 110 tiles apart). The landing text's single
+  point is then the founding's real place.
+- **Far claims and rallies warn of the way** (`Game::way_warnings`). For a
+  claim or rally 12 or more tiles from the group, the group walks straight
+  there. It is told of other players' hunters within 10 tiles of that way
+  ("The way (28 tiles) passes 9 of bob's hunters within 10 tiles: the group
+  walks it in the open.") and of a rival territory it crosses. A claim or
+  rally inside another player's territory says so at any distance ("That
+  ground lies inside bo's territory: its holders harass intruders …").
+  Tested by `a_rally_into_a_rival_territory_warns`.
+
+**M12: alert floods.**
+- **One territory alert every 3 days per group** (`Game::territory_alert_due`,
+  `TERRITORY_ALERT_DAYS`). "Grazed bare", "outgrown", "no longer feeds it"
+  and "has recovered" share one cool-down per group, so a territory on the
+  edge no longer swings through all four within days. "Still grazed bare"
+  while animals starve keeps its own every-3-days repeat. The sim's
+  loosen/restore shares (15% and 5%) already had hysteresis; the swing was
+  between the alert kinds.
+- **Folded while most of the lineage sleeps.** With half or more of a
+  player's animals deep asleep, the day's loss warnings (starving, hunted,
+  decline, cold, heat, eggs) fold into one line, said at most every 3 days:
+  "While most of your lineage sleeps (70% asleep): Your lineage is being
+  hunted; … Sleepers can't be moved or fed; the daily summary counts the
+  losses …". Tested by
+  `warnings_fold_while_the_lineage_sleeps_and_territory_alerts_cool_down`.
+- **Eggs.**
+  - A lineage that abandons its eggs by design gets no "Your eggs are
+    failing".
+  - The advice to lay fewer eggs, and "a sitting parent keeps 4 eggs
+    warm", come only for clutches bigger than 4.
+
+**Checks** (main f16a54f at version 85, against this round; main 8791aca, balance's version 89, merged after):
+
+| Check | Result |
+| --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.87 (± 0.16); every lineage 12 of 12 (round 10: 11.87) |
+| `predlong 6` on seeds 31–38 and 41–48 | fox 16/16 (16 viable), pack hunters 16/16 (16); no seed lost a prey species (round 10, its rules on: 1) |
+| workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (470), build | pass |
+| e2e (16 scripts, `E2E_JOBS=2`) | 15 of 16: panels timed out on its search row under load (as in round 9) and passed 3 of 3 alone |
+
+- **Neither study is moved by these rules.** A world's first foundings and
+  the wild don't use them: they apply to a player's founding in a running
+  world, to reinforcements and to the server's alerts.
 
 ## Genetics validation
 

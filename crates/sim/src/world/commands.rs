@@ -705,6 +705,13 @@ impl World {
     /// at `start` (a founding not made yet: the designer's preview).
     pub fn grace_end_for(&self, founders: u32, start: u64) -> u64 {
         let end = start + self.grace_length();
+        // A continued grace ends when the founding that started it would
+        // have: the winter rule is judged by that founding's founders, so a
+        // small re-found never stretches a big lineage's run-out grace
+        // (playtest 10: back at 12 days on day 137).
+        let founders = (0..self.lineages.len())
+            .find(|&k| self.lineage_founded.get(k) == Some(&start))
+            .map_or(founders, |k| self.lineages[k].founders);
         let small = founders <= GRACE_WINTER_FOUNDERS;
         if !small {
             return end;
@@ -771,14 +778,18 @@ impl World {
     /// run of foundings each within twice the grace of the next.
     pub(crate) fn grace_start(&self, l: u32) -> Option<u64> {
         let owner = self.lineages.get(l as usize)?.owner;
-        Some(self.grace_chain(owner, *self.lineage_founded.get(l as usize)?))
+        Some(self.grace_chain(owner, *self.lineage_founded.get(l as usize)?, false))
     }
 
     /// The grace start a founding by `owner` at tick `at` would get: `at`,
     /// or an earlier founding's whose grace it would continue
     /// ([`World::grace_start`]).
+    /// The owner's living lineage counts as ending at `at`, as retiring it
+    /// to found again would (playtest 10: the preview promised a living
+    /// lineage older than the window a fresh grace that retiring wouldn't
+    /// give).
     pub fn grace_start_for(&self, owner: PlayerId, at: u64) -> u64 {
-        self.grace_chain(owner, at)
+        self.grace_chain(owner, at, true)
     }
 
     /// Walk back from a founding at `at`: while an earlier lineage of
@@ -789,7 +800,7 @@ impl World {
     /// under re-found terms with a brand-new grace). A lineage with no
     /// recorded end yet counts as ending now if it has no living members
     /// (it ended today), at its founding while it lives.
-    fn grace_chain(&self, owner: PlayerId, at: u64) -> u64 {
+    fn grace_chain(&self, owner: PlayerId, at: u64, living_end_now: bool) -> u64 {
         let cooldown = self.grace_cooldown();
         let tpd = self.config.ticks_per_day.max(1) as u64;
         let mut start = at;
@@ -803,7 +814,7 @@ impl World {
                 let alive = self.lineage_alive.get(k).copied().unwrap_or(0) + self.lod.lineage_count(k as u32).alive;
                 let ended = match self.chronicle.lineages.get(k).and_then(|x| x.extinct_day) {
                     Some(d) => d * tpd,
-                    None if alive > 0 => founded,
+                    None if alive > 0 && !living_end_now => founded,
                     None => start,
                 };
                 (founded < start && start.saturating_sub(ended) <= cooldown).then_some(founded)

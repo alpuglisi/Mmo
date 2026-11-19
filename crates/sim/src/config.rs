@@ -1457,6 +1457,44 @@ pub struct Balance {
     /// size (peak 59 against 117 over 360 days), so it ships off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v85"))]
     pub pack_cohesion: f32,
+    /// A hungry hunter (carnivory above 0.7) with no prey in sight goes
+    /// for the nearest rival clutch it smells, within `nest_raids ×
+    /// carcass_scent × (0.5 + nose)` tiles, and raids it on arrival
+    /// (`World::scent_clutch`; version 89, off at 0,
+    /// `serde_util::before_v89`). Eggs carry no toxin: playtest 10's pack
+    /// starved beside a toxic egg herd, and four of six players ran the
+    /// same warm egg herd.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v89"))]
+    pub nest_raids: f32,
+    /// Crowding by share of the world (`world_crowding`) slows breeding
+    /// only; hunger comes from the soft cap alone (version 89; at 0, what
+    /// snapshots before version 89 read, the share made animals hungrier
+    /// too). The world's count falls every winter with the wild: playtest
+    /// 10's leader went 1,372 → extinct in 130 days.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v89"))]
+    pub share_litters: f32,
+    /// The wild refuge (`wild_refuge`) comes in over this many years from
+    /// the world's first day (version 89; 0, what snapshots before version
+    /// 89 read: from day 0). A fresh world's wild starts far below its
+    /// caps, so the refuge left playtest 10's early pack little prey.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v89"))]
+    pub refuge_ramp: f32,
+    // Playtest 10 placement (version 90; *Playtest 10: landings and
+    // alerts* in the README). Off at 0, what snapshots before version 90
+    // read (`serde_util::before_v90`).
+    /// Reinforcements never land inside another player's territory (nor
+    /// within its margin, counting how far they scatter): when the group
+    /// stands in one, they land on the nearest clear ground, searched
+    /// outward to `World::REINFORCE_REACH` tiles (playtest 10: they landed
+    /// inside a rival territory where the pack lived, and 2 tiles from a
+    /// territory's edge). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v90"))]
+    pub reinforce_clear: f32,
+    /// A player's founding spread over several homes (`founding_food`) keeps
+    /// them within `world::FOUNDING_TOGETHER` tiles of the first (playtest
+    /// 10: a split founding landed in two clusters 110 tiles apart). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v90"))]
+    pub founding_together: f32,
 }
 
 impl Balance {
@@ -1770,12 +1808,17 @@ impl Default for Balance {
             wild_refuge: 0.3,
             rival_clear: 1.0,
             pack_cohesion: 0.0,
+            nest_raids: 1.0,
+            share_litters: 1.0,
+            refuge_ramp: 1.0,
+            reinforce_clear: 1.0,
+            founding_together: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 183;
+    pub const FIELD_COUNT: usize = 188;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1968,6 +2011,11 @@ impl Balance {
             ("wild_refuge", &mut self.wild_refuge),
             ("rival_clear", &mut self.rival_clear),
             ("pack_cohesion", &mut self.pack_cohesion),
+            ("nest_raids", &mut self.nest_raids),
+            ("share_litters", &mut self.share_litters),
+            ("refuge_ramp", &mut self.refuge_ramp),
+            ("reinforce_clear", &mut self.reinforce_clear),
+            ("founding_together", &mut self.founding_together),
         ]
     }
 

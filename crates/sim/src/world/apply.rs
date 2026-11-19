@@ -2053,7 +2053,12 @@ mod tests {
         assert_eq!(share, 0.2);
         // 600 of 2,000: 1.5 times its share, crowded hard though under the cap.
         let [litter, hunger] = w.crowding_effect_in(600.0, 2000.0);
-        assert!(litter < 0.1 && hunger > 1.2, "{litter} {hunger}");
+        // Breeding only (`Balance::share_litters`, playtest 10): hunger
+        // comes from the soft cap alone.
+        assert!(litter < 0.1 && hunger == 1.0, "{litter} {hunger}");
+        let mut hungry = w.clone();
+        hungry.config.balance.share_litters = 0.0;
+        assert!(hungry.crowding_effect_in(600.0, 2000.0)[1] > 1.2);
         assert!(w.crowding_effect(600.0)[0] > 0.99);
         // At its share: half the litter, as at the soft cap.
         let [at, _] = w.crowding_effect_in(400.0, 2000.0);

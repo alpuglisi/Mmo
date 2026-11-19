@@ -93,6 +93,17 @@ impl World {
     pub const REINFORCE_CLUSTER: f32 = 8.0;
 
     pub fn reinforce_lineage(&mut self, lineage: u32, n: u32) -> Vec<OrgId> {
+        self.reinforce_lineage_report(lineage, n).0
+    }
+
+    /// Tiles searched outward from the group for clear ground when it stands
+    /// inside a rival territory (`Balance::reinforce_clear`).
+    pub const REINFORCE_REACH: f32 = 60.0;
+
+    /// [`World::reinforce_lineage`], and where the group stood when the
+    /// reinforcements had to land away from it (`Balance::reinforce_clear`:
+    /// it stands in or beside another player's territory), and how far.
+    pub fn reinforce_lineage_report(&mut self, lineage: u32, n: u32) -> (Vec<OrgId>, Option<(Vec2, f32)>) {
         // Tiles around the group searched when nothing nearer is clear of
         // rivals (`Balance::rival_clear`).
         const WIDE_REINFORCE: f32 = 12.0;
@@ -104,7 +115,7 @@ impl World {
             .collect();
         let n = (n as usize).min(self.cap_room(lineage));
         if adults.is_empty() || n == 0 {
-            return Vec::new();
+            return (Vec::new(), None);
         }
         let mut rng = rng_for(self.config.seed, stream::FOUNDING, (1 << 40) | lineage as u64, self.next_id);
         // Land on good ground near the lineage: from up to 8 of its adults
@@ -176,6 +187,9 @@ impl World {
         } else {
             (Vec::new(), Vec::new())
         };
+        // Counting how far they scatter from where they land (3 tiles) with
+        // `Balance::reinforce_clear` (playtest 10: 2 tiles from an edge).
+        let margin = super::RIVAL_TERRITORY_MARGIN + if self.config.balance.reinforce_clear > 0.0 { 3.0 } else { 0.0 };
         let mut home = probe.pos;
         let mut best = f32::MIN;
         let passes: &[f32] = if clear { &[range, WIDE_REINFORCE] } else { &[range] };
@@ -199,9 +213,7 @@ impl World {
                     if clear {
                         let edge =
                             cand.x.min(cand.y).min(self.map.width as f32 - cand.x).min(self.map.height as f32 - cand.y);
-                        if edge < super::EDGE_KEEP
-                            || lands.iter().any(|t| t.center.dist(cand) < t.radius + super::RIVAL_TERRITORY_MARGIN)
-                        {
+                        if edge < super::EDGE_KEEP || lands.iter().any(|t| t.center.dist(cand) < t.radius + margin) {
                             continue;
                         }
                         let packs_near = packs.iter().filter(|q| q.dist(cand) < super::PACK_CLEAR).count();
@@ -215,6 +227,40 @@ impl World {
             }
         }
 
+        // Nothing near is clear of rival territory (the group stands in one):
+        // the nearest clear ground, outward ring by ring
+        // (`Balance::reinforce_clear`; before, they landed in it).
+        let mut moved = None;
+        if clear && self.config.balance.reinforce_clear > 0.0 && best == f32::MIN {
+            let mut r = WIDE_REINFORCE + 2.0;
+            'rings: while r <= Self::REINFORCE_REACH {
+                let steps = (r * 1.5).ceil() as usize;
+                let mut ring_best: Option<(f32, Vec2)> = None;
+                for s in 0..steps {
+                    let a = std::f32::consts::TAU * s as f32 / steps as f32;
+                    let cand = self.map.clamp(anchor + Vec2::new(a.cos(), a.sin()) * r);
+                    let edge =
+                        cand.x.min(cand.y).min(self.map.width as f32 - cand.x).min(self.map.height as f32 - cand.y);
+                    if edge < super::EDGE_KEEP
+                        || !self.passable_for(probe, cand)
+                        || lands.iter().any(|t| t.center.dist(cand) < t.radius + margin)
+                    {
+                        continue;
+                    }
+                    let packs_near = packs.iter().filter(|q| q.dist(cand) < super::PACK_CLEAR).count();
+                    let score = food(self, cand) - 1000.0 * packs_near as f32;
+                    if ring_best.is_none_or(|(b, _)| score > b) {
+                        ring_best = Some((score, cand));
+                    }
+                }
+                if let Some((_, cand)) = ring_best {
+                    home = cand;
+                    moved = Some((anchor, anchor.dist(cand)));
+                    break 'rings;
+                }
+                r += 2.0;
+            }
+        }
         let tpd = self.config.ticks_per_day as f32;
         let mut ids = Vec::with_capacity(n);
         for k in 0..n {
@@ -244,7 +290,7 @@ impl World {
             o.needs.breeding = rng.gen_range(0.0..40.0);
             ids.push(self.insert(o));
         }
-        ids
+        (ids, moved)
     }
 
     /// Retire `player`'s animals ([`World::retire_player`]), but first hand
@@ -778,6 +824,41 @@ mod tests {
         let mut old = w.clone();
         old.config.balance.rival_clear = 0.0;
         let ids = old.reinforce_lineage(l, 6);
+        assert!(ids.iter().any(|&id| old.organism(id).unwrap().pos.dist(herd) < t.radius));
+    }
+
+    /// Playtest 10: reinforcements landed inside a rival territory where the
+    /// pack lived (nothing near it was clear), and 2 tiles from an edge.
+    /// With `Balance::reinforce_clear` they land on the nearest clear ground
+    /// outside it, margin and scatter included, and the move is reported.
+    #[test]
+    fn reinforcements_leave_a_rival_territory_the_group_lives_in() {
+        let mut w = presets::standard_world(WorldConfig { seed: 6, width: 96, height: 96, ..Default::default() }, 1);
+        w.run_days(1);
+        let l = w.lineages.iter().position(|l| l.owner == 2).unwrap() as u32;
+        let members: Vec<usize> =
+            (0..w.organisms.len()).filter(|&i| w.organisms[i].alive && w.organisms[i].lineage == l).collect();
+        let herd = w.map.clamp(Vec2::new(48.0, 48.0));
+        for &i in &members {
+            w.organisms[i].pos = herd;
+        }
+        let t = super::super::groups::Territory { center: herd, radius: 18.0, claimed_tick: 0 };
+        w.territories.insert((77, 0), t);
+        let mut c = w.clone();
+        let (ids, moved) = c.reinforce_lineage_report(l, 6);
+        assert_eq!(ids.len(), 6);
+        let (from, dist) = moved.expect("moved out of the territory");
+        assert_eq!(from, herd);
+        assert!(dist > t.radius + super::super::RIVAL_TERRITORY_MARGIN, "{dist:.1}");
+        for id in ids {
+            let d = c.organism(id).unwrap().pos.dist(herd);
+            assert!(d > t.radius + super::super::RIVAL_TERRITORY_MARGIN, "{d:.1} tiles from the territory's centre");
+        }
+        // The old rule: landed in it.
+        let mut old = w.clone();
+        old.config.balance.reinforce_clear = 0.0;
+        let (ids, moved) = old.reinforce_lineage_report(l, 6);
+        assert!(moved.is_none());
         assert!(ids.iter().any(|&id| old.organism(id).unwrap().pos.dist(herd) < t.radius));
     }
 }
