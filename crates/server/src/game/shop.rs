@@ -216,6 +216,7 @@ impl Game {
             reinforce_max_alive: max_alive,
             reinforce_blocked: self.reinforce_blocked(player).err().map(|e| e.message),
             market_fee_percent: economy::MARKET_FEE_PERCENT,
+            listing_fee_percent: 0,
             royalty_per_point: economy::ROYALTY_PER_POINT,
             reinforcements_bought: reinforced,
             reinforcements_max: economy::MAX_REINFORCEMENTS_PER_SEASON,
@@ -396,9 +397,15 @@ impl Game {
         if self.lineage_of(player).is_none() || self.is_extinct(player) {
             return Err(ErrorInfo::new("no_lineage", "you have no living lineage to restore pasture for"));
         }
-        let Some(at) = self.world.group_middle(player, group) else {
+        let Some(middle) = self.world.group_middle(player, group) else {
             return Err(ErrorInfo::new("no_such_group", format!("your group {group} has no animals")));
         };
+        let tick = self.world.tick();
+        // Quotes are per group (playtest 11) and keep the circle they were
+        // made for: the purchase restores there, so the food matches the
+        // quote (playtest 12: the group's middle moved a tile, ~14% less).
+        let quote = self.restore_quotes.get(&(player, group)).copied().filter(|q| tick <= q.2);
+        let at = quote.map_or(middle, |q| evo_sim::math::Vec2::new(q.3, q.4));
         let r = economy::RESTORE_RADIUS;
         // Priced by the buyer's lineage plus the other players' animals
         // actually in the circle (playtest 10: one stray rival animal priced
@@ -416,13 +423,10 @@ impl Game {
         // only) was an exact count of the rivals around (playtest 11).
         let others = others.div_ceil(10) * 10;
         let size = self.owner_population(player) + others;
-        let tick = self.world.tick();
         // A preview's price is honoured for a few seconds (playtest 10: the
         // purchase seconds later cost more).
         let quote_ticks =
             crate::game::minutes_to_ticks(crate::game::RESTORE_QUOTE_SECONDS / 60.0, self.cfg.tick_ms).max(1);
-        // Quotes are per group (playtest 11: one quote per player).
-        let quote = self.restore_quotes.get(&(player, group)).copied().filter(|q| tick <= q.2);
         let quoted = quote.map(|q| q.0);
         let now = economy::restore_price(size, self.restores_bought(player));
         // The shop's own quote (head count only) holds when no other player
@@ -432,6 +436,8 @@ impl Game {
         let per_food = price as f32 / food.max(1.0);
         const NOTHING: &str =
             "nothing would regrow there now (winter, a drought, or the plants are already as high as the season allows)";
+        // Too little to be worth it is nothing (playtest 12: 2 food for 366).
+        let food = if food < economy::RESTORE_MIN_FOOD { 0.0 } else { food };
         let hint = if food < 1.0 {
             // A preview of nothing says why and prices nothing (playtest 11:
             // a winter preview quoted 1,242 for 0 food, no reason given).
@@ -460,7 +466,7 @@ impl Game {
         };
         if preview {
             if price > 0 {
-                self.restore_quotes.insert((player, group), (price, food, tick + quote_ticks));
+                self.restore_quotes.insert((player, group), (price, food, tick + quote_ticks, at.x, at.y));
             }
             view.shop = Some(self.shop_view(player));
             return Ok(view);
@@ -471,7 +477,7 @@ impl Game {
         // The quote holds the food too: if the plants fell by more than a
         // fifth since, ask again instead of charging the quoted price for
         // less (playtest 11).
-        if let Some((_, quoted_food, _)) = quote {
+        if let Some((_, quoted_food, ..)) = quote {
             if food < quoted_food * 0.8 {
                 self.restore_quotes.remove(&(player, group));
                 return Err(ErrorInfo::new(

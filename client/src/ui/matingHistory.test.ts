@@ -30,7 +30,7 @@ describe('mating history', () => {
     expect(offerUpdateText({ ...bought, status: 'failed' }, undefined, { message: 'died' }, 1)).toContain('did not happen: failed, your renown is refunded. (died)');
     expect(offerUpdateText(offer(8, 'declined', 100), undefined, undefined, 1)).toBe('Mating offer 8: declined');
     const rows = historyRows([{ offer: bought, outcome, incoming: false }], []);
-    expect(rows[0].line).toContain('bought from listing 4');
+    expect(rows[0].line).toContain('a purchase from bob\'s listing 4');
   });
 });
 
