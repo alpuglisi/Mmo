@@ -487,7 +487,8 @@ impl World {
     /// Regrow the plants on every dry tile within `radius` of `center` to
     /// what the season lets the tile hold now: its most (`Tile::veg_max`)
     /// times this season's warmth, snow cover and dryness (the terrain's
-    /// own growth terms), so nothing in midwinter and less in a drought
+    /// own growth terms) and the share of land not in drought, and nothing
+    /// during winter
     /// (playtest 9: it set the tile maximum regardless). The food added;
     /// with `apply` false only how much it would be (a preview). The
     /// server's pasture restoration, a renown sink (`Game::restore_pasture`).
@@ -498,6 +499,10 @@ impl World {
         let ri = r.ceil() as i64;
         let bal = &self.config.balance;
         let (rain, offset) = (bal.rain_growth, self.season_offset);
+        // Nothing during winter, and less the more of the land is in drought
+        // (playtest 10: 1,790 food in midwinter on warm ground, 2,819 in a
+        // 90% drought near water).
+        let season = if self.days_until_winter() == 0 { 0.0 } else { 1.0 - self.map.drought.clamp(0.0, 1.0) };
         let mut added = 0.0;
         for y in (cy - ri).max(0)..=(cy + ri).min(h - 1) {
             for x in (cx - ri).max(0)..=(cx + ri).min(w - 1) {
@@ -514,7 +519,7 @@ impl World {
                 let warmth = crate::terrain::growth_warmth(temp + offset);
                 let cover = (1.0 - t.snow * 3.0).clamp(0.0, 1.0);
                 let wet = (1.0 - rain + rain * (t.wetness / 0.5).clamp(0.0, 1.4)).min(1.0);
-                let cap = max * (warmth * cover * wet).clamp(0.0, 1.0);
+                let cap = max * (warmth * cover * wet).clamp(0.0, 1.0) * season;
                 if t.veg < cap {
                     added += cap - t.veg;
                     if apply {

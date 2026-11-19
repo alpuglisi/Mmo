@@ -1880,7 +1880,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           } }, 'Block player')));
     }, (row, e) => {
       setText(row.querySelector('.offer-line')!, offerLine(e.offer));
-      setText(row.querySelector('.offer-time')!, [offerTime(e.offer), apartText(e.offer, s?.organisms ?? [], s?.nearby ?? [])].filter(Boolean).join(' '));
+      // How far the walk would be, before accepting (playtest 10): the server's figure, else the client's own.
+      const apart = e.offer.apart !== undefined
+        ? `About ${e.offer.apart} tiles apart: they meet three quarters of the way to your animal, which walks the last quarter.`
+        : apartText(e.offer, s?.organisms ?? [], s?.nearby ?? []);
+      setText(row.querySelector('.offer-time')!, [offerTime(e.offer), meetText(e.offer, model.player), apart].filter(Boolean).join(' '));
       const pick = row.querySelector<HTMLSelectElement>('.pick-own');
       if (pick) {
         const lineageOffer = e.offer.partner === 0 && e.offer.lineage !== undefined;
