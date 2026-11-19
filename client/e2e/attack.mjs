@@ -302,12 +302,20 @@ async function main() {
     // The button goes with the possession (the inspector is rebuilt for the
     // new possessor), so a possession that ends mid-step is retried.
     let inspected = null;
-    for (let attempt = 0; attempt < 8 && !inspected; attempt++) {
+    // Animals already found down a burrow (picked again and again, they used
+    // up the attempts): the next pick is another, nearest first, and not one
+    // the state says is burrowed.
+    const skip = new Set();
+    for (let attempt = 0; attempt < 10 && !inspected; attempt++) {
       await ensurePossessed(page, 'before the inspector');
       const p = await possessedNow(page);
-      const wild = await wildNear(page, p);
-      const other = (await page.evaluate(() => window.evo.model.state.nearby.filter((o) => o.owner === 0).map((o) => o.id)))[0];
-      const pick = wild[0] ?? other;
+      const burrowed = new Set(await page.evaluate(() => window.evo.model.state.nearby.filter((o) => o.burrowed).map((o) => o.id)));
+      const fresh = (id) => !skip.has(id) && !burrowed.has(id);
+      const wild = (await wildNear(page, p)).filter(fresh);
+      const other = (await page.evaluate(([px, py]) => window.evo.model.state.nearby.filter((o) => o.owner === 0)
+        .sort((a, b) => Math.hypot(a.x - px, a.y - py) - Math.hypot(b.x - px, b.y - py)).map((o) => o.id), [p.x, p.y])).filter(fresh);
+      if (skip.size > 0 && wild.length === 0 && other.length === 0) skip.clear();
+      const pick = wild[0] ?? other[0] ?? (await wildNear(page, p))[0];
       check(pick !== undefined, 'no wild animal in view for the inspector');
       await page.evaluate((id) => window.evo.model.select(id), pick);
       await page.click('#tab-organism');
@@ -320,6 +328,7 @@ async function main() {
           // Down its burrow: also said, and another is picked.
           if (label.includes('in its burrow')) {
             step(`the inspector of wild #${pick} offers "${label}", disabled: it is in its burrow`);
+            skip.add(pick);
             continue;
           }
           check(label.includes('too far'), 'a disabled attack button should say why', label);

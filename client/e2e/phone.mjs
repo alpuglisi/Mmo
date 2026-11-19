@@ -68,8 +68,11 @@ function check(ok, msg, detail) {
   if (!ok) throw new Error(`${msg}${detail === undefined ? '' : `: ${JSON.stringify(detail)}`}`);
 }
 
+/** How much longer waits may take when scripts run side by side (`run-all`'s `E2E_TIME_SCALE`). */
+const TIME_SCALE = Math.max(1, Number(process.env.E2E_TIME_SCALE) || 1);
+
 async function waitFor(what, fn, timeoutMs = UI_MS) {
-  const end = Date.now() + timeoutMs;
+  const end = Date.now() + timeoutMs * TIME_SCALE;
   let last;
   while (Date.now() < end) {
     try {
@@ -126,9 +129,9 @@ async function main() {
     // 0. The builder: its compatibility preview works before a name is typed
     // (the water warning depends on it), and a too-heavy body's wings are
     // warned about once.
-    const preview = await page.waitForResponse((res) => new URL(res.url()).pathname === '/api/design/compatibility', { timeout: UI_MS });
+    const preview = await page.waitForResponse((res) => new URL(res.url()).pathname === '/api/design/compatibility', { timeout: UI_MS * TIME_SCALE });
     check(preview.ok(), `the builder's preview before a name is typed: ${preview.status()}`, await preview.text());
-    await page.waitForSelector('#design-name', { timeout: UI_MS });
+    await page.waitForSelector('#design-name', { timeout: UI_MS * TIME_SCALE });
     check((await page.inputValue('#design-name')) === '', 'no name typed yet');
     const genes = await page.$$eval('input[data-gene]', (els) => Object.fromEntries(els.map((el) => [el.dataset.gene, el.value])));
     const setGene = (g, v) => page.$eval(`input[data-gene="${g}"]`, (el, v) => { el.value = String(v); el.dispatchEvent(new Event('input')); }, v);
@@ -153,7 +156,7 @@ async function main() {
     await page.fill('#design-name', 'Pocket herd');
     await waitFor('Found enabled again', () => page.evaluate(() => !document.querySelector('#design-submit').disabled), 8000);
     await page.tap('#design-submit');
-    await page.waitForSelector('#world-canvas', { timeout: UI_MS });
+    await page.waitForSelector('#world-canvas', { timeout: UI_MS * TIME_SCALE });
     await waitFor('the lineage', () => page.evaluate(() => (window.evo.model.state?.organisms.length ?? 0) > 1));
     const viewport = page.viewportSize();
     step(`founded on a ${viewport.width} × ${viewport.height} phone`);
@@ -166,9 +169,9 @@ async function main() {
     // The survey asks in the app's dialog, not a native confirm (playtest 7; the dialog guard catches a native one).
     await waitFor('the survey button', () => page.evaluate(() => !!document.querySelector('#shop-survey')));
     await page.evaluate(() => { const b = document.querySelector('#shop-survey'); b.disabled = false; b.click(); });
-    await page.waitForSelector('#survey-confirm', { timeout: UI_MS });
+    await page.waitForSelector('#survey-confirm', { timeout: UI_MS * TIME_SCALE });
     await page.tap('#survey-confirm-cancel');
-    await page.waitForSelector('#survey-confirm', { state: 'detached', timeout: 3000 });
+    await page.waitForSelector('#survey-confirm', { state: 'detached', timeout: 3000 * TIME_SCALE });
     step('the survey asks in the app\'s dialog (no native confirm)');
     await page.tap('#tab-market'); // a second tap on the open tab closes the sheet
     await waitFor('the sheet closed', () => page.evaluate(() => !document.querySelector('.game').classList.contains('sheet-open')));
@@ -240,7 +243,7 @@ async function main() {
     });
     const picked = await page.evaluate(() => window.evo.model.selected);
     check(picked === herdTap.tap.organism, 'the tap should select the animal under the finger', { picked, tap: herdTap.tap });
-    await page.waitForSelector('#pick-chooser:not([hidden])', { timeout: 3000 });
+    await page.waitForSelector('#pick-chooser:not([hidden])', { timeout: 3000 * TIME_SCALE });
     const chooser = await page.evaluate(() => {
       const c = document.querySelector('#pick-chooser');
       const b = c.getBoundingClientRect();
@@ -273,7 +276,7 @@ async function main() {
       c.dispatchEvent(new PointerEvent('pointerdown', at));
       c.dispatchEvent(new PointerEvent('pointerup', at));
     });
-    await page.waitForSelector('#pick-chooser', { state: 'hidden', timeout: 3000 });
+    await page.waitForSelector('#pick-chooser', { state: 'hidden', timeout: 3000 * TIME_SCALE });
     step(`a tap in a herd selects #${picked} (under the finger, of ${herdTap.tap.candidates.length} in reach); the chooser is one ${chooser.height.toFixed(0)} px row, ${chooser.width.toFixed(0)} px wide on a ${chooser.vw} px screen${chooser.scrolls ? ' (scrolling, × pinned)' : ''}, listing it first, gone at the next touch`);
     // The tapped animal's compact card, with the sheet down (playtest 7: nothing showed until the Animal tab opened).
     await page.evaluate((id) => window.evo.model.select(id), picked);
@@ -291,7 +294,7 @@ async function main() {
     await waitFor('the inspector in the sheet', () => page.evaluate(() => document.querySelector('.game').classList.contains('sheet-open')
       && !document.querySelector('#panel-organism').hidden && document.querySelector('#peek').hidden));
     await page.tap('#tab-organism'); // closes the sheet: the card is back
-    await page.waitForSelector('#peek:not([hidden])', { timeout: 3000 });
+    await page.waitForSelector('#peek:not([hidden])', { timeout: 3000 * TIME_SCALE });
     await page.tap('#peek-close');
     await waitFor('the selection cleared', () => page.evaluate(() => window.evo.model.selected === null && document.querySelector('#peek').hidden));
     step(`the tapped animal's card: "${peek.title}" · "${peek.line}"; Details opens the inspector, × closes it`);
@@ -389,7 +392,7 @@ async function main() {
     await page.evaluate(() => { try { localStorage.removeItem('evo.notice.catastrophe'); } catch { /* blocked */ } });
     const r = await fetch(`${base}/api/e2e/catastrophe`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'severe_winter', days: 60 }) });
     check(r.ok, 'the test hook started a catastrophe', await r.text());
-    await page.waitForSelector('#catastrophe-alert:not([hidden])', { timeout: UI_MS });
+    await page.waitForSelector('#catastrophe-alert:not([hidden])', { timeout: UI_MS * TIME_SCALE });
     // Its text in place (the notice has its full height).
     await waitFor('the notice text', () => page.evaluate(() => document.querySelector('#catastrophe-alert .cat-effect')?.textContent.length > 20));
     // On a phone a notice starts folded to one line (playtest 9: notices and toasts covered half the map); unfold it.
@@ -418,7 +421,7 @@ async function main() {
     await page.tap('#catastrophe-alert .cat-fold');
     check(await page.evaluate(() => document.querySelector('#catastrophe-alert').classList.contains('folded')), 'folded');
     await page.reload();
-    await page.waitForSelector('#catastrophe-alert:not([hidden])', { timeout: UI_MS });
+    await page.waitForSelector('#catastrophe-alert:not([hidden])', { timeout: UI_MS * TIME_SCALE });
     check(await page.evaluate(() => document.querySelector('#catastrophe-alert').classList.contains('folded')), 'the fold should be remembered over a reload');
     step('the notice\'s fold is remembered over a reload');
     // A drought notice as well as the catastrophe one: the second starts folded.
@@ -444,7 +447,7 @@ async function main() {
       return o.id;
     });
     await page.tap('#fab-possess');
-    await page.waitForSelector('#possess-bar:not([hidden])', { timeout: UI_MS });
+    await page.waitForSelector('#possess-bar:not([hidden])', { timeout: UI_MS * TIME_SCALE });
     await page.waitForTimeout(500);
     const said = await page.evaluate(() => ({ bar: document.querySelector('#possess-bar').textContent, toasts: document.querySelector('#toasts')?.textContent ?? '' }));
     check(said.bar.includes(`#${own}`), 'the bar names the possessed animal', said);
@@ -467,7 +470,7 @@ async function main() {
     }, own);
     check(stacked.shown && !stacked.over, 'while possessing, the chooser should sit clear of the possession bar\'s buttons', stacked);
     await page.tap('#possess-release');
-    await page.waitForSelector('#possess-bar', { state: 'hidden', timeout: UI_MS });
+    await page.waitForSelector('#possess-bar', { state: 'hidden', timeout: UI_MS * TIME_SCALE });
     // Possessing again (the chooser still up from before): it goes.
     if (await page.locator('#pick-chooser').isHidden()) {
       await page.evaluate(async (own) => {
@@ -481,10 +484,10 @@ async function main() {
     check(await page.locator('#pick-chooser').isVisible(), 'the chooser is up before possessing');
     await page.evaluate((own) => window.evo.model.select(own), own);
     await page.tap('#fab-possess');
-    await page.waitForSelector('#possess-bar:not([hidden])', { timeout: UI_MS });
-    await page.waitForSelector('#pick-chooser', { state: 'hidden', timeout: 3000 });
+    await page.waitForSelector('#possess-bar:not([hidden])', { timeout: UI_MS * TIME_SCALE });
+    await page.waitForSelector('#pick-chooser', { state: 'hidden', timeout: 3000 * TIME_SCALE });
     await page.tap('#possess-release');
-    await page.waitForSelector('#possess-bar', { state: 'hidden', timeout: UI_MS });
+    await page.waitForSelector('#possess-bar', { state: 'hidden', timeout: UI_MS * TIME_SCALE });
     step(`possessing #${own}: the bar says so, no toast repeats it; the chooser sits above the bar and goes when a possession starts`);
 
     // 7. Split, up to the limit of four groups.
@@ -564,17 +567,17 @@ async function main() {
     const nameBtn = await waitFor('the Name it… button', async () => (await page.locator('[data-action="name-species"]').count()) > 0, UI_MS).catch(() => false);
     if (nameBtn) {
       await page.locator('[data-action="name-species"]').first().tap();
-      await page.waitForSelector('#species-name', { timeout: UI_MS });
+      await page.waitForSelector('#species-name', { timeout: UI_MS * TIME_SCALE });
       const body = await page.textContent('#species-name');
       check(/costs \d+ renown/.test(body), 'the dialog shows the price', body);
       await page.fill('#species-name-input', 'ClaudeBot');
       await page.tap('#species-name-ok');
-      await page.waitForSelector('#species-name-error:not([hidden])', { timeout: UI_MS });
+      await page.waitForSelector('#species-name-error:not([hidden])', { timeout: UI_MS * TIME_SCALE });
       const why = await page.textContent('#species-name-error');
       check(await page.locator('#species-name').isVisible(), 'a refusal keeps the dialog open', why);
       check(!/Name species|name_species/i.test((await page.textContent('#toasts')) ?? ''), 'and is not toasted as well');
       await page.tap('#species-name-cancel');
-      await page.waitForSelector('#species-name', { state: 'detached', timeout: 3000 });
+      await page.waitForSelector('#species-name', { state: 'detached', timeout: 3000 * TIME_SCALE });
       step(`the species-name dialog shows the price; a refused name stays in it ("${why}")`);
     } else {
       step('(no species to name yet: the species-name dialog check skipped)');
@@ -590,7 +593,7 @@ async function main() {
     await again.fill('#login-name', 'pocket_phone');
     await again.fill('#login-password', 'a long password');
     await again.tap('#login-submit');
-    await again.waitForSelector('#world-canvas', { timeout: UI_MS });
+    await again.waitForSelector('#world-canvas', { timeout: UI_MS * TIME_SCALE });
     await waitFor('the game ready', () => again.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
     await again.waitForTimeout(1500);
     check(!(await again.locator('#tour-title').isVisible().catch(() => false)), 'the tour should not start for a returning player');

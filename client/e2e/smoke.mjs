@@ -1421,12 +1421,20 @@ async function main() {
     const cards = await page.evaluate(() => document.querySelectorAll('#group-list .group-card').length);
     // Two claims at once: the second lands within the first's cooldown (the
     // fast test world runs a day a second, so only back-to-back claims hit it).
-    const cooldown = await page.evaluate(async (group) => {
-      const claim = (x) => window.evo.socket.send({ type: 'claim_territory', group, x, y: 10, radius: 4 });
-      const [a, b] = await Promise.all([claim(10), claim(12)]);
-      return [a, b].find((r) => !r.ok) ?? null;
-    }, newGroup);
-    if (!cooldown || cooldown.error.code !== 'claim_cooldown') throw new Error(`back-to-back claims: ${JSON.stringify(cooldown)}`);
+    // Claims on the group's own ground (a far or watery spot could be
+    // refused for another reason, or turn into a migration), one after
+    // another until one meets the cooldown: the first may land once the
+    // earlier claim's cooldown is over on a slow machine.
+    const cooldown = await page.evaluate(async ({ group, t }) => {
+      const tries = [];
+      for (let k = 0; k < 3; k++) {
+        const r = await window.evo.socket.send({ type: 'claim_territory', group, x: t.x, y: t.y, radius: 4 });
+        tries.push(r.ok ? 'ok' : r.error?.code);
+        if (!r.ok && r.error?.code === 'claim_cooldown') return { r, tries };
+      }
+      return { r: null, tries };
+    }, { group: newGroup, t: { x: shown.t.x, y: shown.t.y } });
+    if (!cooldown.r) throw new Error(`back-to-back claims never met the cooldown: ${JSON.stringify(cooldown.tries)}`);
     // Rally the new group from its card with one map tap; it replaces the
     // territory, shows on the map and on the card, and is cancelled.
     await page.click(`#group-list .group-card[data-group="${newGroup}"] button[data-action="rally"]`);

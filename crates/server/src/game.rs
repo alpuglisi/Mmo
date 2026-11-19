@@ -705,6 +705,9 @@ pub fn refound_fee(count: u32) -> u64 {
 /// How far toward the partner's animal (the paid side) an agreement's
 /// meeting point lies, from the requester's (0.5: halfway).
 pub const MEET_TOWARD_PARTNER: f32 = 0.75;
+/// The meeting point of an offer to a lineage, whose owner picked the
+/// partner: halfway.
+pub const MEET_HALFWAY: f32 = 0.5;
 
 /// Tiles a meeting point keeps from a third party's (or the wild's)
 /// predators when it can (`Game::safe_meeting_point`).
@@ -4831,9 +4834,13 @@ impl Game {
         // Fixed at acceptance, three quarters of the way to the partner (the
         // seller's side): the buyer can't steer it to their own pack
         // (playtest 6: lure-and-eat).
+        // An offer to a lineage lets its owner pick the partner, so its side
+        // gets no edge: halfway (playtest 10: a partner 107 tiles off, the
+        // point 80 tiles from the buyer's animal, a lapse and a forfeit).
+        let toward = if o.lineage.is_some() { MEET_HALFWAY } else { MEET_TOWARD_PARTNER };
         let meet = match o.meet {
             Some((x, y)) => Some(Vec2::new(x, y)),
-            None => self.safe_meeting_point(o.from, o.to, a, b),
+            None => self.safe_meeting_point(o.from, toward, a, b),
         };
         if let Some(m) = meet {
             let d = |id: OrgId| self.world.organism(id).map_or(0.0, |x| x.pos.dist(m));
@@ -4854,7 +4861,7 @@ impl Game {
     /// partner owner's included: playtest 8) within [`MEET_PREDATOR_CLEAR`]
     /// tiles; else at the partner. (Playtest 7: a buyer could still line
     /// the point up with a third party's pack.)
-    fn safe_meeting_point(&self, from: PlayerId, _to: PlayerId, a: OrgId, b: OrgId) -> Option<Vec2> {
+    fn safe_meeting_point(&self, from: PlayerId, toward: f32, a: OrgId, b: OrgId) -> Option<Vec2> {
         let predators: Vec<Vec2> = self
             .world
             .organisms
@@ -4864,7 +4871,8 @@ impl Game {
             .collect();
         let clear = |p: Vec2| predators.iter().all(|q| q.dist(p) > MEET_PREDATOR_CLEAR);
         let mut last = None;
-        for t in [MEET_TOWARD_PARTNER, 0.875, 1.0] {
+        // From `toward` on to the partner, in quarters of what is left.
+        for t in [toward, toward + 0.5 * (1.0 - toward), toward + 0.75 * (1.0 - toward), 1.0] {
             let p = self.world.meeting_point_toward(a, b, t)?;
             if clear(p) {
                 return Some(p);
@@ -10310,6 +10318,88 @@ mod tests {
         assert_eq!((paid.status.as_str(), paid.settlement.as_deref()), ("completed", Some("paid")));
         assert!(g.ledger(2, 100).iter().any(|e| e.kind == LedgerKind::Sale && e.delta == 18), "paid less the fee");
         assert_eq!(g.world.rendezvous_of(fa), None, "the rendezvous ends with the agreement");
+    }
+
+    /// Playtests 9 and 10: no cross-player trade completed. A paid offer to
+    /// a rival's lineage goes the whole way: offered, accepted with the
+    /// seller's pick of a far animal, met halfway (playtest 10: the point lay
+    /// on the seller's side, 80 tiles from the buyer's animal, and lapsed),
+    /// mated, paid, and the young are born.
+    #[test]
+    fn a_trade_to_a_lineage_completes_end_to_end_and_young_are_born() {
+        let (mut g, a, b) = game();
+        let mine = male(&g, &a);
+        let bl = g.lineage_of(2).unwrap();
+        let fems: Vec<OrgId> =
+            b.iter().copied().filter(|&x| g.world.organism(x).is_some_and(|o| o.sex == Sex::Female)).collect();
+        let tpd = g.world.config.ticks_per_day;
+        let mut tried = Vec::new();
+        let mut born = None;
+        for _ in 0..6 {
+            not_pregnant(&mut g, &fems);
+            let Some(mpos) = g.world.organism(mine).map(|o| o.pos) else { break };
+            let Some(partner) =
+                fems.iter().copied().find(|f| !tried.contains(f) && g.world.organism(*f).is_some_and(|o| o.matured))
+            else {
+                break;
+            };
+            tried.push(partner);
+            // The seller picks one far from the buyer's animal, on land.
+            let m = &g.world.map;
+            let far = (0..m.height)
+                .flat_map(|y| (0..m.width).map(move |x| evo_sim::terrain::Map::tile_center(x, y)))
+                .filter(|&p| {
+                    let t = m.tile_at(p);
+                    t.water_depth == 0.0 && t.ice == 0.0 && m.ground_at(p).slope < 0.3 && m.can_drink_at(p)
+                })
+                .max_by(|x, y| x.dist(mpos).total_cmp(&y.dist(mpos)));
+            g.world.organisms.iter_mut().find(|o| o.id == partner).unwrap().pos = far.unwrap();
+            let start = mpos.dist(far.unwrap());
+            let id =
+                offer_id(&g.command(10, 1, None, ClientMsg::OfferToLineage { mine, lineage: bl, price: Some(10) }));
+            let out =
+                g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: Some(partner) });
+            assert_eq!(result(&out), (true, None), "{out:?}");
+            // Halfway: the dry ground nearest the midpoint (no hunters about).
+            let (mx, my) = g.offers[&id].meet.expect("a meeting point");
+            let half = g.world.meeting_point_toward(mine, partner, 0.5).unwrap();
+            assert!(Vec2::new(mx, my).dist(half) < 0.01, "meet ({mx:.0}, {my:.0}), halfway {half:?}, {start:.0} apart");
+            let mut conceived = None;
+            for _ in 0..(HOLD_MAX_DAYS + 5) * tpd as u64 {
+                g.world.step();
+                for (_, m) in g.after_tick() {
+                    if let ServerMsg::MatingUpdate { offer, outcome, .. } = m {
+                        if offer.id == id && offer.status == OfferStatus::Completed {
+                            conceived = Some(outcome.is_some_and(|o| o.conceived));
+                        }
+                    }
+                }
+                if conceived.is_some() || !g.offers.get(&id).is_some_and(|o| o.status.is_open()) {
+                    break;
+                }
+            }
+            let Some(true) = conceived else { continue };
+            assert!(trades(&mut g).iter().any(|t| t.offer == id && t.settlement.as_deref() == Some("paid")));
+            // The young: born to her, fathered by the traded male.
+            for _ in 0..200 * tpd as u64 {
+                g.world.step();
+                g.after_tick();
+                if let Some(y) =
+                    g.world.organisms.iter().find(|o| o.alive && o.mother == Some(partner) && o.father == Some(mine))
+                {
+                    born = Some(y.id);
+                    break;
+                }
+                if g.world.organism(partner).is_none() {
+                    break;
+                }
+            }
+            if born.is_some() {
+                break;
+            }
+        }
+        assert!(born.is_some(), "no young from a completed trade (tried {tried:?})");
+        assert!(tried.len() <= 3, "it took {} offers", tried.len());
     }
 
     /// One accepted agreement per animal (playtest 4: one male held several
