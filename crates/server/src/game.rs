@@ -8028,7 +8028,7 @@ mod tests {
         assert_eq!(g.shop_view(1).restore_price, 2 * economy::RESTORE_MIN);
         assert_eq!(g.shop_view(1).restores_bought, 1);
         g.economy.balances.insert(1, 100);
-        assert_eq!(result(&g.command(10, 1, None, ClientMsg::RestorePasture)).0, false);
+        assert!(!result(&g.command(10, 1, None, ClientMsg::RestorePasture)).0);
     }
 
     /// Playtest 7: egg layers lost more eggs than hatched with no warning
