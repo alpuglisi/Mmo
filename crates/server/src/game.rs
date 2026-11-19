@@ -726,6 +726,10 @@ pub const MEET_TOWARD_PARTNER: f32 = 0.75;
 /// The meeting point of an offer to a lineage, whose owner picked the
 /// partner: halfway.
 pub const MEET_HALFWAY: f32 = 0.5;
+/// The fractions of the way a lineage offer's meeting point may take, in
+/// order (`Game::halfway_meeting_point`): about the midpoint, never past
+/// the middle half.
+pub const MEET_HALFWAY_TRIES: [f32; 5] = [MEET_HALFWAY, 0.375, 0.625, 0.25, 0.75];
 
 /// Tiles a meeting point keeps from a third party's (or the wild's)
 /// predators when it can (`Game::safe_meeting_point`).
@@ -5006,10 +5010,10 @@ impl Game {
         // An offer to a lineage lets its owner pick the partner, so its side
         // gets no edge: halfway (playtest 10: a partner 107 tiles off, the
         // point 80 tiles from the buyer's animal, a lapse and a forfeit).
-        let toward = if o.lineage.is_some() { MEET_HALFWAY } else { MEET_TOWARD_PARTNER };
         let meet = match o.meet {
             Some((x, y)) => Some(Vec2::new(x, y)),
-            None => self.safe_meeting_point(o.from, toward, a, b),
+            None if o.lineage.is_some() => self.halfway_meeting_point(a, b),
+            None => self.safe_meeting_point(o.from, MEET_TOWARD_PARTNER, a, b),
         };
         if let Some(m) = meet {
             let d = |id: OrgId| self.world.organism(id).map_or(0.0, |x| x.pos.dist(m));
@@ -5049,6 +5053,36 @@ impl Game {
             last = Some(p);
         }
         last
+    }
+
+    /// The meeting point of an offer to a lineage, whose owner picked the
+    /// partner: the dry ground nearest the midpoint, else the nearest of a
+    /// few points about it (within the middle half of the way, either
+    /// side) with no hunter of anyone's, wild ones included, within
+    /// [`MEET_PREDATOR_CLEAR`] tiles; with none clear, the one farthest from
+    /// any. It never slides to either animal: a hunter by the midpoint
+    /// moved it all the way to the seller's.
+    fn halfway_meeting_point(&self, a: OrgId, b: OrgId) -> Option<Vec2> {
+        let predators: Vec<Vec2> = self
+            .world
+            .organisms
+            .iter()
+            .filter(|x| x.alive && x.id != a && x.id != b && x.genome.expr(Gene::Carnivory) >= 0.5)
+            .map(|x| x.pos)
+            .collect();
+        let gap = |p: Vec2| predators.iter().map(|q| q.dist(p)).fold(f32::INFINITY, f32::min);
+        let mut best: Option<(f32, Vec2)> = None;
+        for t in MEET_HALFWAY_TRIES {
+            let p = self.world.meeting_point_toward(a, b, t)?;
+            let d = gap(p);
+            if d > MEET_PREDATOR_CLEAR {
+                return Some(p);
+            }
+            if best.is_none_or(|(bd, _)| d > bd) {
+                best = Some((d, p));
+            }
+        }
+        best.map(|(_, p)| p)
     }
 
     /// Whether `id` is already in an accepted agreement other than `except`
@@ -10884,6 +10918,173 @@ mod tests {
         }
         assert!(born.is_some(), "no young from a completed trade (tried {tried:?})");
         assert!(tried.len() <= 3, "it took {} offers", tried.len());
+    }
+
+    /// Run an accepted agreement `id` until it completes; with a conception,
+    /// on until the young of `female` by `male` are born. Whether it was
+    /// conceived (None: it ended without the mating) and the young's id.
+    fn run_to_young(g: &mut Game, id: u64, female: OrgId, male: OrgId) -> (Option<bool>, Option<OrgId>) {
+        let tpd = g.world.config.ticks_per_day as u64;
+        let mut conceived = None;
+        for _ in 0..(HOLD_MAX_DAYS + 5) * tpd {
+            g.world.step();
+            for (_, m) in g.after_tick() {
+                if let ServerMsg::MatingUpdate { offer, outcome, .. } = m {
+                    if offer.id == id && offer.status == OfferStatus::Completed {
+                        conceived = Some(outcome.is_some_and(|o| o.conceived));
+                    }
+                }
+            }
+            if conceived.is_some() || !g.offers.get(&id).is_some_and(|o| o.status.is_open()) {
+                break;
+            }
+        }
+        if conceived != Some(true) {
+            return (conceived, None);
+        }
+        for _ in 0..200 * tpd {
+            g.world.step();
+            g.after_tick();
+            if let Some(y) =
+                g.world.organisms.iter().find(|o| o.alive && o.mother == Some(female) && o.father == Some(male))
+            {
+                return (conceived, Some(y.id));
+            }
+            if g.world.organism(female).is_none() {
+                break;
+            }
+        }
+        (conceived, None)
+    }
+
+    /// A market purchase goes the whole way, a stud's and a dam's: bought,
+    /// walked together, mated, paid, and the young born (playtests 9-11).
+    #[test]
+    fn listing_purchases_of_a_stud_and_a_dam_end_in_young() {
+        for role in ["stud", "dam"] {
+            let mut born = None;
+            let mut tries = 0;
+            let (mut g, a, b) = game();
+            let tpd = g.world.config.ticks_per_day as u64;
+            while born.is_none() && tries < 4 {
+                tries += 1;
+                // Ann lists, Bob buys with one of the other sex.
+                let pick = |g: &Game, ids: &[OrgId], sex: Sex| {
+                    ids.iter().copied().find(|&x| g.world.organism(x).is_some_and(|o| o.sex == sex && o.matured))
+                };
+                let (listed, buyer) = if role == "stud" {
+                    (pick(&g, &a, Sex::Male), pick(&g, &b, Sex::Female))
+                } else {
+                    (pick(&g, &a, Sex::Female), pick(&g, &b, Sex::Male))
+                };
+                let (Some(listed), Some(buyer)) = (listed, buyer) else { break };
+                let (female, male) = if role == "stud" { (buyer, listed) } else { (listed, buyer) };
+                not_pregnant(&mut g, &[female]);
+                g.offers.retain(|_, o| !o.status.is_open());
+                let out =
+                    g.command(10, 1, None, ClientMsg::CreateListing { organism: listed, fee: 10, expires_days: None });
+                let listing = data(&out)["listing"]["id"].as_u64().unwrap_or_else(|| panic!("{role}: {out:?}"));
+                let out = g.command(20, 2, None, ClientMsg::BuyListing { listing, mine: buyer });
+                assert_eq!(result(&out), (true, None), "{role}: {out:?}");
+                let id = offer_id(&out);
+                let (conceived, young) = run_to_young(&mut g, id, female, male);
+                assert!(conceived.is_some(), "{role}: the bought mating never happened");
+                if young.is_some() {
+                    assert!(trades(&mut g).iter().any(|t| t.offer == id && t.settlement.as_deref() == Some("paid")));
+                    born = young;
+                }
+                g.command(10, 1, None, ClientMsg::WithdrawListing { listing });
+                for _ in 0..tpd {
+                    g.world.step();
+                    g.after_tick();
+                }
+            }
+            assert!(born.is_some(), "{role}: no young after {tries} purchases");
+        }
+    }
+
+    /// A lineage offer's meeting point keeps clear of a hunter by the
+    /// midpoint without sliding to either animal (playtest 11).
+    #[test]
+    fn a_lineage_offer_meets_clear_of_a_hunter_near_the_midpoint() {
+        let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
+        let mut g = Game::new(world, GameConfig::default());
+        g.set_name(1, "ann");
+        g.set_name(2, "bob");
+        g.set_name(3, "cat");
+        let a = g.found(1, &design("A")).unwrap().founders;
+        let b = g.found(2, &design("B")).unwrap().founders;
+        let hunter = FounderDesign::new("C", Thermo::Warm, BirthType::Live, 2).with(Gene::Carnivory, 1.0).founders(6);
+        let c = g.found_at_any_price(3, &hunter).unwrap().founders;
+        g.connect(10, 1, "ann");
+        g.connect(20, 2, "bob");
+        let mine = male(&g, &a);
+        let fem = female(&g, &b);
+        not_pregnant(&mut g, &[fem]);
+        let mpos = g.world.organism(mine).unwrap().pos;
+        let m = &g.world.map;
+        let at = (0..m.height)
+            .flat_map(|y| (0..m.width).map(move |x| evo_sim::terrain::Map::tile_center(x, y)))
+            .filter(|&p| {
+                let t = m.tile_at(p);
+                t.water_depth == 0.0 && t.ice == 0.0 && p.dist(mpos) < LINEAGE_PICK_SLACK - 1.0
+            })
+            .max_by(|x, y| x.dist(mpos).total_cmp(&y.dist(mpos)))
+            .unwrap();
+        g.world.organisms.iter_mut().find(|o| o.id == fem).unwrap().pos = at;
+        // Every hunter of cat's sits on the midpoint.
+        let mid = g.world.meeting_point_toward(mine, fem, 0.5).unwrap();
+        for o in g.world.organisms.iter_mut().filter(|o| c.contains(&o.id)) {
+            o.pos = mid;
+        }
+        let bl = g.lineage_of(2).unwrap();
+        let id = offer_id(&g.command(10, 1, None, ClientMsg::OfferToLineage { mine, lineage: bl, price: Some(10) }));
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: Some(fem) });
+        assert_eq!(result(&out), (true, None), "{out:?}");
+        let (mx, my) = g.offers[&id].meet.expect("a meeting point");
+        let meet = Vec2::new(mx, my);
+        let start = mpos.dist(at);
+        // Off the midpoint, toward one side, but within the middle half.
+        let t = (meet - mpos).dot(at - mpos) / (start * start);
+        assert!((0.2..=0.8).contains(&t), "t {t:.2}: meet {meet:?}, {start:.0} apart");
+        assert!(meet.dist(mid) > 1.0, "moved off the hunters at the midpoint");
+    }
+
+    /// A sleeping seller's animal holds the meeting and its deadline as long
+    /// as it sleeps; the buyer's sleep only up to `HOLD_MAX_DAYS`.
+    #[test]
+    fn a_sleeping_sellers_agreement_waits_and_a_sleeping_buyers_is_capped() {
+        let (mut g, a, b) = game();
+        let (ma, fb) = (male(&g, &a), female(&g, &b));
+        not_pregnant(&mut g, &[fb]);
+        let far = g.world.map.clamp(g.world.organism(ma).unwrap().pos + Vec2::new(12.0, 0.0));
+        g.world.organisms.iter_mut().find(|o| o.id == fb).unwrap().pos = far;
+        let id = offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fb, price: Some(10) }));
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
+        assert_eq!(g.offers[&id].status, OfferStatus::Accepted);
+        let cap = HOLD_MAX_DAYS * g.world.config.ticks_per_day as u64;
+        let sleep = |g: &mut Game, who: OrgId, on: bool| {
+            g.world.organisms.iter_mut().find(|o| o.id == who).unwrap().dormancy =
+                if on { Dormancy::Winter } else { Dormancy::Awake };
+        };
+        // The seller sleeps past the cap: the deadline moves with it.
+        let before = g.offer_deadline(&g.offers[&id].clone());
+        sleep(&mut g, fb, true);
+        for _ in 0..cap + 10 {
+            g.after_tick();
+        }
+        assert!(g.offers.get(&id).is_some_and(|o| o.status == OfferStatus::Accepted), "still open");
+        let paused = g.offer_deadline(&g.offers[&id].clone()) - before;
+        assert!(paused >= cap + 10, "the seller's sleep paused it {paused} of {} ticks", cap + 10);
+        // The buyer sleeps: paused only up to the cap in all.
+        sleep(&mut g, fb, false);
+        sleep(&mut g, ma, true);
+        let before = g.offer_deadline(&g.offers[&id].clone());
+        for _ in 0..20 {
+            g.after_tick();
+        }
+        let more = g.offer_deadline(&g.offers[&id].clone()) - before;
+        assert_eq!(more, 0, "the buyer's sleep past the cap no longer pauses it");
     }
 
     /// One accepted agreement per animal (playtest 4: one male held several
