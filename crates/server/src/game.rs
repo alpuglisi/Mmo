@@ -2063,7 +2063,7 @@ impl Game {
         if self.wild_name(&name) {
             return Err(FoundError::BadName("it is a wild species' name".into()));
         }
-        if self.rival_name(player, &name) {
+        if self.rival_name(player, &name) || self.blends_rivals(player, &name) {
             return Err(FoundError::BadName("another player's lineage or species has that name".into()));
         }
         // Re-founding soon after the player's last lineage ended (retired or

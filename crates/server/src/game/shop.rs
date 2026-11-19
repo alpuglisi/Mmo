@@ -726,6 +726,28 @@ impl Game {
         (self.world.lineages.iter().enumerate())
             .filter(|(l, x)| x.owner != WILD && x.owner != player && counts.get(*l).is_some_and(|c| c.alive > 0))
             .any(|(_, x)| names::holds_name(text, &x.name))
+            || self.blends_rivals(player, text)
+    }
+
+    /// Whether `text` is the start of one rival name and the end of another
+    /// (`names::blends`), counting other players' living lineage names
+    /// with their names: "Apex Drifter" from ApexHunter12 and "Pocket
+    /// Drifters" (playtest 12).
+    pub(crate) fn blends_rivals(&self, player: PlayerId, text: &str) -> bool {
+        let letters = |s: &str| names::fold(&s.chars().filter(char::is_ascii_alphabetic).collect::<String>());
+        let mut cores: Vec<String> = self.names.iter().filter(|(&p, _)| p != player).map(|(_, n)| letters(n)).collect();
+        let counts = self.world.lineage_counts();
+        for (_, x) in (self.world.lineages.iter().enumerate())
+            .filter(|(l, x)| x.owner != WILD && x.owner != player && counts.get(*l).is_some_and(|c| c.alive > 0))
+        {
+            let core = letters(&x.name);
+            if let Some(one) = core.strip_suffix('s') {
+                cores.push(one.to_string());
+            }
+            cores.push(core);
+        }
+        cores.retain(|c| c.len() >= 4);
+        names::blends(text, &cores)
     }
 
     /// The names players chose that others see: nameplate titles, animal
