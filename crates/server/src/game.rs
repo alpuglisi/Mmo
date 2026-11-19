@@ -377,15 +377,23 @@ fn egg_losses(now: &evo_sim::world::EggCounts, before: &evo_sim::world::EggCount
 /// An egg loss cause in a sentence. `abandoned`: the lineage leaves its
 /// eggs by design (abandoned eggs), so a chilled clutch is expected, not a
 /// parent's failure.
-fn egg_loss_why(cause: &str, abandoned: bool, asleep: bool) -> &'static str {
+fn egg_loss_why(cause: &str, abandoned: bool, asleep: bool, clutch: Option<u32>) -> String {
     match cause {
-        "chilled" if abandoned => "chilled: abandoned eggs lie exposed, by design",
+        "chilled" if abandoned => "chilled: abandoned eggs lie exposed, by design".into(),
         // Most of the lineage asleep (playtest 7: blamed straying while the
         // parents slept).
-        "chilled" if asleep => "chilled: no parent was brooding them (the parents were asleep)",
-        "chilled" => "chilled: no parent was brooding them (it strayed too far from the nest, or died)",
-        "overheated" => "overheated",
-        _ => "eaten by egg raiders",
+        "chilled" if asleep => "chilled: no parent was brooding them (the parents were asleep)".into(),
+        // Clutches bigger than a parent warms (`Balance::clutch_split`;
+        // playtest 8: litter 8 blamed on straying).
+        "chilled" if clutch.is_some() => format!(
+            "chilled: a brooding parent warms {} eggs at most, and the rest of each clutch of {} chill on a cool nest",
+            evo_sim::world::CLUTCH_COVERED,
+            clutch.unwrap_or_default()
+        ),
+        // Playtest 8: spring cold blamed on straying.
+        "chilled" => "chilled: the nest was too cold for them (a cold night or season), or the parent left it".into(),
+        "overheated" => "overheated".into(),
+        _ => "eaten by egg raiders".into(),
     }
 }
 
@@ -6400,10 +6408,29 @@ impl Game {
                         .filter(|o| o.alive && o.lineage == lineage && o.traits.birth.lays_eggs())
                         .fold((0usize, 0usize), |(a, n), o| (a + usize::from(o.dormancy.is_deep()), n + 1));
                     let asleep = layers_now > 0 && sleeping * 2 >= layers_now;
+                    // Brooders' usual clutch, when bigger than a parent warms.
+                    let litters: Vec<u32> = self
+                        .world
+                        .organisms
+                        .iter()
+                        .filter(|o| {
+                            o.alive
+                                && o.lineage == lineage
+                                && o.traits.birth == evo_sim::design::BirthType::IncubatedEggs
+                        })
+                        .map(|o| o.traits.litter)
+                        .collect();
+                    let clutch = (self.world.config.balance.clutch_split > 0.0 && !litters.is_empty())
+                        .then(|| {
+                            let mut l = litters;
+                            l.sort_unstable();
+                            l[l.len() / 2]
+                        })
+                        .filter(|&n| n as usize > evo_sim::world::CLUTCH_COVERED);
                     let why: Vec<String> = entry
                         .eggs_lost
                         .iter()
-                        .map(|(c, n)| format!("{n} {}", egg_loss_why(c, abandoned, asleep)))
+                        .map(|(c, n)| format!("{n} {}", egg_loss_why(c, abandoned, asleep, clutch)))
                         .collect();
                     format!(" · {eggs_lost} egg{} lost ({})", if eggs_lost == 1 { "" } else { "s" }, why.join(", "))
                 } else {
@@ -7731,8 +7758,9 @@ mod tests {
         let (la, lb) = (g.lineage_of(1).unwrap(), g.lineage_of(2).unwrap());
         assert_eq!(g.hunter_words(la, 1), "your own A");
         assert_eq!(g.hunter_words(lb, 1), "bob's B");
-        assert!(egg_loss_why("chilled", false, true).contains("the parents were asleep"));
-        assert!(egg_loss_why("chilled", false, false).contains("strayed"));
+        assert!(egg_loss_why("chilled", false, true, None).contains("the parents were asleep"));
+        assert!(egg_loss_why("chilled", false, false, None).contains("too cold"));
+        assert!(egg_loss_why("chilled", false, false, Some(8)).contains("warms 4 eggs at most"));
         assert_eq!(sleep_words(&g.world, 1, 0), "asleep");
     }
 

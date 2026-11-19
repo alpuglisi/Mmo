@@ -82,6 +82,7 @@ use crate::terrain::{Map, Season, Traverse, Weather};
 
 pub use chronicle::{biome_niche, diet_niche};
 use density::SpeciesDensity;
+pub use environment::CLUTCH_COVERED;
 pub use lod::{Cohort, LodStats, PoolEntry};
 #[cfg(feature = "serde")]
 pub use snapshot::{SnapshotError, SnapshotHeader, SNAPSHOT_VERSION, TERRAIN_VERSION};

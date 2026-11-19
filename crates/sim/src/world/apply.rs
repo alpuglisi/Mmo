@@ -2333,6 +2333,8 @@ mod tests {
         let chill = |eggs: usize, cover: f32| {
             let (mut w, i) = layer(7, BirthType::IncubatedEggs);
             w.config.balance.clutch_cover = cover;
+            // The averaging rule `clutch_split` replaces.
+            w.config.balance.clutch_split = 0.0;
             let mut rng = crate::rng::rng_for(1, 0, 0, 0);
             w.give_birth(i, &mut rng);
             let id = w.organisms[i].id;
@@ -2349,6 +2351,43 @@ mod tests {
         assert_eq!(chill(4, 2.1), 0.0);
         assert!(chill(6, 2.1) > 0.0);
         assert_eq!(chill(6, 0.0), 0.0);
+    }
+
+    /// Playtest 8: a warm incubated design with litter 8 hatched nothing.
+    /// With `Balance::clutch_split` a brooding parent keeps 4 eggs warm on
+    /// a cool nest and the rest chill one by one: a clutch of 8 keeps its
+    /// 4, while the old averaging chilled all 8.
+    #[test]
+    fn a_big_clutch_keeps_the_eggs_its_parent_warms() {
+        let run = |eggs: usize, split: f32| {
+            let (mut w, i) = layer(7, BirthType::IncubatedEggs);
+            w.config.balance.clutch_split = split;
+            let mut rng = crate::rng::rng_for(1, 0, 0, 0);
+            w.give_birth(i, &mut rng);
+            let id = w.organisms[i].id;
+            let k = w.clutches.iter().position(|c| c.guardian == Some(id)).expect("a guarded clutch");
+            let pos = w.clutches[k].pos;
+            w.clutches[k].hatch_tick = u64::MAX;
+            let egg = w.clutches[k].eggs[0].clone();
+            w.clutches[k].eggs = vec![egg; eggs];
+            set_climate(&mut w, pos, 10.0);
+            for h in 0..24 * 10 {
+                w.tick = h;
+                w.organisms[i].pos = pos;
+                w.organisms[i].alive = true;
+                w.organisms[i].needs.hunger = 0.0;
+                w.organisms[i].needs.thirst = 0.0;
+                w.update_clutches(&mut rng);
+            }
+            let left = w.clutches.iter().find(|c| c.guardian == Some(id)).map_or(0, |c| c.eggs.len());
+            let chilled = w.counters.eggs.values().map(|e| e.chilled).sum::<u64>();
+            (left, chilled)
+        };
+        assert_eq!(run(4, 1.0), (4, 0));
+        assert_eq!(run(8, 1.0), (4, 4));
+        let (left, chilled) = run(8, 0.0);
+        assert_eq!(left, 0, "the old averaging: the whole clutch chills");
+        assert_eq!(chilled, 8);
     }
 
     /// Attended eggs (`Balance::egg_attendance`): a clutch whose brooding

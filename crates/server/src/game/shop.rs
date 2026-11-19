@@ -109,9 +109,11 @@ pub const DROUGHT_TRAIT: f32 = evo_sim::stats::STRATEGY_THRESHOLD + 0.1;
 /// [`DesignCompatView::drought_warning`]'s text.
 pub fn drought_design_text(drought: f32) -> String {
     format!(
-        "Drought: {:.0}% of the land is dry. Founders without a drought trait die of thirst within days, even \
-         inside their grace. Add estivation ({DROUGHT_TRAIT:.1} or more) so they sleep \
-         through the dry spell, or wait for the drought to ease.",
+        "Drought: {:.0}% of the land is dry. Founders far from water can die of thirst within days, even inside \
+         their grace. Keeping them by lasting water (the Food layer) is the surest answer, or wait for the drought \
+         to ease. Estivation ({DROUGHT_TRAIT:.1} or more) lets them sleep through a real dry spell where no water is \
+         near, but it has costs: a sleeping lineage doesn't breed, so a dry spring can cost a season's young, and \
+         it wakes needing food.",
         drought * 100.0
     )
 }

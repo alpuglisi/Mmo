@@ -18,7 +18,9 @@ const NEST_CROWD_RADIUS: usize = 2;
 const EGG_ATTEND_RANGE: f32 = 12.0;
 const CHILL_RATE: f32 = 0.006;
 /// Eggs a sitting parent covers fully (`Balance::clutch_cover`).
-const CLUTCH_COVERED: usize = 4;
+pub const CLUTCH_COVERED: usize = 4;
+/// `rng_for` stream of the uncovered eggs' chilling (`Balance::clutch_split`).
+const EGG_CHILL_STREAM: u64 = 0x00e6_c411;
 /// Most °C a sitting parent can cool her eggs by shading them.
 pub(crate) const BROOD_SHADE: f32 = 3.0;
 /// The egg temperature a sitting warm-blooded parent aims for.
@@ -250,7 +252,11 @@ impl World {
                         // A sitting parent covers only so many eggs
                         // (`Balance::clutch_cover`): the rest of a big
                         // clutch sits nearer the nest's own temperature.
-                        let egg = if bal.clutch_cover > 0.0 && c.eggs.len() > CLUTCH_COVERED {
+                        let egg = if bal.clutch_split > 0.0 {
+                            // The warmed eggs (`Balance::clutch_split`);
+                            // the rest are handled below, egg by egg.
+                            egg
+                        } else if bal.clutch_cover > 0.0 && c.eggs.len() > CLUTCH_COVERED {
                             let cover = (CLUTCH_COVERED as f32 / c.eggs.len() as f32).powf(bal.clutch_cover);
                             site + (egg - site) * cover
                         } else {
@@ -277,6 +283,20 @@ impl World {
                     && guardian.is_some_and(|gi| self.organisms[gi].pos.dist(c.pos) < EGG_ATTEND_RANGE);
                 let chill_rate =
                     if attended { CHILL_RATE * (1.0 - 0.8 * bal.egg_attendance.min(1.0)) } else { CHILL_RATE };
+                // Eggs past the brooded few lie at the nest's temperature
+                // and chill one by one (`Balance::clutch_split`): a big
+                // clutch loses its extra eggs, not all of them.
+                if bal.clutch_split > 0.0 && present.is_some() && c.eggs.len() > CLUTCH_COVERED && site < lo {
+                    let p = ((lo - site) * CHILL_RATE).min(1.0);
+                    let extra = c.eggs.len() - CLUTCH_COVERED;
+                    let mut r = crate::rng::rng_for(self.config.seed, EGG_CHILL_STREAM, tick, c.mother);
+                    let lost = (0..extra).filter(|_| r.gen::<f32>() < p).count();
+                    if lost > 0 {
+                        c.eggs.truncate(c.eggs.len() - lost);
+                        self.counters.eggs.entry(c.lineage).or_default().chilled += lost as u64;
+                        self.counters.eggs_lost += lost as u64;
+                    }
+                }
                 if egg < lo {
                     c.chill += (lo - egg) * chill_rate;
                 } else {

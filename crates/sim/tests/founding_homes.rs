@@ -62,6 +62,8 @@ fn homes_hash() -> u64 {
         // the days the world grows first.
         config.balance.founding_rivals = 0.0;
         config.balance.prey_floor = 0.0;
+        // Playtest 8 (version 77): eggs warmed a few at a time, drought sleep.
+        (config.balance.clutch_split, config.balance.dry_spell) = (0.0, 0.0);
         // Playtest 6 balance (version 62): toxin upkeep, hungry hunters,
         // toxin source, speciation credit and clutch cover change how the
         // world grows before the sample players found.
