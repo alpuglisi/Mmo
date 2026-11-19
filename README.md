@@ -27,7 +27,7 @@ Where the design's build order stands:
 What remains is in [Suggested next steps](#suggested-next-steps). Launch
 marketing (drafting, human approval, scheduling and publishing on the
 owner's accounts) lives in [`tools/marketing/`](tools/marketing/PUBLISHING.md).
-Six AI playtests so far; what each found and what changed is summarised in
+Seven AI playtests so far; what each found and what changed is summarised in
 [`docs/changelog-playtests.md`](docs/changelog-playtests.md).
 
 ![World on day 45: player lineages (colored) and the wild ecosystem (pale = herbivores, dark red = predators)](docs/img/world-day45.png)
@@ -1351,7 +1351,18 @@ surviving founder groups"). The simulation runs while a player sleeps, and
 at 1 tick per second a night offline is several hundred simulated days, so
 an unattended small lineage could be wiped out with nothing its owner could
 do. Implemented as the *surviving founder group* form, deliberately narrow so
-that logging out never pays as a strategy:
+that logging out never pays as a strategy.
+
+**Current limits (playtests 5–7).** The 12 real hours below are also capped
+in game time: a spell lasts at most 900 game days (`GameConfig::offline_max_days`),
+about 12 real hours at the normal one-second tick but about 75 real minutes
+(with the home range's fade) at the 100 ms playtest speed, where 12 hours
+was thousands of game days. A spell is dated from when the player left, not
+from when the server noticed: the core shields from then, after 10 idle
+minutes, and the home range from 10 minutes after leaving. Possession ends
+a minute after the connection drops (playtest 3), so the "possessed" case
+below applies only within that minute. The Lineage tab still shows these
+durations three different ways (playtest 7; changing in round 8).
 
 - **Who.** A player's lineage is protected from the moment their last
   connection to that world closes until they connect again, or for at most
@@ -1389,9 +1400,8 @@ that logging out never pays as a strategy:
   logged-out player's protection just by asking), listed on the stud marketplace or an auction,
   or put up as the organism of an auction's highest bid: the doc's "the trip
   carries risk" stands, and a player can't shield a stud by logging off.
-  Possessed organisms aren't protected either (possession outlives a
-  disconnect; an organism still possessed while its owner is away is under
-  orders, not sheltering).
+  Possessed organisms aren't protected either (an organism still possessed
+  in the minute before possession ends is under orders, not sheltering).
 - **What the player sees.** On login, if protection actually applied (the
   lineage was at or below the floor while they were away), a `milestone`
   alert: "While you were away, offline protection shielded your small
@@ -9125,6 +9135,7 @@ How the prey-per-hunter bounds were chosen (the six-player study,
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` (main: 11.90) | | 11.91 (± 0.10); every lineage 12 of 12 |
 | `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 12/16 (11), 16/16 (16); 1 (newts, seed 38) | 13/16 (13), 16/16 (16); 3 (newts, seeds 34, 36 and 38) |
 | workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (456), build, e2e (16 scripts, `E2E_JOBS=2`) | | pass |
+| After merging main's round 7 (renumbered to v63): sweep; predlong (fox, pack hunters; prey lost); tests, clippy, fixtures, client (`vitest` 459), e2e | predlong 14/16 (13), 16/16; 2 | sweep 11.91 (± 0.09); predlong 14/16 (12), 16/16; 4; pass (e2e 14 of 16 under load, mobile and panels passed alone) |
 
 - **predlong includes a player pack lineage**, so the larder applies there.
   The newts were lost on two more seeds, where the larder kept more
