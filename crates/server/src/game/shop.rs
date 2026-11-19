@@ -379,9 +379,14 @@ impl Game {
         };
         let r = economy::RESTORE_RADIUS;
         // Every player with animals in the circle benefits: the price follows
-        // the largest of their lineages.
+        // the largest of their lineages. Only animals the player can see
+        // count, here and in the reply: a free preview anywhere a lone
+        // animal walked gave an exact census of rivals (playtest 10).
         let mut benefit: BTreeMap<PlayerId, usize> = BTreeMap::new();
-        for o in self.world.organisms.iter().filter(|o| o.alive && o.owner != WILD && o.pos.dist(at) <= r) {
+        for o in (self.world.organisms.iter())
+            .filter(|o| o.alive && o.owner != WILD && o.pos.dist(at) <= r)
+            .filter(|o| o.owner == player || self.in_sight(player, o.pos))
+        {
             *benefit.entry(o.owner).or_default() += 1;
         }
         let (priced_by, size) = benefit

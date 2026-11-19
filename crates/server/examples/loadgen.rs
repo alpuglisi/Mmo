@@ -277,6 +277,11 @@ impl Http {
         if let Some(t) = token {
             req = req.header("authorization", format!("Bearer {t}"));
         }
+        // The operator token: `/api/metrics` counts connections, commands
+        // and pushes only for it (playtest 10).
+        if path.starts_with("/api/metrics") {
+            req = req.header("x-admin-token", operator_token());
+        }
         let body = match body {
             Some(v) => {
                 req = req.header("content-type", "application/json");
@@ -295,6 +300,13 @@ impl Http {
         let (s, v) = self.call(Method::GET, path, token.as_deref(), None).await.ok()?;
         (s == 200).then(|| serde_json::from_value(v).ok()).flatten()
     }
+}
+
+/// The operator token loadgen gives the servers it starts and sends with
+/// metrics reads: `EVO_ADMIN_TOKEN`, else a fixed one (an external server
+/// needs `EVO_ADMIN_TOKEN` set alike).
+fn operator_token() -> String {
+    std::env::var("EVO_ADMIN_TOKEN").ok().filter(|t| !t.is_empty()).unwrap_or_else(|| "loadgen-operator".into())
 }
 
 // --- The server process ----------------------------------------------------
@@ -344,6 +356,7 @@ fn spawn_server(args: &Args, data: &Path, port: u16, fast: bool, log_name: &str)
             cmd.args(["--world", &format!("{w},seed={}", args.seed + i as u64)]);
         }
     }
+    cmd.env("EVO_ADMIN_TOKEN", operator_token());
     cmd.env("RUST_LOG", "info").stdin(Stdio::null()).stderr(out.try_clone().expect("log handle")).stdout(out);
     let child = cmd
         .spawn()

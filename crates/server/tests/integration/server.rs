@@ -38,6 +38,7 @@ async fn manual_server() -> RunningServer {
         bind: SocketAddr::from(([127, 0, 0, 1], 0)),
         data_dir: None,
         world: WorldSettings { seed: 11, width: 64, height: 64, wild: true, ..Default::default() },
+        admin_token: Some(crate::OPERATOR.into()),
         ..Default::default()
     }
     .fast()
@@ -396,8 +397,11 @@ async fn metrics_count_ticks_connections_and_traffic() {
         assert_eq!(anon[k], 0, "{k}: {anon}");
     }
     assert_eq!(anon["hashing"]["hashes"], 0, "{anon}");
-    let (s, m) = json_req(addr, Method::GET, "/api/metrics", Some(&token), None).await;
-    assert_eq!(s, StatusCode::OK, "{m}");
+    // Nor for a logged-in player: only the operator token (playtest 10).
+    let (_, own) = json_req(addr, Method::GET, "/api/metrics", Some(&token), None).await;
+    assert_eq!((own["conns"].as_u64(), own["players_online"].as_u64()), (Some(0), Some(0)), "{own}");
+    assert_eq!((own["ws_opened"].as_u64(), own["apply_ms"]["n"].as_u64()), (Some(0), Some(0)), "{own}");
+    let m = crate::operator_get(addr, "/api/metrics").await;
     assert_eq!(m["ticks"], 3);
     assert_eq!(m["conns"], 1);
     assert_eq!(m["state_pushes"], 1, "one push at the end of the step: {m}");
@@ -622,7 +626,7 @@ async fn delta_states_match_json_states_and_resync() {
     assert!(moved);
     assert!(kinds.contains(&DELTA), "{kinds:?}");
     assert_eq!(kinds.iter().filter(|&&k| k == KEYFRAME).count(), 1, "one keyframe, after the resync: {kinds:?}");
-    let (_, m) = json_req(addr, Method::GET, "/api/metrics", Some(token), None).await;
+    let m = crate::operator_get(addr, "/api/metrics").await;
     assert_eq!(m["resyncs"], 1, "{m}");
     assert_eq!(m["delta_conns"], 1, "{m}");
     assert!(m["keyframes_out"].as_u64().unwrap() >= 2, "{m}");

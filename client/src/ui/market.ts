@@ -314,7 +314,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     const parents = l.mother !== undefined || l.father !== undefined ? `of #${l.mother ?? '?'} × #${l.father ?? '?'}` : 'a founder';
     setText(card.querySelector('.info-line')!, `gen ${l.generation}, ${parents} · ${l.age_days.toFixed(0)} days · health ${l.health.toFixed(0)} · raised ${l.offspring_raised}`
       // To the nearest 8 tiles, as the server's listing grid (playtest 9: the exact spot of a rival's herd).
-      + ` · near ${Math.round(l.x / 8) * 8}, ${Math.round(l.y / 8) * 8}${l.sales ? ` · ${l.sales} sold` : ''}${l.busy ? ' · promised' : ''}${l.pregnant ? ' · pregnant' : ''}`);
+      // A 32-tile region, not a spot (playtest 10: "near 16, 80" read as exact).
+      + ` · somewhere within 16 tiles of ${Math.round(l.x)}, ${Math.round(l.y)}${l.sales ? ` · ${l.sales} sold` : ''}${l.busy ? ' · promised' : ''}${l.pregnant ? ' · pregnant' : ''}`);
     const expires = card.querySelector('.expires-line');
     if (expires) setText(expires, expiryText(l, tick, TICKS_PER_DAY, ms) ?? '');
     const bars = card.querySelector<HTMLElement>('.trait-bars')!;

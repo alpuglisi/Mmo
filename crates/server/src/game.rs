@@ -6656,7 +6656,15 @@ impl Game {
                 ));
             }
         }
-        if let Some(p) = self.world.prey_check(player, group, center, radius) {
+        // Prey (rivals' animals among it) only where the player sees: claims
+        // and rallies anywhere, many a second, mapped the herds (playtest 10).
+        let seen = self.in_sight(player, center);
+        if !seen && self.world.prey_check(player, group, center, radius).is_some() {
+            warnings.push(
+                "None of your animals sees this circle: the prey there is not counted until they do.".to_string(),
+            );
+        }
+        if let Some(p) = self.world.prey_check(player, group, center, radius).filter(|_| seen) {
             data["prey_nearby"] = p.prey.into();
             data["prey_feeds"] = p.feeds.into();
             if p.feeds < p.members {
@@ -12732,6 +12740,26 @@ mod tests {
         g.conns.get_mut(&10).unwrap().view = Some(ViewWindow { x: p.x, y: p.y, radius: 8.0, pinned: true });
         g.found_at_any_price(1, &design("Third")).unwrap();
         assert!(!g.state_for(10).unwrap().view.pinned, "found unpins");
+    }
+
+    /// Playtest 10: a claim or rally circle counts prey only where the
+    /// player sees (circles anywhere, many a second, mapped the herds).
+    #[test]
+    fn circle_prey_is_counted_only_in_sight() {
+        let (g, a, _) = game();
+        let here = g.world.organism(a[0]).unwrap().pos;
+        let (w, h) = (g.world.map.width as f32, g.world.map.height as f32);
+        let far = Vec2::new(if here.x < w / 2.0 { w - 3.0 } else { 3.0 }, if here.y < h / 2.0 { h - 3.0 } else { 3.0 });
+        assert!(!g.in_sight(1, far));
+        let mut data = serde_json::json!({});
+        let warnings = g.circle_report_at(1, 0, far, 6.0, &mut data, true);
+        assert!(data.get("prey_nearby").is_none(), "{data}");
+        if g.world.prey_check(1, 0, far, 6.0).is_some() {
+            assert!(warnings.iter().any(|w| w.contains("not counted")), "{warnings:?}");
+        }
+        let mut near = serde_json::json!({});
+        g.circle_report_at(1, 0, here, 6.0, &mut near, true);
+        assert_eq!(near.get("prey_nearby").is_some(), g.world.prey_check(1, 0, here, 6.0).is_some(), "{near}");
     }
 
     /// Playtest 9: a same-sex pair with a rival's animal beyond the view

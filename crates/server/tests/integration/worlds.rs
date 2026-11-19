@@ -48,6 +48,7 @@ async fn server(store: Arc<dyn Store>) -> RunningServer {
             ..Default::default()
         },
         worlds: two_worlds(),
+        admin_token: Some(crate::OPERATOR.into()),
         ..Default::default()
     }
     .manual();
@@ -184,8 +185,8 @@ async fn worlds_are_listed_and_chosen_per_request() {
     wait_for(&mut sock, "welcome", |v| v["type"] == "welcome").await;
     srv.step_world("isle", 1).await;
     srv.step(1).await;
-    let isle = json_req(srv.addr, Method::GET, "/api/metrics?world=isle", Some(&token), None).await.1;
-    let main = json_req(srv.addr, Method::GET, "/api/metrics", Some(&token), None).await.1;
+    let isle = crate::operator_get(srv.addr, "/api/metrics?world=isle").await;
+    let main = crate::operator_get(srv.addr, "/api/metrics").await;
     assert_eq!(
         (isle["world"].as_str(), isle["conns"].as_u64(), isle["players_online"].as_u64()),
         (Some("isle"), Some(1), Some(1))

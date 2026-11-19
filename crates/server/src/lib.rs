@@ -147,6 +147,11 @@ pub struct ServerConfig {
     pub header_timeout: Duration,
     /// permessage-deflate on the game WebSocket (`--ws-compression`).
     pub ws_compression: http::WsCompression,
+    /// The operator token (`EVO_ADMIN_TOKEN` by default), sent as
+    /// `x-admin-token`: `/api/metrics` counts players and their activity
+    /// only for it, and `/api/assign` tells it whether an account exists.
+    /// `None`: nobody is an operator.
+    pub admin_token: Option<String>,
 }
 
 /// [`ServerConfig::header_timeout`] by default.
@@ -177,6 +182,7 @@ impl Default for ServerConfig {
             trusted_proxies: limits::TrustedProxies::default(),
             header_timeout: DEFAULT_HEADER_TIMEOUT,
             ws_compression: http::WsCompression::default(),
+            admin_token: std::env::var("EVO_ADMIN_TOKEN").ok().filter(|t| !t.is_empty()),
         }
     }
 }
@@ -377,6 +383,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
         ws_conns: Default::default(),
         push,
         ws: http::ws_options(cfg.ws_compression),
+        admin_token: cfg.admin_token.clone().map(Arc::from),
     };
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     let addr = listener.local_addr()?;

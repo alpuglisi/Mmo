@@ -88,6 +88,8 @@ pub struct AppState {
     /// The game WebSocket's settings: message limits and permessage-deflate
     /// ([`ws_options`]).
     pub ws: yawc::Options,
+    /// The operator token ([`crate::ServerConfig::admin_token`]).
+    pub admin_token: Option<Arc<str>>,
 }
 
 /// How the game WebSocket compresses (`--ws-compression`): with
@@ -625,37 +627,34 @@ async fn genes() -> Json<design::GeneCatalog> {
 async fn metrics(State(app): State<AppState>, World(w): World, headers: HeaderMap) -> Json<MetricsView> {
     let tick = w.published.borrow().summary.clock.tick;
     let mut m = MetricsView::gather(&w.id, &w.metrics, &w.net, tick, app.accounts.hash_stats());
-    // Logged out: no connection or player counts and no per-command counts
-    // (playtest 7: a hunter watched rivals log off here). Timings, saves and
-    // traffic stay public.
-    // Nor, since playtest 9, anything else that counts players or their
-    // activity: sockets opened and closed, password hashes (logins), commands
-    // applied, state pushes and messages (one per connection).
-    if authed(&app, &headers).is_err() {
+    // Counts of players and their activity only for an operator (the
+    // `x-admin-token` header): connections, sockets opened and closed,
+    // password hashes (logins), commands applied (and `apply_ms.n`), state
+    // pushes, messages and bytes (one per connection), per-command counts.
+    // Logged out (playtests 7 and 9) or logged in (playtest 10), a rival
+    // watched them to see players come, go and start a hunt. Timings and
+    // saves stay public.
+    if !is_admin(&app, &headers) {
         (m.conns, m.players_online, m.delta_conns, m.dropped_conns) = (0, 0, 0, 0);
         (m.ws_opened, m.ws_closed, m.applied) = (0, 0, 0);
         (m.state_pushes, m.states_out, m.keyframes_out, m.msgs_out) = (0, 0, 0, 0);
         (m.bytes_out, m.state_bytes) = (0, 0);
+        m.apply_ms.n = 0;
         m.hashing = crate::metrics::HashStats {
             concurrency: m.hashing.concurrency,
             queue: m.hashing.queue,
             ..Default::default()
         };
-    }
-    // World-wide per-command counts only for an operator (`EVO_ADMIN_TOKEN`
-    // in the `x-admin-token` header): a rival watched them to see a hunt
-    // start (playtest 8).
-    if !is_admin(&headers) {
         m.apply_by_command.clear();
     }
     Json(m)
 }
 
-/// Whether the request carries the operator token (`EVO_ADMIN_TOKEN`,
-/// unset: nobody is an operator).
-fn is_admin(headers: &HeaderMap) -> bool {
-    let Ok(want) = std::env::var("EVO_ADMIN_TOKEN") else { return false };
-    !want.is_empty() && headers.get("x-admin-token").and_then(|v| v.to_str().ok()) == Some(want.as_str())
+/// Whether the request carries the operator token
+/// ([`crate::ServerConfig::admin_token`]; none: nobody is an operator).
+fn is_admin(app: &AppState, headers: &HeaderMap) -> bool {
+    let Some(want) = app.admin_token.as_deref() else { return false };
+    !want.is_empty() && headers.get("x-admin-token").and_then(|v| v.to_str().ok()) == Some(want)
 }
 
 /// `GET /api/worlds`: every hosted world with its clock and population
@@ -727,7 +726,7 @@ async fn assign(
     // A logged-in caller, or a lobby holding the operator token
     // (`EVO_ADMIN_TOKEN`), learns whether the account and a lineage exist;
     // anyone else doesn't (playtest 8: account enumeration by `?name=`).
-    let trusted = bearer(&headers).is_some() || is_admin(&headers);
+    let trusted = bearer(&headers).is_some() || is_admin(&app, &headers);
     let reason = if !trusted && reason == crate::worlds::AssignReason::Lineage {
         crate::worlds::AssignReason::Fill
     } else {

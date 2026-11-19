@@ -110,7 +110,9 @@ fi
 simctl bootstatus "$SIM_UDID" -b >/dev/null
 
 log "starting evo-server on 127.0.0.1:$PORT (app uses $APP_SERVER)"
-"$SERVER_BIN" --fast --memory --size 64 --no-rate-limits --bind "127.0.0.1:$PORT" >"$OUT/server.log" 2>&1 &
+# The operator token: /api/metrics counts sockets and frames only for it.
+OPERATOR="ios-smoke-$$"
+EVO_ADMIN_TOKEN="$OPERATOR" "$SERVER_BIN" --fast --memory --size 64 --no-rate-limits --bind "127.0.0.1:$PORT" >"$OUT/server.log" 2>&1 &
 pids+=($!)
 for i in $(seq 1 100); do
   curl -sf "http://127.0.0.1:$PORT/api/world" >/dev/null && break
@@ -149,7 +151,7 @@ done
 
 # The server's side: the app's socket opened and state frames went out to it.
 # shellcheck disable=SC2016  # JavaScript, not shell
-if curl -sf "http://127.0.0.1:$PORT/api/metrics" -o "$OUT/metrics.json"; then
+if curl -sf -H "x-admin-token: $OPERATOR" "http://127.0.0.1:$PORT/api/metrics" -o "$OUT/metrics.json"; then
   if ! node -e '
     const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
     console.log(`   server: ws_opened ${m.ws_opened}, ws_closed ${m.ws_closed}, states_out ${m.states_out}, players_online ${m.players_online}`);
