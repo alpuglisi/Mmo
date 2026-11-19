@@ -574,9 +574,15 @@ fn main() {
             .map(|o| [FLIER, COLD, LOOPHOLE].iter().map(|p| o.titles.get(p).copied().unwrap_or(0)).sum::<u32>())
             .sum();
         println!("  cold fliers as a class (Flier + Cold + Loophole): {fliers}/{seasons} titles");
-        let eggers: u32 =
-            os.iter().map(|o| [EGGS, HERD].iter().map(|p| o.titles.get(p).copied().unwrap_or(0)).sum::<u32>()).sum();
-        println!("  warm egg-laying hibernators as a class (Eggs + Herd): {eggers}/{seasons} titles");
+        let eggers: u32 = os
+            .iter()
+            .map(|o| {
+                [EGGS, HERD, SLEEPERS, LOOPHERD].iter().map(|p| o.titles.get(p).copied().unwrap_or(0)).sum::<u32>()
+            })
+            .sum();
+        println!(
+            "  warm egg-laying hibernators as a class (Eggs + Herd + Sleepers + LoopHerd): {eggers}/{seasons} titles"
+        );
         println!(
             "  (* from Eggs' founding on: mean share over those days; legacy titles of the whole seasons after it)"
         );
