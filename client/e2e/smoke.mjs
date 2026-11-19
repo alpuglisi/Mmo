@@ -1424,9 +1424,9 @@ async function main() {
     const cooldown = await page.evaluate(async (group) => {
       const claim = (x) => window.evo.socket.send({ type: 'claim_territory', group, x, y: 10, radius: 4 });
       const [a, b] = await Promise.all([claim(10), claim(12)]);
-      return [a, b].find((r) => !r.ok) ?? null;
+      return [a, b].find((r) => !r.ok) ?? { both: [a, b] };
     }, newGroup);
-    if (!cooldown || cooldown.error.code !== 'claim_cooldown') throw new Error(`back-to-back claims: ${JSON.stringify(cooldown)}`);
+    if (!cooldown || cooldown.error?.code !== 'claim_cooldown') throw new Error(`back-to-back claims: ${JSON.stringify(cooldown)}`);
     // Rally the new group from its card with one map tap; it replaces the
     // territory, shows on the map and on the card, and is cancelled.
     await page.click(`#group-list .group-card[data-group="${newGroup}"] button[data-action="rally"]`);

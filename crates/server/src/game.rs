@@ -2273,6 +2273,8 @@ impl Game {
         // Not deaths: no alerts for founders or the possessed.
         self.watched.retain(|_, (p, _)| *p != player);
         self.routes.retain(|&(p, _), _| p != player);
+        // Retired, not died out: no group alerts for them (playtest 10).
+        self.group_peak.retain(|&(p, _), _| p != player);
         self.outcomes.retain(|&(p, _), _| p != player);
         if let Some(prog) = self.progress.get_mut(&player) {
             prog.extinct = true;
@@ -2740,6 +2742,10 @@ impl Game {
             }
             ClientMsg::MergeGroups { from, into } => {
                 let moved = self.world.merge_groups(player, from, into).map_err(e)?;
+                // Merged, not dead: no "has died out" for it (playtest 10), and
+                // the receiving group's peak starts again from its new size.
+                self.group_peak.remove(&(player, from));
+                self.group_peak.remove(&(player, into));
                 let mut data = serde_json::json!({ "moved": moved });
                 self.group_counts_report(player, &mut data);
                 Ok(Some(data))
@@ -6408,9 +6414,15 @@ impl Game {
         } else if founders <= max {
             // Its own end day: the preview changes as the date or the
             // founders do (playtest 8: 91 days, then 60, unexplained).
+            // A preview says how long after founding (its date moves with the
+            // clock while the designer is open: playtest 10 saw 412, then 422).
+            let when = if preview {
+                format!("about {:.0} days after founding", days(end.saturating_sub(start)))
+            } else {
+                format!("on day {}", end / w.config.ticks_per_day.max(1) as u64 + 1)
+            };
             format!(
-                " (A founding of {max} or fewer whose grace would end in late autumn or winter {rule}; this one's ends on day {}, before then.)",
-                end / w.config.ticks_per_day.max(1) as u64 + 1
+                " (A founding of {max} or fewer whose grace would end in late autumn or winter {rule}; this one's ends {when}, before then.)"
             )
         } else {
             format!(" (Only a founding of {max} or fewer keeps its grace through its first winter; this one has {founders}.)")
@@ -6915,19 +6927,22 @@ impl Game {
         let mut texts = Vec::new();
         for g in groups.iter().filter(|g| g.id != 0) {
             let key = (p, g.id);
-            let peak = self.group_peak.entry(key).or_insert(g.members);
-            if g.members > *peak {
-                *peak = g.members;
+            // By adults: a group's young swell it each breeding season and die
+            // back each winter, and that yearly swing isn't a decline
+            // (playtest 10: the alert fired every winter after an autumn crop).
+            let peak = self.group_peak.entry(key).or_insert(g.adults);
+            if g.adults > *peak {
+                *peak = g.adults;
                 continue;
             }
-            let (was, now) = (*peak, g.members);
+            let (was, now) = (*peak, g.adults);
             let few = now < GROUP_FEW && was >= GROUP_FEW;
-            if now == 0 && was > 0 {
-                texts.push(format!("{} has died out (it had {was} animals).", group_name(g.id)));
+            if g.members == 0 && was > 0 {
+                texts.push(format!("{} has died out (it had {was} adults).", group_name(g.id)));
                 self.group_peak.remove(&key);
-            } else if now > 0 && (2 * now <= was || few) {
+            } else if g.members > 0 && (2 * now <= was || few) {
                 texts.push(format!(
-                    "{} has fallen from {was} to {now} animals{}. Merge it into another group, or move it to better \
+                    "{} has fallen from {was} to {now} adults{}. Merge it into another group, or move it to better \
                      ground.",
                     group_name(g.id),
                     if few { ": too few to hold together for long" } else { "" }
@@ -6942,7 +6957,7 @@ impl Game {
         for key in gone {
             if let Some(was) = self.group_peak.remove(&key) {
                 if was > 0 {
-                    texts.push(format!("{} has died out (it had {was} animals).", group_name(key.1)));
+                    texts.push(format!("{} has died out (it had {was} adults).", group_name(key.1)));
                 }
             }
         }
@@ -7736,8 +7751,14 @@ impl Game {
                 e.longevity_days = e.longevity_days.max(life.days(day));
             }
         }
+        // Only survivals that met the rule count or show (playtest 10: the
+        // feed listed every living lineage as "Survivor" beside "1 of 5
+        // survived").
         let real = |a: &&evo_sim::chronicle::Achievement| match a.kind {
             AchievementKind::SpeciesFounded { species } => !species_redetected(t, species, a.player),
+            AchievementKind::SurvivedCatastrophe { catastrophe } => {
+                self.survival_credited.contains(&(a.player, catastrophe))
+            }
             _ => true,
         };
         for a in ch.achievements.iter().filter(real) {
@@ -7745,12 +7766,7 @@ impl Game {
             match a.kind {
                 AchievementKind::SpeciesFounded { .. } => e.species_founded += 1,
                 AchievementKind::NicheDominance { .. } => e.niche_dominance += 1,
-                // Only survivals that met the rule (playtest 9: every lineage alive counted).
-                AchievementKind::SurvivedCatastrophe { catastrophe } => {
-                    if self.survival_credited.contains(&(a.player, catastrophe)) {
-                        e.catastrophes_survived += 1;
-                    }
-                }
+                AchievementKind::SurvivedCatastrophe { .. } => e.catastrophes_survived += 1,
                 AchievementKind::LineageLongevity { .. } => {}
             }
         }
