@@ -495,3 +495,30 @@ fn a_scarce_wild_species_breeds_back() {
     w.config.balance.wild_rebound = 0.0;
     assert_eq!(w.wild_rebound(wild), 1.0);
 }
+
+/// Playtest 12: warm herds lost 420–580 sleepers a winter to predators. A
+/// deep sleeper lies hidden from each hunter on a day with chance
+/// `Balance::sleeper_cover`, drawn once per hunter, sleeper and day; an
+/// awake animal never.
+#[test]
+fn deep_sleepers_lie_hidden_from_most_hunters() {
+    let mut w = niche(2);
+    w.config.balance.sleeper_cover = 0.6; // ships off
+    let hunters: Vec<Organism> = w.organisms.iter().filter(|o| o.lineage == PACK).cloned().collect();
+    let mut prey = w.organisms.iter().find(|o| o.lineage != PACK).unwrap().clone();
+    assert!(hunters.iter().all(|h| !w.sleeper_hidden(h, &prey)), "awake: never hidden");
+    prey.dormancy = crate::organism::Dormancy::Winter;
+    let mut hidden = 0;
+    let mut n = 0;
+    for day in 0..20u64 {
+        w.tick = day * w.config.ticks_per_day as u64;
+        for h in &hunters {
+            n += 1;
+            hidden += usize::from(w.sleeper_hidden(h, &prey));
+        }
+    }
+    let share = hidden as f32 / n as f32;
+    assert!((share - 0.6).abs() < 0.12, "{share}");
+    w.config.balance.sleeper_cover = 0.0;
+    assert!(hunters.iter().all(|h| !w.sleeper_hidden(h, &prey)));
+}

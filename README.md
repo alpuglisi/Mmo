@@ -9095,6 +9095,71 @@ around it.
 
 
 
+### Playtest 12: balance
+
+Playtest 12 (`docs/playtest-12.md`, findings 1, 2 and 7). The cold, live-bearing,
+toxic, bright flier won both eras again (8.1% and 25.8% means), and two
+copies of it held 44.6% of the world. Its leader's share rose 16% → 29%
+through a winter, and 17% → 34% in year 4, while its head count fell. Each
+winter its autumn young matured while the wild's adults died, and the
+120-day running mean of the world's size (`share_memory`) never engaged: in
+a young or just-boomed world it sat below the world's size. It won four of
+six niche prizes by covering every biome. A late joiner on era 2's first
+day ended about 4× behind on the era mean (6.3% vs 25.8%) while holding
+half the leader's share at the end.
+
+Version 94 (each off at 0), and an era score:
+
+- **A remembered peak, not a mean** (`Balance::share_peak`, 1). The share's
+  remembered world size rises at once to today's and halves over
+  `share_memory` (120) days. A world that boomed and shrank counts at its
+  recent peak.
+- **A share cap on breeding** (`Balance::share_cap`, 0.25). Past a quarter of
+  the legacy, a player's litters shrink as at the soft cap (half size at
+  the cap, a quarter at 30%), whatever its numbers. This applies only to a
+  lineage past a fifth of the soft cap (`SHARE_CAP_FLOOR`; in a small world
+  two small players hold half the legacy each). Hunger doesn't rise. The
+  Lineage tab says when it applies ("past its share of the legacy").
+- **Niche prizes capped** (`Balance::niche_cap`, 2). At most two per player an
+  era: niches go in order of their leading share, each to the best-placed
+  player not yet at the cap with at least a quarter of it
+  (`World::capped_niche_leaders`).
+- **Era score** (server, `eras::EraScores`). An era's score is 75% a mean
+  that weights each day by its place in the era (the last day as many
+  times as the era has days, the first once) and 25% the mean of its last
+  tenth. Growth late in an era counts; a one-day spike doesn't. Take a
+  leader sinking 30% → 20% against a joiner growing 0 → 10%: the joiner's
+  score goes from a fifth of the leader's to over a third.
+
+**The flier's edge, measured.** `dominance --cold-mod` removes one trait from
+Cold (playtest 12's flier, founded on day 27 as in the playtest; one seed
+each, playtest-12 rules). Era mean 9.5% as designed:
+- without wings 10.2%, warm-blooded 7.8%, laying eggs 9.4%;
+- without brumation 5.2%, without toxins and colour 2.9%.
+
+Toxins with honest colours, then brumation, carry it, not flight or live
+birth. The trace shows why the warm herds fall behind each winter. They
+breed nothing while asleep and lose 420–580 sleepers a season to predators,
+while the flier keeps giving birth from late-autumn pregnancies and loses
+about 150. A sleeper-cover rule (`Balance::sleeper_cover`: a hunter misses
+a deep sleeper on a day with that chance) did not help the warm herds. At
+0.6 for every sleeper the late flier copy's era mean went from 12.9% to
+25.1%; for warm sleepers only, Cold went from 12.7% to 19.4%. So it ships
+off. The class still has no counter beyond the share brakes; finding one
+is left open.
+
+**Replay** (`dominance --only Cold,Herd,Pack,Steady,Flier,Sleepers --cold-day
+27 --flier-day 360`: the flier, the warm egg herd, its sleepers copy, a pack,
+the starter, and a late flier copy on era 2's first day; seeds 1–4, 840
+days). Plain era means, playtest 12 rules → v94 rules:
+- Cold 12.8% → 12.7%, Flier (late copy) 11.9% → 12.9%
+- Herd 16.0% → 13.7%, Sleepers 16.7% → 17.0%
+- Steady 5.0% → 11.6%, Pack 4.0% → 3.6%
+
+No lineage passes 17% for an era. The replay does not reproduce the
+playtest's flier dominance: its warm egg herds keep pace with the fliers
+under both rule sets.
+
 ### Playtest 11: balance
 
 Playtest 11 (`docs/playtest-11.md`, findings 2, 6 and 11). A cold flier won

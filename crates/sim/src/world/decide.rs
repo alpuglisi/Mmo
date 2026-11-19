@@ -1433,7 +1433,13 @@ impl World {
                 let reachable = || {
                     matches!(self.map.traverse_at(&o.traits.body, q.pos, false), Traverse::Passable { .. }) && wades()
                 };
-                if v.hunter && q.mass() < v.prey_cap && !q.sheltered && !self.grace_spares(o, q) && reachable() {
+                if v.hunter
+                    && q.mass() < v.prey_cap
+                    && !q.sheltered
+                    && !self.grace_spares(o, q)
+                    && !self.sleeper_hidden(o, q)
+                    && reachable()
+                {
                     // Avoidance of bright and known-toxic prey, lowered by
                     // hunger (`World::hunter_avoidance`).
                     let avoid = self.hunter_avoidance(o, q);
@@ -1562,6 +1568,24 @@ impl World {
             return 0.0;
         }
         1.0 - r.powi(4)
+    }
+
+    /// Whether hunter `o` misses deep sleeper `q` today
+    /// (`Balance::sleeper_cover`): a warm-blooded animal hibernating or
+    /// estivating lies hidden in its den from each hunter with that chance,
+    /// drawn once per hunter, sleeper and day. Playtest 12: warm herds lost
+    /// 420–580 sleepers a winter to predators (the cold fliers, breeding on
+    /// carried pregnancies, about 150) and every warm herd ended at 0.3–2.6%.
+    pub(crate) fn sleeper_hidden(&self, o: &Organism, q: &Organism) -> bool {
+        let cover = self.config.balance.sleeper_cover;
+        // A warm-blooded sleeper dens up; a brumator lies out (it also
+        // wakes to bask on mild days).
+        if cover <= 0.0 || !q.dormancy.is_deep() || !q.traits.warm {
+            return false;
+        }
+        let day = self.tick / self.config.ticks_per_day.max(1) as u64;
+        let roll = (splitmix64(o.id ^ splitmix64(q.id ^ (day << 20) ^ 0x5133_9c0e)) >> 40) as f32 / (1u64 << 24) as f32;
+        roll < cover
     }
 
     /// Wild lineage `l`'s count over its refuge (`Balance::wild_refuge` of

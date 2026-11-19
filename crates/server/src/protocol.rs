@@ -1937,6 +1937,12 @@ pub struct CrowdingView {
     pub world_cap: Option<f32>,
     /// That share (0.2: a fifth of the world's crowding count).
     pub world_share: f32,
+    /// Litters also shrink once the owner's legacy share passes this
+    /// (`Balance::share_cap`; absent with the rule off).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub share_cap: Option<f32>,
+    /// The owner's legacy share today.
+    pub legacy_share: f32,
 }
 
 /// `renown_shop` (and after a purchase): what renown buys.

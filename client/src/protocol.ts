@@ -1124,6 +1124,10 @@ export interface CrowdingView {
   world_cap?: number;
   /** That share of the world's crowding count (0.2). */
   world_share?: number;
+  /** Litters also shrink once the legacy share passes this (sim `Balance::share_cap`). */
+  share_cap?: number;
+  /** The owner's legacy share today. */
+  legacy_share?: number;
 }
 
 /** `renown_shop`: what renown buys. */
