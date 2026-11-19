@@ -10404,6 +10404,111 @@ with no hint that the rule was relaxed, and 2 tiles from a territory's edge.
   the wild don't use them: they apply to a player's founding in a running
   world, to reinforcements and to the server's alerts.
 
+### Playtest 11: raids, landings and heat
+
+Round 12 for `docs/playtest-11.md` findings H1, M5, M12 and M17. Snapshot
+version 93 (main is at 92; balance's round 12). It adds `Balance::raid_rules` and `Balance::animal_clear`, off
+at 0, which is what older snapshots read (`serde_util::before_v93`), and
+turns `pack_cohesion` on at 0.3.
+
+**H1: nest raids ignored grace, offline protection and the market shield.**
+`apply::raid_clutch` and `decide::scent_clutch` skipped only the raider's own
+clutches and species it had given up on.
+- **The hunting rules for clutches** (`Balance::raid_rules` 1).
+  - `World::clutch_spared` keeps a player's raider off a clutch whose
+    lineage is under its founding grace. It also works the other way: a
+    graced raider spares other players' clutches.
+  - It also spares a clutch whose mother or guardian walks under a market
+    shield.
+  - Offline protection softens a raid as it softens a strike
+    (`World::offline_clutch_factor`: the surviving core's factor and the
+    mother's home range, stacked as for her). A raid then succeeds only
+    with that chance.
+  - Wild raiders, like wild hunters, ignore grace.
+  - **With balance's `graced_hunting`** (round 12, version 92) a graced
+    hunter's own grace no longer spares rivals' animals. It doesn't spare
+    their clutches either, and its first raid on one ends its owner's grace,
+    as a first attack does.
+- Tested with a shielded mother (`a_shielded_mothers_clutch_is_not_raided`).
+  Grace and offline protection share the code path but have no test of
+  their own: a grace is hard to set up in the predator test world.
+
+**M5: foundings on a crowded map landed inside a rival herd** ("0 tiles
+away", 148 rival animals in view).
+- **The 8-tile rule in every strict pick** (`Balance::animal_clear` 1).
+  Round 10 kept `ANIMAL_CLEAR` (8) tiles from rival animals only in the first
+  150 of 200 picks, then marked it down. Now the strict picks double to 400,
+  and every one keeps 8 tiles from every other player's animal.
+- **Then the emptiest ground.** If none qualifies, a second round of 400
+  keeps every other strict rule (room on dry land, water that lasts a
+  drought). Each rival animal within 8 tiles then costs 0.5, so the
+  emptiest ground wins. Only after that comes the old unchecked round.
+  - The first version of this went straight to the unchecked round. On the
+    crowded 64-tile test map a drought founding then lost its lasting-water
+    rule (caught by `drought_foundings_land_by_lasting_water`).
+- **Said.** `World::founding_crowded` records how many rival animals stood
+  within 8 tiles of such a home. The landing text adds: "The map is crowded:
+  no ground was clear of other players' animals, so they landed on the
+  emptiest found, with N rival animals within 8 tiles."
+- **Retired herds' ground.** The owner's retired lineages' homes are
+  avoided only in the picks that must keep clear, not in the
+  emptiest-ground round. Ground a retired herd just left empty is no longer
+  ruled out when nothing else is clear. Died-out homes are still marked
+  down there.
+- Tested by `foundings_keep_clear_of_rival_animals_or_say_how_crowded`:
+  rival animals 24 tiles apart leave clear ground, and every home is on it;
+  8 tiles apart leave none, and the crowding is recorded.
+
+**M17: reinforcements, packs and own-kind kills.**
+- **Reinforcements keep 8 tiles from rival animals** too (`animal_clear`).
+  If none of the near search is clear, round 11's outward ring search finds
+  the nearest clear ground, and the reply says so ("… in or beside another
+  player's territory or animals …"). Tested by
+  `reinforcements_keep_clear_of_a_rival_herd`.
+- **Pack cohesion at 0.3.** In the six-player study
+  (`predators --playtest4 --seeds 3 --days 360`, New arm, the pack on its
+  own instinct) the Apex Stalkers peaked at 126 and ended at 89 with
+  cohesion 0.3, against 111 and 77 with it off. On main 126e870 (balance's
+  round 12 merged) they peaked at 100 and ended at 84, against 106 and 87.
+  Both are within the ~15% the coordinator set, so 0.3 is the default. At 1 the pack ended half the size
+  (round 10). With it on, `restored_world_continues_exactly` lost the states
+  it asserts at its tick, so that test runs with cohesion off. The new
+  `a_world_with_pack_cohesion_continues_exactly` checks that a restored world
+  with cohesion continues exactly.
+- **Own-kind kills explained.** A death notice naming the player's own
+  lineage as the hunter adds: "A starving hunter turns on its own kind when
+  no other prey is in reach: lead the pack to prey, or split it so fewer
+  share what there is."
+
+**M12: heat.** A furred design died of heat in its first summer in forest by
+water: the advice it had been given.
+- **The advice was wrong.** In the sim, forest and water don't cool an
+  animal. Tile temperature (`terrain::update_tile`) has no canopy or water
+  term; only a burrow's shelter, a deep sleep, a lighter coat and the
+  body's heat tolerance change the heat a warm body takes
+  (`apply::update_needs`).
+- **The heat warning now says what helps:** "Thick fur, fat and big bodies
+  hold heat, and shade or water don't cool them: a burrow keeps the midday
+  heat off burrowers, and estivators sleep through the hottest weeks. Move
+  groups to the map's cooler parts, or found a lighter-coated design."
+- **A designer heat warning** (`DesignCompatView::heat_warning`).
+  `World::summer_heat` gives, for a warm-blooded design, the share of dry
+  land whose summer peak (mean plus the seasonal swing) passes its harm
+  threshold (`30 − 8 × insulation + heat tolerance + 8` °C). From a quarter
+  of the land the designer shows: "Heat: in summer about N% of the land gets
+  hotter than this design can bear (about T °C …). Shade and water don't
+  cool them; less fur and fat, a smaller body, burrowing … or estivation
+  … do." Tested by `a_thick_coat_overheats_on_a_warm_map`.
+
+**Checks** (on main 126e870 at version 92 with this round merged):
+
+| Check | Result |
+| --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.87 (± 0.16); every lineage 12 of 12 |
+| `predlong 6` on seeds 31–38 and 41–48 | fox 16/16 (16 viable), pack hunters 16/16 (16); no seed lost a prey species |
+| workspace tests (459 sim), both clippy runs, fixtures, serde lib tests, client typecheck, `vitest` (476), build | pass |
+| e2e (16 scripts, `E2E_JOBS=2`) | 16 of 16 pass |
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
