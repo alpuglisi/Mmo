@@ -72,6 +72,20 @@ fn candidates() -> Vec<(&'static str, FounderDesign)> {
         ("toxic", starter("toxic").with(Toxins, 0.5)),
         ("burrow+watch", starter("burrow+watch").with(Burrowing, 0.4).with(Vigilance, 0.5)),
         ("burrow+toxic", starter("burrow+toxic").with(Burrowing, 0.4).with(Toxins, 0.4)),
+        ("toxic+bright", starter("toxic+bright").with(Toxins, 0.5).with(Coloration, 0.6)),
+        ("toxic+4eggs", {
+            let mut d = starter("toxic+4eggs").with(Toxins, 0.5);
+            d.litter_size = 4;
+            d
+        }),
+        (
+            "small+toxic+bright",
+            starter("small+toxic+bright").with(BodySize, 0.35).with(Toxins, 0.5).with(Coloration, 0.6),
+        ),
+        ("bright+burrow", starter("bright+burrow").with(Toxins, 0.5).with(Coloration, 0.6).with(Burrowing, 0.4)),
+        // The ceilings: the strong designs themselves, founded as the newcomer.
+        ("as-herd", herd()),
+        ("as-sleepers", sleepers()),
     ]
 }
 
@@ -151,7 +165,7 @@ fn run(seed: u64, design: &FounderDesign, a: &Args) -> (Vec<usize>, BTreeMap<Str
         step(&mut g);
     }
     g.set_name(NEWCOMER, "newcomer");
-    let lineage = g.found(NEWCOMER, design).expect("the newcomer founds").lineage;
+    let lineage = g.found_at_any_price(NEWCOMER, design).expect("the newcomer founds").lineage;
     let mut at = Vec::new();
     for day in 1..=a.days {
         step(&mut g);
