@@ -2280,7 +2280,7 @@ mod tests {
     }
 
     /// Clutch cover (`Balance::clutch_cover`): a sitting parent keeps a
-    /// clutch of 3 warm on a cool nest, while a bigger clutch chills under
+    /// clutch of 4 warm on a cool nest, while a bigger clutch chills under
     /// her; with the rule off both stay warm.
     #[test]
     fn a_big_clutch_chills_under_its_parent() {
@@ -2300,8 +2300,8 @@ mod tests {
             w.update_clutches(&mut rng);
             w.clutches.iter().find(|c| c.guardian == Some(id)).map_or(f32::MAX, |c| c.chill)
         };
-        assert_eq!(chill(3, 1.0), 0.0);
-        assert!(chill(6, 1.0) > 0.0);
+        assert_eq!(chill(4, 2.1), 0.0);
+        assert!(chill(6, 2.1) > 0.0);
         assert_eq!(chill(6, 0.0), 0.0);
     }
 

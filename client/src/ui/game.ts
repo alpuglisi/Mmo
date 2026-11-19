@@ -42,7 +42,7 @@ import { createOnboarding } from './onboarding';
 import { onboardingDisabled } from '../onboarding';
 import { pushSettings } from './push';
 import {
-  canSplit, claimWait, clearMigrationMsg, groupColor, groupName, groupObedience, groupOptions, groupOrders, groupsOf, migrateMsgs, parseChoice,
+  canSplit, claimWait, clearMigrationMsg, groupCenter, groupColor, groupName, groupObedience, groupOptions, groupOrders, groupsOf, migrateMsgs, nextViewGroup, parseChoice,
   homeRangeNote, MAX_GROUPS, rallyLeft, rallyMsg, targetGroup, territoryTap, validChoice, type GroupChoice, type TerritoryDraft,
 } from '../groups';
 
@@ -203,6 +203,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const splitBtn = tool('split-group', 'split', 'Split', 'Split the group in two (the far half across its widest spread)');
   const pinBtn = tool('pin-view', 'pin', 'Pin view', 'Pin the server view window (what you can see of others) to the camera center');
   const pinLabel = pinBtn.querySelector('.tool-label')!;
+  // A second group out of the lineage's view window sees nothing around it:
+  // this moves the window from group to group (and keeps it on the group as it moves).
+  const viewGroupBtn = tool('view-group', 'eye', 'View group', 'Move the view window (what you can see of others) to each of your groups in turn, then back to the whole lineage');
+  const viewGroupLabel = viewGroupBtn.querySelector('.tool-label')!;
   const hint = h('div', { class: 'hint', id: 'hint' });
   const toasts = h('div', { class: 'toasts', id: 'toasts', 'aria-live': 'polite' });
   const moreBtn = tool('tools-more', 'more', 'Tools', 'Group commands and the view window', ' narrow-only');
@@ -215,7 +219,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   legendBtn.setAttribute('aria-expanded', 'false');
   const toolsMenu = h('div', { class: 'tools-menu', id: 'tools-menu' },
     h('div', { class: 'tool-group', role: 'group', 'aria-label': 'Group commands' }, groupSelect, migrateBtn, clearMigBtn, territoryBtn, rallyBtn, splitBtn),
-    h('div', { class: 'tool-group', role: 'group', 'aria-label': 'View window' }, pinBtn));
+    h('div', { class: 'tool-group', role: 'group', 'aria-label': 'View window' }, viewGroupBtn, pinBtn));
   const toolbar = h('div', { class: 'toolbar', role: 'toolbar', 'aria-label': 'Map tools' },
     h('div', { class: 'tool-group', role: 'group', 'aria-label': 'Camera' }, followBtn, zoomInBtn, zoomOutBtn),
     toolsMenu, moreBtn, foodBtn, legendBtn);
@@ -317,7 +321,16 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     }
   }
   const notices = h('div', { class: 'map-notices', id: 'map-notices' }, extinctAlert, catAlert, droughtAlert);
-  const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, notices, hint, legends, fab, possessBar, chooser, toasts);
+  // Phones: a tapped animal's compact card (who, what it does, how it fares)
+  // over the map, without opening the panel (playtest 7: nothing showed until
+  // the Animal tab was opened). Details opens the full inspector.
+  const peekTitle = h('div', { class: 'peek-title' });
+  const peekLine = h('div', { class: 'peek-line muted small' });
+  const peekDetails = h('button', { class: 'secondary small', id: 'peek-details', type: 'button' }, 'Details');
+  const peekClose = h('button', { class: 'secondary small peek-close', id: 'peek-close', type: 'button', 'aria-label': 'Close' }, '×');
+  const peek = h('div', { class: 'peek', id: 'peek', hidden: true, role: 'status' },
+    h('div', { class: 'peek-text' }, peekTitle, peekLine), peekDetails, peekClose);
+  const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, notices, hint, legends, fab, peek, possessBar, chooser, toasts);
   // The legend is collapsible: hidden by default (it covers part of the map;
   // the tour points to its button), the choice remembered on this device.
   function setLegend(on: boolean, remember: boolean): void {
@@ -364,6 +377,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   function setSheet(open: boolean): void {
     sheetOpen = open;
     el.classList.toggle('sheet-open', open);
+    renderPeek();
   }
   sheetHandle.addEventListener('click', () => setSheet(!sheetOpen));
   const onNarrowChange = () => updateHint();
@@ -506,12 +520,14 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       : mode === 'attack' && p
       ? `${tap} the animal #${p.id} should attack: another player's or a wild one in sight${touch ? '' : ' (Esc cancels)'}.`
       : p ? `Possessing #${p.id}: ${tap.toLowerCase()} the map to walk there.`
+      : model.state?.view.pinned && viewGroup !== null ? `The view window is on ${groupName(viewGroup)}: other animals show only around it. View group (map tools) moves it on; Unpin view follows your whole lineage again.`
       : model.state?.view.pinned ? `The view is pinned at (${model.state.view.x.toFixed(0)}, ${model.state.view.y.toFixed(0)}): other animals show only there. Unpin view (map tools) to follow your lineage again.`
       : touch ? 'Tap an organism to inspect it, long-press yours to possess. Drag to pan, pinch to zoom.'
       : 'Click an organism to inspect it (hold to possess yours). Drag to pan, wheel to zoom.';
     // The possession bar says it all while possessing.
     hint.hidden = !!p && mode === 'select';
     renderFab();
+    renderPeek();
     renderPossessBar();
     updateEdgePad();
   }
@@ -635,7 +651,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     // floating Possess button, the possession bar (playtest 4: a herd at the
     // bottom edge sat under them).
     let low = wrap.bottom;
-    for (const el of [hint, fab, possessBar]) {
+    for (const el of [hint, fab, peek, possessBar]) {
       const r = el.getBoundingClientRect();
       if (r.height > 0 && r.top < wrap.bottom) low = Math.min(low, r.top);
     }
@@ -644,6 +660,38 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }
   window.addEventListener('resize', updateEdgePad);
   cleanups.push(() => window.removeEventListener('resize', updateEdgePad));
+
+  /** The phone card for the selected animal (`peek`): shown on narrow screens while the sheet is down. */
+  function renderPeek(): void {
+    const s = model.state;
+    const id = model.selected;
+    const own = id !== null ? s?.organisms.find((o) => o.id === id) : undefined;
+    const other = id !== null && !own ? s?.nearby.find((o) => o.id === id) : undefined;
+    // A possessed animal has the possession bar.
+    const show = narrow() && !sheetOpen && mode === 'select' && !!(own || other) && !own?.possessed;
+    if (peek.hidden === show) {
+      peek.hidden = !show;
+      stageWrap.classList.toggle('peeking', show);
+      queueMicrotask(updateEdgePad);
+    }
+    if (!show) return;
+    const o = (own ?? other)!;
+    const look = o.look ? describeLook(o.look).split(' · ')[0] : '';
+    const whose = own ? 'yours' : other!.owner === WILD ? 'wild' : 'rival';
+    const title = `#${o.id} ${o.sex === 'female' ? '♀' : '♂'} ${whose}${look ? ` · ${look}` : ''}`;
+    const stage = o.matured ? 'adult' : 'young';
+    const pct = (v: number) => String(Math.round(v));
+    const line = own
+      ? `${stage} · ${actionText(own.action, own.needs)} · health ${pct(own.health)} · hunger ${pct(own.needs.hunger)} · thirst ${pct(own.needs.thirst)}`
+      : `${stage} · ${actionText(o.action)}${other!.protected ? ' · protected' : ''}`;
+    if (peekTitle.textContent !== title) peekTitle.textContent = title;
+    if (peekLine.textContent !== line) peekLine.textContent = line;
+    peek.dataset.org = String(o.id);
+    // The floating Possess button sits just above the card.
+    stageWrap.style.setProperty('--peek-h', `${Math.ceil(peek.getBoundingClientRect().height)}px`);
+  }
+  peekDetails.addEventListener('click', () => { setSheet(true); showTab('organism'); });
+  peekClose.addEventListener('click', () => model.select(null));
 
   /** The floating Possess / Release button for the selected own organism. */
   function renderFab(): void {
@@ -699,6 +747,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   let shownLineage: number | null | undefined;
   /** The button as the server has it (the state's `view.pinned`): a view pinned by an API call or before a reload shows too (playtest 6). */
   function setPinned(on: boolean): void {
+    // Unpinned (by the button, a retire or another tab): no group is viewed.
+    if (!on) setViewGroup(null);
     if (on === pinned && pinBtn.classList.contains('active') === on) return;
     pinned = on;
     pinLabel.textContent = pinned ? 'Unpin view' : 'Pin view';
@@ -706,8 +756,67 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }
   pinBtn.addEventListener('click', async () => {
     const r = pinned ? await send({ type: 'clear_view' }) : await send({ type: 'set_view', x: view.cam.x, y: view.cam.y, radius: 24 });
-    if (r.ok) setPinned(!pinned);
+    if (r.ok) {
+      setViewGroup(null);
+      setPinned(!pinned);
+    }
   });
+  /** The group the view window is kept on (View group), or null. */
+  let viewGroup: number | null = null;
+  let viewGroupBusy = false;
+  function setViewGroup(id: number | null): void {
+    viewGroup = id;
+    viewGroupLabel.textContent = id === null ? 'View group' : `Viewing ${groupName(id).replace(/^Group /, '').replace(' (main)', '')}`;
+    viewGroupBtn.classList.toggle('active', id !== null);
+  }
+  function renderViewGroup(): void {
+    const s = model.state;
+    viewGroupBtn.disabled = viewGroup === null && nextViewGroup(s, null) === null;
+    viewGroupBtn.title = viewGroupBtn.disabled
+      ? 'View group: split your lineage into groups (Split) to look around each in turn'
+      : 'Move the view window (what you can see of others) to each of your groups in turn, then back to the whole lineage';
+  }
+  /** Points the window at `id`'s middle; false if refused. */
+  async function pinOnGroup(id: number): Promise<boolean> {
+    const c = groupCenter(model.state, id);
+    if (!c) return false;
+    viewGroupBusy = true;
+    try {
+      const r = await send({ type: 'set_view', x: c.x, y: c.y, radius: 24 });
+      return r.ok;
+    } finally {
+      viewGroupBusy = false;
+    }
+  }
+  viewGroupBtn.addEventListener('click', async () => {
+    const next = nextViewGroup(model.state, viewGroup);
+    if (next === null) {
+      if ((await send({ type: 'clear_view' })).ok) {
+        setViewGroup(null);
+        setPinned(false);
+        model.toast('info', 'The view window follows your whole lineage again');
+      }
+      return;
+    }
+    if (await pinOnGroup(next)) {
+      setViewGroup(next);
+      setPinned(true);
+      view.setFollow(true);
+      model.toast('info', `Viewing ${groupName(next)}: the view window stays on it as it moves`);
+    }
+    updateHint();
+  });
+  /** Keeps the window on the viewed group as it moves (re-pinned once it drifts 4 tiles). */
+  function trackViewGroup(): void {
+    const s = model.state;
+    if (viewGroup === null || viewGroupBusy || !s?.view.pinned) return;
+    const c = groupCenter(s, viewGroup);
+    if (!c) {
+      setViewGroup(null);
+      return;
+    }
+    if (Math.hypot(c.x - s.view.x, c.y - s.view.y) > 4) void pinOnGroup(viewGroup);
+  }
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Escape') setMode('select');
   };
@@ -1071,16 +1180,32 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }
   /** Name a species of yours (`name_species`, a renown cosmetic). */
   async function nameSpecies(sp: SpeciesView): Promise<void> {
-    const price = market.shopPrice('species_name_price');
-    const name = await textDialog({ id: 'species-name', title: `A name for "${sp.name}"`, value: sp.name, maxLength: 40, ok: price ? `Name it (${price} renown)` : 'Name it',
-      body: `1 to 40 characters${price ? `; costs ${price} renown` : ''}.` });
-    if (name === null || name.trim() === '' || name.trim() === sp.name) return;
-    const r = await send({ type: 'name_species', species: sp.id, name: name.trim() });
-    if (r.ok) {
-      model.toast('info', `Species ${sp.id} is now called "${String(r.data ?? name.trim())}".`);
+    // The price always shows, and what you have when it is more (playtest 7:
+    // it was hidden when short); a refusal stays in the dialog to fix the name.
+    const price = await market.shopPrice('species_name_price');
+    const have = model.state?.balance;
+    const short = price !== undefined && have !== undefined && have < price;
+    const cost = price === undefined ? '' : `; costs ${price} renown${short ? ` (you have ${Math.floor(have!)})` : ''}`;
+    let named = '';
+    const name = await textDialog({
+      id: 'species-name', title: `A name for "${sp.name}"`, value: sp.name, maxLength: 40, ok: price ? `Name it (${price} renown)` : 'Name it',
+      body: `1 to 40 characters${cost}. A species is named once.`,
+      submit: async (v) => {
+        const t = v.trim();
+        if (t === '') return 'Type a name (1 to 40 characters).';
+        if (t === sp.name) return 'That is its name already: type a new one.';
+        const r = await send({ type: 'name_species', species: sp.id, name: t });
+        if (r.ok) {
+          named = String(r.data ?? t);
+          return null;
+        }
+        return r.error ? commandError('name_species', r.error).replace(/^[^:]*: /, '') : "That didn't work.";
+      },
+    });
+    if (name !== null && named) {
+      model.toast('info', `Species ${sp.id} is now called "${named}".`);
       void refreshChronicle();
     }
-    // (A refusal is toasted once, by the model, in friendly words: playtest 6 saw it twice.)
   }
   // Bought nameplates: shown next to names (Ranks, hall of fame, leaderboard, a rival's inspector).
   async function refreshNameplates(): Promise<void> {
@@ -1860,14 +1985,23 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const listMore = h('p', { class: 'muted small', id: 'organism-list-more' });
   const groupsEl = h('div', { id: 'group-list' });
   const retireBtn = h('button', { type: 'button', id: 'retire-lineage', class: 'danger' }, 'Retire lineage');
+  const retireRuleEl = h('p', { class: 'small', id: 'retire-rule' }, 'Founding again soon after retiring costs more per founder.');
   const retireEl = h('details', { id: 'lineage-retire', class: 'retire' },
     h('summary', {}, 'Retire this lineage'),
     h('p', { class: 'muted small' },
       'Start over: every animal and egg of your lineage leaves the world at once (they are removed, not killed and not left wild), ',
       'its orders end, and you can design and found a new lineage straight away. Your renown, records and titles stay. ',
       'A new lineage\'s legacy share counts toward the ranked season gradually over its first days.'),
+    // Not a free re-roll: the rule is here too, not only in the confirmation (playtest 7).
+    retireRuleEl,
     retireBtn);
   retireEl.hidden = true;
+  retireEl.addEventListener('toggle', () => {
+    if (!retireEl.open) return;
+    void api.world().then((w) => {
+      if (w.refound_rule) setText(retireRuleEl, `After retiring, ${w.refound_rule}.`);
+    }).catch(() => {});
+  });
   retireBtn.addEventListener('click', async () => {
     const lineage = model.state?.lineage;
     if (lineage === null || lineage === undefined) return;
@@ -2004,7 +2138,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       lineageExtinct.querySelector('.extinct-text')?.replaceChildren(h('strong', {}, `You retired lineage #${s.lineage}.`), ' Its animals have left the world.');
     }
     retireEl.hidden = !(s.lineage !== null && s.population > 0);
-    endGraceEl.hidden = !s.grace;
+    // Nothing to end once the lineage is gone (retired or died out).
+    endGraceEl.hidden = !(s.grace && s.population > 0);
     if (!gone) renderGroups(s);
     const lb = s.leaderboard;
     keyed(boardEl, JSON.stringify(lb) + nameplatesKey(), () => lb.rows.length === 0
@@ -2061,7 +2196,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (!e) return ['Pregnant', String(pregnant)];
     const brooding = orgs.filter((o) => o.action === 'guard').length;
     const parts = [
-      e.clutches === 0 ? 'no clutch now' : `now ${e.clutches} clutch${e.clutches === 1 ? '' : 'es'} (${e.eggs} egg${e.eggs === 1 ? '' : 's'})`,
+      // The same counts as the Genes tiles (playtest 7: "Clutches 0 / Eggs 1" there, "no clutch now" here).
+      e.clutches === 0 && e.eggs === 0 ? 'no clutch now'
+        : `now ${e.clutches} clutch${e.clutches === 1 ? '' : 'es'} (${e.eggs} egg${e.eggs === 1 ? '' : 's'})`,
       e.clutches > 0 ? `${e.brooded} brooded` : null,
       brooding > 0 ? `${brooding} brooding now` : null,
       pregnant > 0 ? `${pregnant} about to lay` : null,
@@ -2140,6 +2277,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   cleanups.push(
     model.on('state', () => {
       setPinned(!!model.state?.view.pinned);
+      trackViewGroup();
+      renderViewGroup();
       // A new lineage (after a retire): nothing of the old one stays on
       // screen, neither its animal in the inspector nor its group cards'
       // last orders (playtest 6).
@@ -2157,7 +2296,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       updateHint();
       renderPanels();
     }),
-    model.on('select', () => { view.selected = model.selected; renderFab(); renderPanels(); }),
+    model.on('select', () => { view.selected = model.selected; renderFab(); renderPeek(); renderPanels(); }),
     model.on('offers', () => renderPanels()),
     model.on('conn', renderConn),
     model.on('alerts', onAlerts),

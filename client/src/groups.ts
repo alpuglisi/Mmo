@@ -189,3 +189,26 @@ export function memberCounts(s: StateView): Map<number, number> {
   for (const o of s.organisms) m.set(o.group ?? 0, (m.get(o.group ?? 0) ?? 0) + 1);
   return m;
 }
+
+/** The middle of a group's agents (`organisms` lists agents only), or null with none in the list. */
+export function groupCenter(s: StateView | null, id: number): { x: number; y: number; n: number } | null {
+  let x = 0, y = 0, n = 0;
+  for (const o of s?.organisms ?? []) {
+    if ((o.group ?? 0) !== id) continue;
+    x += o.x; y += o.y; n++;
+  }
+  return n > 0 ? { x: x / n, y: y / n, n } : null;
+}
+
+/**
+ * The group "View group" moves the view window to next: the groups with
+ * agents in turn, then null (back to following the whole lineage). With one
+ * group or none there is nothing to cycle (null).
+ */
+export function nextViewGroup(s: StateView | null, current: number | null): number | null {
+  const ids = groupsOf(s).filter((g) => g.members > 0 && groupCenter(s, g.id)).map((g) => g.id);
+  if (ids.length < 2) return null;
+  if (current === null) return ids[0];
+  const i = ids.indexOf(current);
+  return i < 0 ? ids[0] : i + 1 < ids.length ? ids[i + 1] : null;
+}

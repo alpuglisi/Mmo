@@ -314,6 +314,7 @@ button.danger { background: #b62324; color: #fff; }
 .pick-chooser > span { flex-shrink: 0; }
 .pick-chooser .chip.active { border-color: var(--accent); }
 .fab, .fab[hidden] { display: none; }
+.peek, .peek[hidden] { display: none; }
 
 /* Phones: the map takes the screen; the sidebar is a bottom sheet with a tab
    bar that is always visible; panels slide up over the map when opened. */
@@ -402,6 +403,17 @@ button.danger { background: #b62324; color: #fff; }
   .group-actions button { min-height: 36px; }
   .hint { left: 8px; right: 8px; bottom: 8px; font-size: 12px; }
   .fab { display: block; bottom: 48px; }
+  /* A tapped animal's card (game.ts renderPeek): in place of the hint line and the Possess button. */
+  .peek { display: flex; position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 3; align-items: center; gap: 6px; padding: 6px 6px 6px 10px;
+    border-radius: 10px; background: rgba(13, 17, 23, 0.92); border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45); font-size: 13px; }
+  .peek[hidden] { display: none; }
+  .peek .peek-text { flex: 1; min-width: 0; }
+  .peek .peek-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .peek .peek-line { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .peek button { flex-shrink: 0; min-height: 40px; }
+  .peek .peek-close { min-width: 40px; padding: 0; }
+  .peeking .hint { display: none; }
+  .peeking .fab { bottom: calc(var(--peek-h, 56px) + 16px); }
   .possess-bar { left: 8px; right: 8px; transform: none; max-width: none; bottom: 100px; flex-wrap: wrap; font-size: 12px; }
   .possess-bar button { min-height: 40px; }
   /* One row (scrolling sideways), small, just over the floating button: as little of the map as it can. */
@@ -411,6 +423,8 @@ button.danger { background: #b62324; color: #fff; }
   /* A tip card makes way for it (it is short-lived and asked for). */
   .choosing .hint-card { top: 52px; bottom: auto; }
   /* While possessing (a long press can still open it), above the possession bar, not over its buttons. */
+  /* Clear of the animal's card and the Possess button above it. */
+  .peeking .pick-chooser { bottom: calc(var(--peek-h, 56px) + 72px); }
   .possessing .pick-chooser { bottom: calc(100px + var(--possess-h, 78px) + 6px); }
   .pick-chooser .chip { min-height: 34px; padding: 0.2em 0.6em; font-size: 13px; }
   .fab[hidden] { display: none; }
