@@ -353,12 +353,15 @@ async function main() {
         // inspector shows it (the hunt above may have caught it): pick again.
         const gone = await page.evaluate((id) => !window.evo.model.state.nearby.some((o) => o.id === id), pick);
         // Or it wandered beyond reach: the button says so and is disabled (the interface is right).
+        // Or it went down its burrow, or came under protection, between the
+        // check and the click: the button says why; another is picked.
         const far = await page.evaluate(() => {
           const b = document.querySelector('#btn-attack');
-          return b?.disabled && /too far/.test(b.textContent ?? '') ? b.textContent : null;
+          return b?.disabled && /too far|in its burrow|protected/.test(b.textContent ?? '') ? b.textContent : null;
         });
         if (far) {
-          step(`wild #${pick} wandered out of reach ("${far}"): retrying`);
+          if (!/too far/.test(far)) skip.add(pick);
+          step(`wild #${pick} can't be attacked now ("${far}"): retrying`);
           continue;
         }
         if (gone) {
