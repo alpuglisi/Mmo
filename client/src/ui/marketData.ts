@@ -144,7 +144,9 @@ export function compatRowText(r: CompatibilityView['rows'][number]): string {
     : r.drift_risk === 'low' ? ' · sterile now; drift could make them fertile in time' : '';
   // The closest pair's widest body-plan gap: a cause, not a verdict (a
   // gap under 0.30 lowers fertility; 0.30 or more makes a pair sterile).
-  const cause = r.limiting === 'morphology'
+  const cause = r.limiting === 'none'
+    ? 'body plans match; genome distance sets the rest'
+    : r.limiting === 'morphology'
     ? `closest pair differs in eye or leg count`
     : r.gap >= 0.3 ? `${what} ${gapWords(r.gap)}, even in the closest pair` : `${what} ${gapWords(r.gap)} in the closest pair`;
   if (!r.compatible) {

@@ -507,6 +507,39 @@ fn possession_ends_when_the_player_is_gone() {
     assert!(!r.world.organisms.iter().any(|o| o.possessed_by == Some(1)));
 }
 
+/// Playtest 12: a helper socket possessed an animal and closed while the
+/// player's main session stayed: the possession ends after the grace.
+#[test]
+fn possession_ends_when_its_socket_closes() {
+    let (mut g, a) = game();
+    let grace = minutes_to_ticks(POSSESSION_GRACE_MINUTES, g.cfg.tick_ms);
+    g.connect(11, 1, "ann");
+    g.command(11, 1, None, ClientMsg::Possess { organism: a[0] });
+    let possessed = |g: &Game| g.world.organisms.iter().any(|o| o.id == a[0] && o.possessed_by == Some(1));
+    assert!(possessed(&g));
+    g.disconnect(11);
+    for _ in 0..grace + 1 {
+        tick(&mut g);
+    }
+    assert!(!possessed(&g), "the possessing socket closed: released though conn 10 stays");
+}
+
+/// Playtest 12: refused `claim_cooldown` 11 days after a "grazed bare"
+/// alert; the alert waives the wait until the ground recovers.
+#[test]
+fn a_bare_alert_waives_the_claim_cooldown() {
+    let (mut g, _) = game();
+    let home = g.world.group_middle(1, 0).unwrap();
+    run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 5.0 }).unwrap();
+    let again = ClientMsg::ClaimTerritory { group: 0, x: home.x + 1.0, y: home.y, radius: 5.0 };
+    assert_eq!(run(&mut g, again.clone()), Err("claim_cooldown".into()));
+    // Told it is bare (the daily check's state), though the sim's own
+    // check may find the plants back above its line.
+    g.territory_alerted.insert((1, 0, 1));
+    assert!(run(&mut g, again).is_ok());
+    assert!(!g.territory_alerted.contains(&(1, 0, 1)), "a new circle: the old alert is no longer news");
+}
+
 /// Playtest 6: a big lineage lost 20–75 a day unflagged (5% rule); a
 /// thirst-only crash read "going hungry"; mass cold deaths had no alert.
 #[test]
@@ -567,7 +600,7 @@ fn drownings_and_slow_die_offs_are_warned() {
     assert!(
         w.iter().any(|(k, t)| k == "decline"
             && t.contains("Your lineage is crashing: 63 → 33 alive over the last 10 days")
-            && t.contains("30 died (30 of hunger")),
+            && t.contains("30 died in that time (30 of hunger)")),
         "{w:?}"
     );
     // The same deaths in a lineage that grows meanwhile: not a die-off (playtest 8: "954 → 1251").
@@ -1163,6 +1196,10 @@ fn a_stalled_migration_says_how_far_it_got_and_bare_alerts_dont_repeat() {
     let home = g.world.group_middle(1, 0).unwrap();
     run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 100.0 }).unwrap();
     let t = g.world.territory(1, 0).unwrap();
+    // Past the days a fresh claim isn't called bare.
+    for _ in 0..(BARE_DAYS as u64) * g.world.config.ticks_per_day as u64 {
+        g.world.step();
+    }
     let record = g.daily_record();
     let mut out = Outbox::new();
     let set_veg = |g: &mut Game, f: f32| {
