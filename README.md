@@ -9189,6 +9189,26 @@ founders were eaten. Many of these days are droughts, where a home must be
 by water that lasts (playtest 6), and the herds drink at the same water.
 The weight stays at 4.
 
+**Founder survival** (`examples/foundsurvival.rs`, with a fifth arm for
+`founding_rivals`; the worlds have changed since playtest 6's table, so the
+arms compare only with each other): founders alive 20 days after founding,
+over 8 seeds and three designs:
+
+| Founded | Old | Playtest 3 | Playtest 4 | Playtest 6 | Playtest 7 |
+| --- | --- | --- | --- | --- | --- |
+| day 45 (spring) | 750 / 872 | 768 | 835 | 865 | 865 |
+| day 100 (late autumn) | 804 | 838 | 831 | 841 | 840 |
+| day 160 (summer) | 518 | 533 | 637 | 673 | 674 |
+| worst drought, days 120–220 | 537 | 618 | 625 | 678 | 691 |
+| day 220 (autumn) | 630 | 723 | 781 | 774 | 771 |
+| day 230 (late winter) | 625 | 797 | 791 | 799 | 801 |
+| 40–60% drought | 643 | 652 | 693 | 720 | 703 |
+| all | 4,507 / 6,104 (74%) | 4,929 (81%) | 5,193 (85%) | 5,350 (88%) | 5,345 (88%) |
+
+The sample players hold no territories here, so the new rules cost
+nothing in survival. `sweep --size 96 --trials 1 --seeds 12 --rounds 1
+--seed 31`: 11.90 (± 0.12), unchanged.
+
 ### Playtest 6: predators and warnings
 
 Round 7 for `docs/playtest-6.md` findings M9, M10, M14 and three low items.
