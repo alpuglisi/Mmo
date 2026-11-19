@@ -9,7 +9,7 @@ import { commandError } from '../errors';
 import { DEFAULT_TICKS_PER_DAY, gameAndReal, ticksToNextSeason } from './duration';
 import { reconcile, setText } from './reconcile';
 import { friendlyError, MEETING_TILES } from './friendlyErrors';
-import { historyRows, meetText, offerLine } from './matingHistory';
+import { apartText, historyRows, meetText, offerLine } from './matingHistory';
 import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
 import { buildFamilyTree, type FamilyModel } from '../familyTree';
@@ -340,9 +340,15 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     return lineage !== null && lineage !== undefined && stats?.lineage === lineage && stats.ended === 'retired';
   }
 
+  let endedAsked: number | null = null;
   function renderExtinct(): void {
     const st = model.state;
     const gone = !!st && st.lineage !== null && st.population === 0;
+    // Gone: ask the server how it ended (a retirement elsewhere, or by the API, read as "died out": playtest 10).
+    if (gone && endedAsked !== st!.lineage && !(stats?.lineage === st!.lineage && stats.ended)) {
+      endedAsked = st!.lineage;
+      void refreshStats().then(() => { if (model.state) renderExtinct(); });
+    }
     extinctAlert.hidden = !gone;
     if (!gone) return;
     const retired = retiredNow(st!.lineage);
@@ -365,6 +371,13 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const peek = h('div', { class: 'peek', id: 'peek', hidden: true, role: 'status' },
     h('div', { class: 'peek-text' }, peekTitle, peekLine), peekDetails, peekClose);
   const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, notices, hint, legends, fab, peek, possessBar, chooser, toasts);
+  // The notices go below the toolbar's last row (it wraps on narrow desktops).
+  const measureToolbar = () => stageWrap.style.setProperty('--toolbar-h', `${toolbar.offsetTop + toolbar.offsetHeight}px`);
+  if (typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(measureToolbar);
+    ro.observe(toolbar);
+    cleanups.push(() => ro.disconnect());
+  }
   // The legend is collapsible: hidden by default (it covers part of the map;
   // the tour points to its button), the choice remembered on this device.
   function setLegend(on: boolean, remember: boolean): void {
@@ -594,6 +607,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (p) {
       // Possessing from the chooser's pick: the chooser goes (it lay over the bar's buttons, playtest 5).
       if (lastPossessed !== p.id && !chooser.hidden) hideChooser();
+      // A phone's sheet (opened on the Animal tab's Possess) closes for the bar and its Release
+      // (playtest 10: "Release is on the bar", hidden under the half-open sheet).
+      if (lastPossessed !== p.id && narrow() && sheetOpen) setSheet(false);
       lastPossessed = p.id;
       clearTimeout(endedTimer);
       possessBar.classList.remove('ended');
@@ -1864,7 +1880,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           } }, 'Block player')));
     }, (row, e) => {
       setText(row.querySelector('.offer-line')!, offerLine(e.offer));
-      setText(row.querySelector('.offer-time')!, [offerTime(e.offer), meetText(e.offer, model.player)].filter(Boolean).join(' '));
+      setText(row.querySelector('.offer-time')!, [offerTime(e.offer), apartText(e.offer, s?.organisms ?? [], s?.nearby ?? [])].filter(Boolean).join(' '));
       const pick = row.querySelector<HTMLSelectElement>('.pick-own');
       if (pick) {
         const lineageOffer = e.offer.partner === 0 && e.offer.lineage !== undefined;
@@ -2124,8 +2140,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const n = d?.removed ?? 0;
       const moved = d?.transferred ?? 0;
       markRetired(lineage);
-      model.toast('info', `Lineage #${lineage} retired: ${animals(n)} left the world${moved > 0 ? ` and ${animals(moved)} joined other players' lineages` : ''}. You can found a new lineage.`);
+      model.toast('info', `Lineage #${lineage} retired: ${animals(n)} left the world${moved > 0 ? ` and ${animals(moved)} joined other players' lineages` : ''}. Design the new one.`);
       retireEl.open = false;
+      // Straight to the design screen (playtest 10: it didn't open after a retirement; two "Start a new lineage" buttons waited).
+      if (deps.onNewLineage) setTimeout(() => deps.onNewLineage?.(), 600);
     }
   });
   // End the newcomer grace early (playtest 3: predators never got to hunt). One element, shown while graced.
@@ -2356,7 +2374,14 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const heed = groupObedience(g);
       const lapse = g.rally ? ` (lapses in ${span(rallyLeft(g, tick))})` : '';
       const outcome = g.last_outcome ? ` · last order: ${g.last_outcome}` : '';
-      const text = `${g.members} (${g.adults} adults) · ${groupOrders(g)}${lapse}${heed ? ` · ${heed}` : ''}${outcome}`;
+      // An empty main group says what that means (playtest 10): surveys, restorations and orders "of the
+      // main group" find nobody until another group is merged into it.
+      const empty = g.members === 0
+        ? (g.id === 0 && groups.some((x) => x.id !== 0 && x.members > 0)
+          ? 'no animals: the main group is empty, so merge another group into it (its Merge into A button)'
+          : 'no animals')
+        : null;
+      const text = empty ?? `${g.members} (${g.adults} adults) · ${groupOrders(g)}${lapse}${heed ? ` · ${heed}` : ''}${outcome}`;
       if (el && el.textContent !== text) el.textContent = text;
     }
   }

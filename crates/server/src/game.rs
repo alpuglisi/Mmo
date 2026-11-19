@@ -177,6 +177,9 @@ pub struct GameConfig {
     pub state_leaderboard_rows: usize,
     /// Most open offers one player may have made at once.
     pub max_open_offers: usize,
+    /// Daily income tapers above this balance ([`economy::tapered_income`];
+    /// 0: no taper).
+    pub income_taper_from: u64,
     /// Length of a ranked season in simulated days (`crate::league`). A
     /// change applies from the next season.
     pub season_days: u64,
@@ -551,6 +554,7 @@ impl Default for GameConfig {
             max_nearby: 256,
             state_leaderboard_rows: 50,
             max_open_offers: 8,
+            income_taper_from: economy::INCOME_TAPER_FROM,
             season_days: league::DEFAULT_SEASON_DAYS,
             offline_protection_ticks: DEFAULT_PROTECTION_TICKS,
             home_range_ticks: DEFAULT_HOME_RANGE_TICKS,
@@ -672,6 +676,8 @@ pub struct RefoundTerms {
     pub minutes_left: u64,
     /// Said to the player.
     pub reason: String,
+    /// One flat sentence for the founding reply (no nested rule text).
+    pub short: String,
     /// Renown this re-founding costs ([`refound_fee`]: doubling with each
     /// re-founding already made in the window; at most the balance; none
     /// after dying out, only after a retirement).
@@ -822,6 +828,10 @@ struct Offer {
 struct Conn {
     player: PlayerId,
     view: Option<ViewWindow>,
+    /// The radius `set_view` asked for: a pinned view narrowed as the
+    /// animals walked off widens again up to it when they come back
+    /// (playtest 10: it never widened again).
+    view_asked: f32,
 }
 
 /// Per-player progress for milestone alerts.
@@ -1473,9 +1483,9 @@ impl Game {
             let ticks = (days * self.world.config.ticks_per_day as f32).round() as u64;
             let minutes = self.real_seconds(ticks).div_ceil(60).max(1);
             let when = if days < 1.0 {
-                format!("in under a day (about {minutes} real minute{})", if minutes == 1 { "" } else { "s" })
+                format!("in under a day ({})", real_minutes(minutes as f64))
             } else {
-                format!("in about {days:.0} days (about {minutes} real minutes)")
+                format!("in about {days:.0} days ({})", real_minutes(minutes as f64))
             };
             let near = if by_owner.is_empty() {
                 String::new()
@@ -1975,7 +1985,7 @@ impl Game {
                 let mut ok = self.found_at_any_price(player, &fewer)?;
                 ok.cost = RefoundTerms::cost(design, n);
                 ok.requested = design.founders;
-                ok.reduced = Some(t.reason.clone());
+                ok.reduced = Some(t.short.clone());
                 // The renown fee: what they have now, the rest owed and
                 // taken from their next renown (a player without renown can
                 // still play; spending it first doesn't dodge the fee).
@@ -2053,6 +2063,10 @@ impl Game {
                 until_day: ended + window,
                 minutes_left: minutes_left as u64,
                 reason: format!("your last lineage {how} on day {}: {}", ended + 1, self.refound_rule()),
+                short: format!(
+                    "your last lineage {how} on day {}, and a re-founding within {window} days of that gets half the founders",
+                    ended + 1
+                ),
                 // The fee is for a re-roll: in full after a retirement, half
                 // after a lineage that died out young (within the window of
                 // its founding: churn), none after one that lived.
@@ -2073,8 +2087,8 @@ impl Game {
     pub fn refound_rule(&self) -> String {
         let window = self.refound_window_days();
         format!(
-            "re-founding within {window} days (about {} real minutes) founds half your founders (rounded up) and costs {REFOUND_FEE} renown after a retirement (half after a lineage that died out young), doubling with each re-founding in that time; renown you don't have is owed from your next",
-            (window as f64 * self.world.config.ticks_per_day as f64 * self.cfg.tick_ms / 60_000.0).round()
+            "re-founding within {window} days ({}) founds half your founders (rounded up) and costs {REFOUND_FEE} renown after a retirement (half after a lineage that died out young), doubling with each re-founding in that time; renown you don't have is owed from your next",
+            real_minutes(window as f64 * self.world.config.ticks_per_day as f64 * self.cfg.tick_ms / 60_000.0)
         )
     }
 
@@ -2194,7 +2208,9 @@ impl Game {
         for (id, player, v) in pinned {
             let reach = self.view_reach(player, Vec2::new(v.x, v.y));
             if let Some(c) = self.conns.get_mut(&id) {
-                c.view = (reach >= 1.0).then(|| ViewWindow { radius: v.radius.min(reach), ..v });
+                // Up to the radius asked for, as far as they see now: narrower when they leave, wider when they return.
+                let asked = if c.view_asked > 0.0 { c.view_asked } else { v.radius };
+                c.view = (reach >= 1.0).then(|| ViewWindow { radius: asked.min(reach), ..v });
             }
         }
     }
@@ -2307,13 +2323,26 @@ impl Game {
             };
             self.close(id, OfferStatus::Cancelled, None, Some(info), out);
         }
+        // Pending offers to or from the retiring player end as retired, not
+        // as "died before the mating" when their animals leave (playtest 10).
+        let pending: Vec<u64> = self
+            .offers
+            .values()
+            .filter(|o| o.status == OfferStatus::Pending && (o.from == player || o.to == player))
+            .map(|o| o.id)
+            .collect();
+        for id in pending {
+            let info =
+                ErrorInfo::new("retired", format!("{} retired their lineage, so the offer ended", self.name(player)));
+            self.close(id, OfferStatus::Cancelled, None, Some(info), out);
+        }
     }
 
     pub fn connect(&mut self, conn: ConnId, player: PlayerId, name: &str) -> Outbox {
         self.set_name(player, name);
         let first = !self.conns.values().any(|c| c.player == player);
-        self.conns.insert(conn, Conn { player, view: None });
-        self.left.remove(&player);
+        self.conns.insert(conn, Conn { player, view: None, view_asked: 0.0 });
+        let gone_since = self.left.remove(&player);
         let mut out = vec![(
             Target::Conn(conn),
             ServerMsg::Welcome { player, name: name.into(), lineage: self.lineage_of(player), proto: None },
@@ -2324,6 +2353,21 @@ impl Game {
         }
         if let Some(s) = self.state_now(conn) {
             out.push((Target::Conn(conn), ServerMsg::State(Box::new(s))));
+        }
+        // Offers made while the player had no connection are announced now
+        // (playtest 10: an offer made before they connected never was).
+        if first {
+            let since = gone_since.unwrap_or(0);
+            let ids: Vec<u64> = self
+                .offers
+                .values()
+                .filter(|o| o.to == player && o.from != player && o.status == OfferStatus::Pending)
+                .filter(|o| o.created_tick >= since)
+                .map(|o| o.id)
+                .collect();
+            for id in ids {
+                out.push((Target::Conn(conn), ServerMsg::MatingRequest { offer: self.offer_view(id) }));
+            }
         }
         out
     }
@@ -2446,7 +2490,7 @@ impl Game {
                     target_data(asked, to, "that is water or impassable; the group goes to the nearest land");
                 data["group"] = group.into();
                 if let Some((_, route)) = self.routes.get(&(player, group)) {
-                    data["route"] = serde_json::to_value(route).unwrap_or_default();
+                    data["route"] = route_json(route);
                 }
                 let mut warnings = self.travel_warnings(player, group, true);
                 // What waits at the destination, rated for the ground the group
@@ -2537,8 +2581,8 @@ impl Game {
                             data["journey"]["others_on_the_way"] = band.into();
                         }
                         let water = self.route_water(player, group, &way);
-                        data["journey"]["dry_stretch_tiles"] = ((water.dry_tiles * 10.0).round() / 10.0).into();
-                        data["journey"]["thirsty_share"] = ((water.thirsty * 100.0).round() / 100.0).into();
+                        data["journey"]["dry_stretch_tiles"] = crate::protocol::round::tenths(water.dry_tiles).into();
+                        data["journey"]["thirsty_share"] = crate::protocol::round::hundredths(water.thirsty).into();
                     }
                 }
                 put_warnings(&mut data, warnings);
@@ -2641,7 +2685,7 @@ impl Game {
                             ),
                         });
                         if let Some((_, route)) = self.routes.get(&(player, group)) {
-                            data["route"] = serde_json::to_value(route).unwrap_or_default();
+                            data["route"] = route_json(route);
                         }
                         let mut warnings = self.travel_warnings(player, group, true);
                         warnings.extend(self.circle_report(player, group, Vec2::new(x, y), r, &mut data));
@@ -2714,10 +2758,12 @@ impl Game {
                 if reach < 1.0 {
                     return Err(ErrorInfo::new("out_of_sight", "you can only look where your organisms are"));
                 }
-                let radius = radius.clamp(1.0, self.cfg.max_view_radius.min(reach));
+                let asked = radius.clamp(1.0, self.cfg.max_view_radius);
+                let radius = asked.min(reach);
                 let view = ViewWindow { x: p.x, y: p.y, radius, pinned: true };
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.view = Some(view);
+                    c.view_asked = asked;
                 }
                 Ok(Some(serde_json::to_value(view).unwrap()))
             }
@@ -2812,8 +2858,8 @@ impl Game {
                 // Say when the wall-clock floor lengthened it (it was silent).
                 let note = (lasts > asked).then(|| {
                     format!(
-                        "lengthened to {lasts} ticks (about {:.0} real minutes): auctions run at least that long",
-                        lasts as f64 * self.cfg.tick_ms / 60_000.0
+                        "lengthened to {lasts} ticks ({}): auctions run at least that long",
+                        real_minutes(lasts as f64 * self.cfg.tick_ms / 60_000.0)
                     )
                 });
                 Ok(Some(serde_json::json!({ "listing": self.listing_view(&l, None), "note": note })))
@@ -3413,9 +3459,10 @@ impl Game {
                 "bad_duration",
                 format!(
                     "an auction lasts 1 to {} days (days) or 1 to {longest} ticks (ticks), not both; \
-                     at least {} real minutes whatever is asked",
+                     at least {} whatever is asked",
                     economy::MAX_AUCTION_DAYS,
-                    (self.cfg.min_auction_ticks as f64 * self.cfg.tick_ms / 60_000.0).round()
+                    real_minutes(self.cfg.min_auction_ticks as f64 * self.cfg.tick_ms / 60_000.0)
+                        .trim_start_matches("about ")
                 ),
             ));
         };
@@ -3738,6 +3785,7 @@ impl Game {
             organism: l.organism,
             animal_name: self.economy.animal_names.get(&l.organism).cloned(),
             aging: o.age_days(tpd) >= 0.9 * o.traits.lifespan_days,
+            lifespan_days: Some(o.traits.lifespan_days.round()),
             dormant: matches!(o.dormancy, Dormancy::Winter | Dormancy::Summer),
             role: role_name(o.sex).into(),
             sex: sex_name(o.sex).into(),
@@ -3988,10 +4036,19 @@ impl Game {
             let alive = record.lineages.iter().any(|e| e.lineage == lineage && e.alive > 0);
             let (share, weighted) =
                 record.legacy.iter().find(|e| e.player == p).map_or((0.0, 0.0), |e| (e.share, e.weighted_share));
-            let income = economy::daily_income(share, weighted, alive);
+            let full = economy::daily_income(share, weighted, alive);
+            // A large unspent balance earns less (playtest 10: 1,700 to
+            // 4,000 renown piled up unspent).
+            let from = self.cfg.income_taper_from;
+            let income = economy::tapered_income(full, self.balance(p), from);
             if income > 0 {
+                let taper = if income < full {
+                    format!(" ({full} less the taper on a balance over {from})")
+                } else {
+                    String::new()
+                };
                 let text = format!(
-                    "Day {} income: legacy share {:.1}%, weighted {:.1}%",
+                    "Day {} income: legacy share {:.1}%, weighted {:.1}%{taper}",
                     // The day just ended, counted from 1 (a record is taken
                     // as the next day starts: `record.day` is that day's index).
                     record.day.max(1),
@@ -4452,7 +4509,9 @@ impl Game {
         };
         if fee > 0 {
             let net = self.pay_from_escrow(id, fee, &format!("Hold fee from {} ({why})", self.name(o.from)));
-            format!("{fee} renown of the fee is forfeit to {} ({net} after the market fee){slept}", self.name(o.to))
+            // No "(5 after the market fee)" when the fee took nothing (playtest 10).
+            let after = if net < fee { format!(" ({net} after the market fee)") } else { String::new() };
+            format!("{fee} renown of the fee is forfeit to {}{after}{slept}", self.name(o.to))
         } else if full > 0 {
             format!("nothing is forfeit{slept}")
         } else if self.world.forfeit_mating_slot(o.from) {
@@ -4471,7 +4530,11 @@ impl Game {
         self.offers.get_mut(&id).unwrap().escrow -= amount;
         let net = amount - economy::market_fee(amount);
         let what = o.listing.map_or(format!("offer #{id}"), |l| format!("listing #{l}"));
-        let text = format!("{text} for {what}: {amount} renown, {net} after the market fee");
+        let text = if net < amount {
+            format!("{text} for {what}: {amount} renown, {net} after the market fee")
+        } else {
+            format!("{text} for {what}: {amount} renown (too little for a market fee)")
+        };
         let _ = self.post(o.to, net as i64, LedgerKind::Sale, text, Some(id), o.listing);
         net
     }
@@ -6744,7 +6807,7 @@ impl Game {
                             String::new()
                         };
                         warnings.push(format!(
-                            "The way runs about {:.0} tiles (about {}) with no drinking water{}{thirsty}: expect \
+                            "The way runs about {:.0} tiles ({}) with no drinking water{}{thirsty}: expect \
                              thirst on the way. Drink first, or go by water.",
                             water.dry_tiles,
                             days_text(dry_days),
@@ -7575,9 +7638,19 @@ impl Game {
                 // Whole animals: the estimate's fractions read as noise.
                 adults: s.adults.round(),
                 peak_adults: s.peak_adults,
+                // A living species leaves out a player's lineage that has
+                // ended (retired, or replaced by a new founding) with no
+                // adults left in it (playtest 10: a retired lineage listed
+                // with 0 adults).
                 lineages: s
                     .lineages
                     .iter()
+                    .filter(|&&(l, adults)| {
+                        s.extinct_day.is_some()
+                            || adults.round() > 0.0
+                            || lineage_name(l).1 == WILD
+                            || (self.lineage_of(lineage_name(l).1) == Some(l) && !self.is_extinct(lineage_name(l).1))
+                    })
                     .map(|&(l, adults)| {
                         let (name, owner) = lineage_name(l);
                         let owner_name = self.name(owner);
@@ -8326,13 +8399,42 @@ pub fn watered_text(w: &evo_sim::World) -> Option<String> {
     } else {
         ""
     };
+    // At (nearly) the usual rate the slower loss says nothing (playtest 10:
+    // "lose water at 100% of the usual rate").
+    let slower = if relief < 0.95 {
+        format!(
+            " and lose water at {:.0}% of the usual rate for their first {:.0} days",
+            relief * 100.0,
+            evo_sim::world::FOUNDER_WATER_DAYS
+        )
+    } else {
+        String::new()
+    };
     Some(format!(
-        "Drought provision: {:.0}% of the land is dry, so your founders start fully watered and lose water at \
-         {:.0}% of the usual rate for their first {:.0} days.{place}",
+        "Drought provision: {:.0}% of the land is dry, so your founders start fully watered{slower}.{place}",
         w.map.drought * 100.0,
-        relief * 100.0,
-        evo_sim::world::FOUNDER_WATER_DAYS
     ))
+}
+
+/// A route for a reply, its points in tenths of a tile (playtest 10: f32
+/// noise in the route points).
+fn route_json(route: &[[f32; 2]]) -> serde_json::Value {
+    let t = crate::protocol::round::tenths;
+    route.iter().map(|p| serde_json::json!([t(p[0]), t(p[1])])).collect()
+}
+
+/// "about N real minutes" with the plural right ("about a minute" for one,
+/// "under a minute" below half a minute; playtest 10: "about 1 real
+/// minutes").
+pub fn real_minutes(minutes: f64) -> String {
+    let m = minutes.round();
+    if minutes < 0.5 {
+        "under a real minute".to_string()
+    } else if m <= 1.0 {
+        "about a real minute".to_string()
+    } else {
+        format!("about {m:.0} real minutes")
+    }
 }
 
 /// The drought warning's text.
@@ -9235,6 +9337,75 @@ mod tests {
         assert!(s.nearby.iter().any(|n| n.id == b[0]));
         assert!(s.nearby.iter().all(|n| (n.x - p.x).abs() <= 2.0 && (n.y - p.y).abs() <= 2.0));
         assert_eq!(g.states().len(), 2);
+    }
+
+    /// Playtest 10: an offer made before its addressee connected is
+    /// announced when they connect; retiring ends a pending offer as a
+    /// retirement, not "died before the mating".
+    #[test]
+    fn pending_offers_are_announced_on_connect_and_end_on_retire() {
+        let (mut g, a, b) = game();
+        g.disconnect(20);
+        let (fa, mb) = (female(&g, &a), male(&g, &b));
+        let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: mb, price: None });
+        assert_eq!(result(&out), (true, None));
+        let out = g.connect(21, 2, "bob");
+        let announced: Vec<u64> = out
+            .iter()
+            .filter_map(|(t, m)| match m {
+                ServerMsg::MatingRequest { offer } if *t == Target::Conn(21) => Some(offer.id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(announced.len(), 1, "{out:?}");
+        // A second connection of the same player is not told again.
+        let again = g.connect(22, 2, "bob");
+        assert!(!again.iter().any(|(_, m)| matches!(m, ServerMsg::MatingRequest { .. })));
+        let l = g.lineage_of(1).unwrap();
+        let out = g.command(10, 1, None, ClientMsg::RetireLineage { lineage: l });
+        let ended = out.iter().find_map(|(t, m)| match m {
+            ServerMsg::MatingUpdate { error: Some(e), .. } if *t == Target::Player(2) => Some(e.clone()),
+            _ => None,
+        });
+        let e = ended.expect("bob hears the offer ended");
+        assert_eq!(e.code, "retired");
+        assert!(e.message.contains("ann retired their lineage"), "{}", e.message);
+        assert!(g.offers.is_empty());
+    }
+
+    /// Playtest 10: renown piled up unspent; income tapers above the
+    /// threshold and the ledger says so.
+    #[test]
+    fn income_tapers_on_a_large_balance() {
+        let (mut g, _, _) = game();
+        let full = economy::daily_income(0.5, 0.5, true);
+        let record = crate::store::DailyRecord {
+            world_id: String::new(),
+            day: 3,
+            year: 0,
+            season: "spring".into(),
+            breeding_adults: 10,
+            legacy: vec![crate::store::LegacyEntry { player: 1, share: 0.5, weighted_share: 0.5 }],
+            lineages: vec![crate::store::LineageEntry {
+                lineage: g.lineage_of(1).unwrap(),
+                name: "A".into(),
+                owner: 1,
+                alive: 10,
+                adults: 10,
+                born: 0,
+                deaths: BTreeMap::new(),
+                eggs_lost: BTreeMap::new(),
+                genes: BTreeMap::new(),
+                morph: None,
+            }],
+        };
+        let before = g.balance(1);
+        let top = 4 * g.cfg.income_taper_from - before;
+        let _ = g.post(1, top as i64, LedgerKind::Grant, "test".into(), None, None);
+        g.pay_income(&record);
+        assert_eq!(g.balance(1) - 4 * g.cfg.income_taper_from, full / 4);
+        let last = g.ledger(1, 1);
+        assert!(last[0].text.contains("less the taper"), "{}", last[0].text);
     }
 
     #[test]
@@ -11009,7 +11180,7 @@ mod tests {
         assert!(g.design_compatibility(1, &alike).name_warning.is_some());
         assert!(v.rows.iter().all(|r| !r.wild && r.owner != WILD), "{:?}", v.rows);
         assert!(
-            v.rows.iter().all(|r| r.compatible && r.fertile_share >= 0.9 && r.drift_risk == "high"),
+            v.rows.iter().all(|r| r.compatible && r.fertile_share >= 0.9 && r.drift_risk == "none"),
             "{:?}",
             v.rows
         );
@@ -12817,6 +12988,43 @@ mod tests {
         let view = g.state_for(10).unwrap().view;
         assert!(!view.pinned, "dropped once out of sight: {view:?}");
         assert!((Vec2::new(view.x, view.y) - far).len() < 2.0, "back on the largest group: {view:?}");
+    }
+
+    /// A pinned view narrows as the animals walk off and widens again, up
+    /// to the radius asked for, when they come back (playtest 10).
+    #[test]
+    fn a_pinned_view_widens_again_when_the_animals_return() {
+        let (mut g, a, _) = game();
+        let mine: Vec<usize> = (0..g.world.organisms.len())
+            .filter(|&i| g.world.organisms[i].alive && g.world.organisms[i].owner == 1)
+            .collect();
+        // All of them at the map's middle, the view pinned there.
+        let mid = Vec2::new(g.world.map.width as f32 / 2.0, g.world.map.height as f32 / 2.0);
+        for &i in &mine {
+            g.world.organisms[i].pos = mid;
+        }
+        let _ = a;
+        let pin = g.command(10, 1, Some(1), ClientMsg::SetView { x: mid.x, y: mid.y, radius: 8.0 });
+        assert!(result(&pin).0, "{pin:?}");
+        let _ = g.after_tick();
+        let full = g.state_for(10).unwrap().view.radius;
+        let r0 = g.view_reach(1, mid);
+        assert!(full >= 3.0 && r0 >= full, "a wide pin to start: radius {full}, reach {r0}");
+        // They walk off until the reach there is half the radius: the view narrows, still pinned.
+        let off = Vec2::new(mid.x + (r0 - full / 2.0), mid.y);
+        for &i in &mine {
+            g.world.organisms[i].pos = off;
+        }
+        let _ = g.after_tick();
+        let narrowed = g.state_for(10).unwrap().view;
+        assert!(narrowed.pinned && narrowed.radius < full - 0.5, "narrowed: {narrowed:?} (was {full})");
+        // Back: it widens again to what was asked.
+        for &i in &mine {
+            g.world.organisms[i].pos = mid;
+        }
+        let _ = g.after_tick();
+        let back = g.state_for(10).unwrap().view;
+        assert!(back.pinned && (back.radius - full).abs() < 1e-3, "widened again: {back:?} (asked {full})");
     }
 
     /// Info leaks: the map image shows a player only what they may see,

@@ -33,6 +33,16 @@ describe('speciesTree', () => {
     expect(rows.map((r) => [r.species.id, r.depth])).toEqual([[7, 0], [8, 0]]);
   });
 
+  it('draws a "split" with none of its parent\'s lineages as a root (another player\'s founding)', () => {
+    const lin = (lineage: number, owner: number) => [{ lineage, name: `L${lineage}`, owner, adults: 10 }];
+    const rows = speciesTree([
+      sp(1, 'Emberwool', { origin: 'founding', lineages: lin(4, 2) }),
+      sp(2, 'Sorrel Raiders', { origin: 'split', parent: 1, lineages: lin(9, 5) }),
+      sp(3, 'Emberwool II', { origin: 'split', parent: 1, lineages: lin(4, 2) }),
+    ]);
+    expect(rows.map((r) => [r.species.id, r.depth])).toEqual([[1, 0], [3, 1], [2, 0]]);
+  });
+
   it('draws a player\'s founding as a root, not a split under the species it was found next to', () => {
     const rows = speciesTree([sp(1, 'Emberwool', { origin: 'founding' }), sp(2, 'Pocket emberkin', { origin: 'founding', parent: 1 }), sp(3, 'Emberwool II', { origin: 'split', parent: 1 })]);
     expect(rows.map((r) => [r.species.id, r.depth])).toEqual([[1, 0], [3, 1], [2, 0]]);

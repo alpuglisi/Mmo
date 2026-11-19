@@ -105,3 +105,29 @@ export function meetText(o: Pick<OfferView, 'from_player' | 'meet'>, me: number 
   const held = m.possessed ? ' One is possessed: the other only walks to the meeting point and waits there.' : ' Possess yours to hurry.';
   return `Walking to meet: the partner is about ${tiles(m.distance)} ${dirTo(tx, ty)} of yours.${at}${held}`;
 }
+
+/**
+ * How far apart the two animals of a pending request are, from what this
+ * client can see (playtest 10: Accept gave no idea of the walk). Prefers the
+ * server's `meet.distance`; otherwise measures from the requester's animal in
+ * sight to `ours` (the requested partner, or the nearest free adult for a
+ * request to the lineage). Null when the requester's animal is out of sight.
+ */
+export function apartText(
+  o: Pick<OfferView, 'mine' | 'partner' | 'meet'>,
+  own: readonly { id: number; x: number; y: number; matured?: boolean; pregnant?: boolean }[],
+  seen: readonly { id: number; x: number; y: number }[],
+): string | null {
+  if (o.meet) return `About ${tiles(o.meet.distance)} apart.`;
+  const theirs = seen.find((n) => n.id === o.mine);
+  if (!theirs) return null;
+  const d = (a: { x: number; y: number }) => Math.hypot(a.x - theirs.x, a.y - theirs.y);
+  if (o.partner) {
+    const ours = own.find((m) => m.id === o.partner);
+    return ours ? `About ${tiles(d(ours))} apart.` : null;
+  }
+  const free = own.filter((m) => m.matured !== false && !m.pregnant);
+  if (free.length === 0) return null;
+  const best = Math.min(...free.map(d));
+  return `Your nearest free adult is about ${tiles(best)} from theirs.`;
+}
