@@ -53,6 +53,64 @@ const RESERVED_WORDS: &[&str] = &[
     "operators",
 ];
 
+/// Staff words a word may not start or end with, whatever its case
+/// ("claudebot", "GMbob", "ownerbob", "Supportbot", "botmod": playtest 7),
+/// unless the word is a common one in [`AFFIX_ALLOWED`]. ("dev" is left
+/// out: device, devil, Devon, develop.)
+const RESERVED_AFFIXES: &[&str] =
+    &["gm", "mod", "mods", "owner", "owners", "claude", "support", "operator", "sysop", "root"];
+
+/// Common words that start or end with a staff word, folded: allowed.
+const AFFIX_ALLOWED: &[&str] = &[
+    "mode",
+    "modes",
+    "model",
+    "models",
+    "modest",
+    "modern",
+    "module",
+    "modules",
+    "modular",
+    "moderate",
+    "modify",
+    "modified",
+    "modulate",
+    "modicum",
+    "paradigm",
+    "phlegm",
+    "diaphragm",
+    "landowner",
+    "landowners",
+    "homeowner",
+    "homeowners",
+    "shipowner",
+    "rooted",
+    "rooting",
+    "rootstock",
+    "roots",
+    "rooty",
+    "supportive",
+    "supporter",
+    "supporters",
+    "ownerless",
+    "ownership",
+];
+
+/// Words starting with "wild" that don't read as the wild (a lineage or
+/// species named "Wildherd" would): allowed.
+const WILD_ALLOWED: &[&str] = &[
+    "wildebeest",
+    "wildebeests",
+    "wildflower",
+    "wildflowers",
+    "wilderness",
+    "wildfire",
+    "wildfires",
+    "wildwood",
+    "wildcat",
+    "wildcats",
+];
+
 /// What a whole name may not come down to, once folded with its spaces and
 /// punctuation dropped, a leading "the", a trailing team word and trailing
 /// digits taken off (playtest 5: "G.M.", "M.o.d", "TheOwner",
@@ -121,13 +179,27 @@ pub fn reserved(text: &str, kind: Kind) -> bool {
     if RESERVED_WORDS.iter().any(|w| word(w)) {
         return true;
     }
-    // The wild: no title may name it; a lineage or species may not start
-    // with it (it would read as a wild species: "Wild herd", playtest 6),
-    // though the word may sit inside another ("Wildebeest").
+    // A staff word at either end of a word ("claudebot"), unless common.
+    let allowed: Vec<String> = AFFIX_ALLOWED.iter().map(|w| fold(w)).collect();
+    let affix = |x: &String| {
+        !allowed.contains(x)
+            && RESERVED_AFFIXES
+                .iter()
+                .map(|w| fold(w))
+                .any(|w| x.len() > w.len() && (x.starts_with(&w) || x.ends_with(&w)))
+    };
+    if words.iter().any(affix) {
+        return true;
+    }
+    // The wild: no title, lineage or species may use it as a word or start
+    // a word with it ("Wild herd", "WildHerd", "A Wild2 herd": playtests 6
+    // and 7), but common words starting with it pass ("Wildebeest").
     let wild = fold("wild");
+    let wild_ok: Vec<String> = WILD_ALLOWED.iter().map(|w| fold(w)).collect();
     match kind {
-        Kind::Title => word("wild") || word("wilds"),
-        Kind::Lineage | Kind::Species => words.first().is_some_and(|w| *w == wild || *w == fold("wilds")),
+        Kind::Title | Kind::Lineage | Kind::Species => {
+            words.iter().any(|w| w.starts_with(&wild) && !wild_ok.contains(w))
+        }
         Kind::Account => false,
     }
 }
@@ -156,13 +228,27 @@ fn words(text: &str) -> Vec<String> {
     }
     let mut out = Vec::new();
     for w in raw {
-        out.push(fold(&w));
-        let camel = camel_parts(&w);
-        if camel.len() > 1 {
-            out.extend(camel.iter().map(|c| fold(c)));
+        let mut forms = vec![w.clone()];
+        forms.extend(camel_parts(&w).into_iter().filter(|_| camel_parts(&w).len() > 1));
+        for f in forms {
+            out.extend(digit_forms(&f));
         }
     }
+    out.sort();
+    out.dedup();
     out
+}
+
+/// A word folded, and again with the digits that `fold` leaves read as
+/// the letters they stand for (`8` "ate": "Moder8or") or dropped
+/// ("Claude2", "GM2", "Wild2"): digits beside letters don't hide a word.
+fn digit_forms(w: &str) -> Vec<String> {
+    let mut v = vec![fold(w)];
+    if w.chars().any(|c| c.is_ascii_digit()) && w.chars().any(|c| c.is_ascii_alphabetic()) {
+        v.push(fold(&w.replace('8', "ate")));
+        v.push(fold(&w.chars().filter(|c| !c.is_ascii_digit()).collect::<String>()));
+    }
+    v
 }
 
 /// The CamelCase parts of a word: a break before an upper-case letter that
@@ -214,6 +300,20 @@ fn reserved_whole(text: &str) -> bool {
 fn strip_digits(text: &str) -> String {
     let alnum: String = text.chars().filter(char::is_ascii_alphanumeric).collect();
     alnum.trim_end_matches(|c: char| c.is_ascii_digit()).to_string()
+}
+
+/// A name's key for comparing with another name: its words without the
+/// articles (the, a, an) and without digits, folded and run together, a
+/// plural `s` dropped ("The Meadow vole 2" and "Meadow voles" alike).
+pub fn name_key(text: &str) -> String {
+    let words: Vec<String> = text
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty() && !["the", "a", "an"].contains(&w.to_ascii_lowercase().as_str()))
+        .map(|w| w.chars().filter(|c| !c.is_ascii_digit()).collect::<String>())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let f = fold(&words.concat());
+    f.strip_suffix('s').map(str::to_string).unwrap_or(f)
 }
 
 /// A text folded for look-alike comparison: its letters and digits only,
@@ -367,6 +467,92 @@ mod tests {
         }
         assert_eq!(check("Server Admin", 24, Kind::Lineage).unwrap_err(), "that looks like a staff or system name");
         assert_eq!(check(&"x".repeat(25), 24, Kind::Title).unwrap_err(), "1 to 24 characters");
+    }
+
+    /// Playtest 7: digits beside staff words, run-together lower case, and
+    /// "wild" starting a word, without refusing ordinary names.
+    #[test]
+    fn staff_words_with_digits_or_run_together_are_refused_but_plain_names_pass() {
+        for kind in [Kind::Lineage, Kind::Species, Kind::Title, Kind::Account] {
+            for bad in [
+                "Claude2 fan",
+                "GM2 herd",
+                "Mod2 squad",
+                "Head GM2",
+                "Owner2 herd",
+                "Moder8or",
+                "claudebot",
+                "GMbob",
+                "ownerbob",
+                "Supportbot",
+                "botmod",
+                "RootGrazers",
+            ] {
+                assert!(check(bad, 40, kind).is_err(), "{bad:?} as {kind:?}");
+            }
+        }
+        for kind in [Kind::Lineage, Kind::Species, Kind::Title] {
+            for bad in ["WildHerd", "Wildherd", "A Wild herd", "Wild1 herd", "Wild2 herd", "The wildlings"] {
+                assert!(check(bad, 40, kind).is_err(), "{bad:?} as {kind:?}");
+            }
+        }
+        let benign = [
+            "Meadow grazers",
+            "Steppe runners",
+            "Ash Fang Pack",
+            "Loophole Fliers II",
+            "Second Clause",
+            "Thousand Hooves",
+            "Brokers Four",
+            "Pocket Starters",
+            "Rolling Thunder Herd",
+            "Queen's grazers",
+            "Model herd",
+            "Modest voles",
+            "Modern striders",
+            "Moderate grazers",
+            "Paradigm runners",
+            "Landowner's herd",
+            "Rooted voles",
+            "Rootstock",
+            "Roots",
+            "Root voles",
+            "Supportive herd",
+            "Wildebeest",
+            "Wildflower moths",
+            "Wilderness walkers",
+            "Rewilded grazers",
+            "Godwits",
+            "Gemstones",
+            "Helpful herd",
+            "Teamsters",
+            "Devon cattle",
+            "Device hunters",
+            "Clever devils",
+            "Ownerless strays",
+            "Ember foxes",
+            "Owlets",
+            "Moonlit hares",
+            "Marsh newts",
+            "Red stags",
+            "Snow hares",
+            "Dune skinks",
+            "River otters",
+            "Salt flats herd",
+            "Herd 2",
+            "Pack of 7",
+            "Aurora",
+            "Tundra wolves",
+            "Golden moles",
+            "Night owls",
+            "Copper beetles",
+            "Storm petrels",
+            "Sable runners",
+        ];
+        for ok in benign {
+            assert!(check(ok, 40, Kind::Lineage).is_ok(), "{ok:?} refused");
+        }
+        assert!(benign.len() >= 50);
     }
 
     #[test]

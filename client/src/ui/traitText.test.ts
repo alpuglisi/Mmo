@@ -137,4 +137,15 @@ describe('trait text', () => {
     expect(caption('pack_instinct', design({ pack_instinct: 0.9, carnivory: 0.9 }))!.text).toBe(TRAIT_TEXT.pack_instinct.high);
     expect(caption('vocal_ability', design({ vocal_ability: 0.9 }))!.text).toMatch(/need ear size above 0.5/);
   });
+
+  it('names body size with the world\'s weight class, as the preview and the inspector do', () => {
+    // The starter's 0.5 is about 3.6 kg: "small", not the slider's middle third "medium".
+    expect(caption('body_size', design({ body_size: 0.5 }))!.text).toMatch(/^small: middling strength.*\(adult ≈ \d/);
+    expect(caption('body_size', design({ body_size: 0.1 }))!.text).toMatch(/^tiny: /);
+  });
+
+  it('says warning colours start above 0.60', () => {
+    expect(caption('coloration', design({ coloration: 0.6 }))!.text).toContain('warning colours start above 0.60');
+    expect(caption('coloration', design({ coloration: 0.2 }))!.text).not.toContain('warning colours');
+  });
 });

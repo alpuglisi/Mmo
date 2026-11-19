@@ -606,9 +606,17 @@ async fn genes() -> Json<design::GeneCatalog> {
 
 /// `GET /api/metrics`: one world's world-thread timings, queues, saves and
 /// traffic, and the process's usage ([`MetricsView`]).
-async fn metrics(State(app): State<AppState>, World(w): World) -> Json<MetricsView> {
+async fn metrics(State(app): State<AppState>, World(w): World, headers: HeaderMap) -> Json<MetricsView> {
     let tick = w.published.borrow().summary.clock.tick;
-    Json(MetricsView::gather(&w.id, &w.metrics, &w.net, tick, app.accounts.hash_stats()))
+    let mut m = MetricsView::gather(&w.id, &w.metrics, &w.net, tick, app.accounts.hash_stats());
+    // Logged out: no connection or player counts and no per-command counts
+    // (playtest 7: a hunter watched rivals log off here). Timings, saves and
+    // traffic stay public.
+    if authed(&app, &headers).is_err() {
+        (m.conns, m.players_online) = (0, 0);
+        m.apply_by_command.clear();
+    }
+    Json(m)
 }
 
 /// `GET /api/worlds`: every hosted world with its clock, population and

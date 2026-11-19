@@ -379,6 +379,9 @@ impl Game {
         if self.wild_name(&name) {
             return Err(ErrorInfo::new("bad_name", "that species name can't be used: it is a wild species' name"));
         }
+        if self.rival_name(player, &name) {
+            return Err(ErrorInfo::new("name_taken", "another player's lineage or species has that name"));
+        }
         if self.impersonates(player, &name, names::Kind::Species) {
             return Err(ErrorInfo::new("bad_name", "a species name can't look like another player's name"));
         }
@@ -424,15 +427,32 @@ impl Game {
     /// lineage "Meadow vole" would found a second species of that name
     /// (playtest 6).
     pub(crate) fn wild_name(&self, text: &str) -> bool {
-        let key = |s: &str| {
-            let f = names::fold(s);
-            f.strip_suffix('s').map(str::to_string).unwrap_or(f)
-        };
-        let k = key(text);
+        // Articles and digits don't make it another name ("The Meadow vole",
+        // "Meadow vole 2": playtest 7).
+        let k = names::name_key(text);
         let wild_lineages = self.world.lineages.iter().filter(|l| l.owner == WILD).map(|l| l.name.as_str());
         let wild_species =
             (self.world.chronicle.species.species.iter()).filter(|s| s.dominant == WILD).map(|s| s.name.as_str());
-        wild_lineages.chain(wild_species).any(|n| key(n) == k)
+        k.len() >= 4 && wild_lineages.chain(wild_species).any(|n| names::name_key(n) == k)
+    }
+
+    /// Whether `text` copies the name of another player's living lineage or
+    /// species (`names::name_key` alike): playtest 7 founded a second "Ash
+    /// Fang Pack" beside its owner's.
+    pub(crate) fn rival_name(&self, player: PlayerId, text: &str) -> bool {
+        let k = names::name_key(text);
+        // At least 4 letters left: "L1" and "L2" aren't copies.
+        if k.len() < 4 {
+            return false;
+        }
+        let counts = self.world.lineage_counts();
+        let lineages = (self.world.lineages.iter().enumerate())
+            .filter(|(l, x)| x.owner != WILD && x.owner != player && counts.get(*l).is_some_and(|c| c.alive > 0))
+            .map(|(_, x)| x.name.as_str());
+        let species = (self.world.chronicle.species.species.iter())
+            .filter(|s| s.dominant != WILD && s.dominant != player && s.is_alive())
+            .map(|s| s.name.as_str());
+        lineages.chain(species).any(|n| names::name_key(n) == k)
     }
 
     /// Who may name species `s`: the player credited with a split, or for a
@@ -710,10 +730,15 @@ impl Game {
                     reason: t.reason,
                 }
             }),
+            // With the founders that would land (a re-founding gives fewer).
+            grace_note: self
+                .grace_preview(player, self.refound_terms(player).map_or(design.founders, |t| t.founders(design))),
             name_warning: if self.impersonates(player, &design.name, names::Kind::Lineage) {
                 Some("that lineage name looks like another player's name: founding would refuse it".to_string())
             } else if self.wild_name(&design.name) {
                 Some("that lineage name is a wild species' name: founding would refuse it".to_string())
+            } else if self.rival_name(player, &design.name) {
+                Some("another player's lineage or species has that name: founding would refuse it".to_string())
             } else {
                 None
             },

@@ -174,7 +174,11 @@ mod old {
             escrow,
             grace: g.grace_view(player),
             poisonous: Vec::new(),
-            territories: g.rival_territories(player, view),
+            territories: g.rival_territories(
+                player,
+                view,
+                &super::group_middles(g.world.organisms.iter().filter(|o| o.owner == player)),
+            ),
         })
     }
 

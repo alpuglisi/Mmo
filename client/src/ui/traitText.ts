@@ -10,7 +10,7 @@
 // returns the caption. They only describe: any combination is allowed.
 
 import {
-  adultMass, buoyancy, foodCostOf, GENE_DEFAULTS, DEGREES_PER_INSULATION, FANG_THRESHOLD, fangPlantLoss, flight, geneValue, iceSlip, scaleWarmthLoss,
+  adultMass, sizeWord, buoyancy, foodCostOf, GENE_DEFAULTS, DEGREES_PER_INSULATION, FANG_THRESHOLD, fangPlantLoss, flight, geneValue, iceSlip, scaleWarmthLoss,
 } from '../bodyMath';
 import type { Morphology } from '../morphology';
 import type { DesignSpec } from '../protocol';
@@ -18,6 +18,11 @@ import { traitNameLower } from './traitNames';
 
 /** A design, with its body plan when the editor has one (eye count, leg count, shapes). */
 export type CaptionDesign = DesignSpec & { morphology?: Morphology };
+
+/** The world's size class of an adult this heavy (appearance.rs: tiny < 1 kg, small < 8, medium < 40, else large). */
+export function sizeClass(mass: number): string {
+  return mass < 1 ? 'tiny' : mass < 8 ? 'small' : mass < 40 ? 'medium' : 'large';
+}
 
 /** " · upkeep +12% food a day vs. none" (nothing under 1%). */
 function foodNote(extra: number, than: string): string {
@@ -97,7 +102,8 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     low: 'small: quick, stealthy, matures fast; weak and short-lived',
     mid: 'medium: middling strength, defense, speed and lifespan',
     high: 'large: strong, tough, long-lived; slow, hungry, easy to spot',
-    context: (d, _l, base) => `${base} (adult ≈ ${kg(adultMass(d))})${foodNote(foodCostOf(d, 'body_size', GENE_DEFAULTS.body_size), 'vs. the default size')}`,
+    // The leading word is the weight class (`sizeWord`), as the inspector names the animal.
+    context: (d, _l, base) => `${base.replace(/^\w+/, sizeWord(adultMass(d)))} (adult ≈ ${kg(adultMass(d))})${foodNote(foodCostOf(d, 'body_size', GENE_DEFAULTS.body_size), 'vs. the default size')}`,
   },
   muscle: {
     what: 'Strength and speed, paid for in food.',
@@ -324,7 +330,8 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     high: 'bright: easy to spot; warns predators only if toxic',
     hi: 0.6,
     context: (d, level, base) => {
-      if (level !== 'high') return base;
+      // Warning colours need more than 0.6 (the slider shows 0.60 at it).
+      if (level !== 'high') return level === 'mid' && geneValue(d, 'coloration') >= 0.5 ? `${base}; warning colours start above 0.60` : base;
       return geneValue(d, 'toxins') > 0.5
         ? 'bright and toxic: warning colours, predators learn to avoid'
         : 'bright: easy to spot, and not toxic enough to warn';

@@ -136,13 +136,16 @@ describe('compatibility and the shop', () => {
   const row = { lineage: 4, lineage_name: 'Foxes', owner: 3, owner_name: 'ann', fertility: 1, compatible: true, limiting: 'carnivory', gap: 0.05 };
   it('says who can breed with whom and why not', () => {
     expect(compatRowText(row)).toBe("ann's Foxes: fully fertile");
-    expect(compatRowText({ ...row, fertility: 0.5, gap: 0.21 })).toBe("ann's Foxes: 50% fertile on average (diet 0.21 apart in the closest pair)");
+    expect(compatRowText({ ...row, fertility: 0.5, gap: 0.21 })).toBe("ann's Foxes: 50% fertile on average (diet far apart in the closest pair)");
     expect(compatRowText({ ...row, owner: 0, fertility: 0, compatible: false, gap: 0.45 }))
-      .toBe('wild Foxes: sterile (diet 0.45 apart even in the closest pair (0.30 is sterile))');
+      .toBe('wild Foxes: sterile (diet too different to breed, even in the closest pair)');
+    // Playtest 7: a rival's row read "body_plan 0.30 apart".
+    expect(compatRowText({ ...row, owner: 2, owner_name: 'bob', limiting: 'body_plan', compatible: false, fertility: 0, gap: 0.3 }))
+      .toBe("bob's Foxes: sterile (body plans too different to breed, even in the closest pair)");
     // Playtest 3: "sterile (body size 0.22 apart; 0.30 is sterile)" contradicted itself.
     const mostly = compatRowText({ ...row, fertility: 0.03, compatible: false, gap: 0.22, limiting: 'body_size',
       fertile_share: 0.2, fertility_low: 0, fertility_high: 0.45, drift_risk: 'high' });
-    expect(mostly).toBe("ann's Foxes: mostly sterile: 20% of pairs can conceive, most pairs 0%–45% (body size 0.22 apart in the closest pair) · drift risk high");
+    expect(mostly).toBe("ann's Foxes: mostly sterile: 20% of pairs can conceive, most pairs 0%–45% (body size far apart in the closest pair) · drift risk high");
     expect(mostly).not.toContain('0.30 is sterile');
     expect(compatRowText({ ...row, limiting: 'morphology', gap: 0.3, compatible: false, fertility: 0, fertile_share: 0 }))
       .toContain('differs in eye or leg count');
