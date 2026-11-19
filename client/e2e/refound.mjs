@@ -222,11 +222,12 @@ async function main() {
     const confirmText = await page.textContent('#retire-confirm');
     check(/re-founding within \d+ days \(about \d+ real minutes?\) founds half your founders \(rounded up\) and costs \d+ renown after a retirement/.test(confirmText) && !confirmText.includes('ranked season'), 'the retire dialog states the server\'s rule', confirmText);
     await page.click('#retire-confirm-ok');
-    await page.waitForSelector('#lineage-extinct', { state: 'visible', timeout: UI_MS });
-    check(await page.locator('#lineage-retire').isHidden(), 'the retire section should hide once retired');
+    // Retired: the design screen opens by itself (playtest 10: it didn't).
+    await page.waitForSelector('#design-name', { timeout: UI_MS });
     const retired = await lineageNow(page);
     check(retired && retired.lineage === second.lineage && retired.population === 0, 'retired lineage', retired);
     await page.screenshot({ path: path.join(shots, 'refound-retired.png') });
+    step('retiring opens the design screen by itself');
 
     // A new browser (nothing saved locally): the design screen still says the
     // lineage was retired (the server's lineage stats) and starts from the
@@ -250,8 +251,6 @@ async function main() {
       await other.close();
       step('a new browser says the lineage was retired and starts from the last design (server-side)');
     }
-    await page.click('#lineage-extinct-new');
-    await page.waitForSelector('#design-name', { timeout: UI_MS });
     const header = await page.textContent('.topbar');
     check(header.includes('You retired your last lineage') && !header.includes('died out'), 'the design screen should say the lineage was retired', header);
     // A warm-blooded design that abandons its eggs: the server's egg warning, verbatim.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { OfferEntry } from '../model';
 import type { MatingRecord, OfferView } from '../protocol';
-import { historyRows, meetText, offerLine, offerUpdateText, outcomeText } from './matingHistory';
+import { apartText, historyRows, meetText, offerLine, offerUpdateText, outcomeText } from './matingHistory';
 
 const offer = (id: number, status: OfferView['status'], tick: number): OfferView =>
   ({ id, from_player: 1, from_name: 'ann', to_player: 2, to_name: 'bob', mine: 10, partner: 20, status, created_tick: tick } as OfferView);
@@ -58,5 +58,19 @@ describe('outcomeText', () => {
     expect(outcomeText({ conceived: false, fertility: 0.9, failure_chance: 0.16, mismatch: 0.4, cost: 1 } as never))
       .toBe('Not conceived (90% chance to conceive; outside their preferences, it also had a 16% chance to fail outright)');
     expect(outcomeText({ conceived: true, fertility: 0.25, failure_chance: 0.54, mismatch: 0.4, cost: 1 } as never)).toBe('Conceived (25% chance to conceive)');
+  });
+});
+
+describe('apartText', () => {
+  const seen = [{ id: 9, x: 10, y: 10 }];
+  it('measures to the requested partner', () => {
+    expect(apartText({ mine: 9, partner: 3 }, [{ id: 3, x: 13, y: 14 }], seen)).toBe('About 5 tiles apart.');
+  });
+  it('measures to the nearest free adult for a lineage request', () => {
+    const own = [{ id: 1, x: 40, y: 10, matured: true }, { id: 2, x: 12, y: 10, matured: true, pregnant: true }, { id: 4, x: 20, y: 10, matured: true }];
+    expect(apartText({ mine: 9, partner: 0 }, own, seen)).toBe('Your nearest free adult is about 10 tiles from theirs.');
+  });
+  it('is silent when the requester is out of sight', () => {
+    expect(apartText({ mine: 7, partner: 3 }, [{ id: 3, x: 0, y: 0 }], seen)).toBeNull();
   });
 });

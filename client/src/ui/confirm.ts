@@ -25,7 +25,7 @@ export function confirmDialog(o: ConfirmOptions): Promise<boolean> {
     const notice = o.cancel === false;
     const cancel = h('button', { type: 'button', id: `${id}-cancel`, class: 'secondary' }, o.cancel || 'Cancel') as HTMLButtonElement;
     const body = (Array.isArray(o.body) ? o.body : [o.body]).map((t) => h('p', { class: 'small' }, t));
-    const dialog = h('div', { class: 'card help-card confirm-card', id, role: 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': `${id}-title` },
+    const dialog = h('div', { class: 'card help-card confirm-card', id, role: notice ? 'dialog' : 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': `${id}-title` },
       h('h2', { id: `${id}-title` }, o.title), ...body, h('div', { class: 'row wrap confirm-actions' }, ...(notice ? [ok] : [cancel, ok])));
     const backdrop = h('div', { class: 'help-backdrop confirm-backdrop' }, dialog);
     const before = document.activeElement as HTMLElement | null;

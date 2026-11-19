@@ -67,7 +67,12 @@ export function speciesTree(list: SpeciesView[]): SpeciesRow[] {
   // Only a split hangs under its parent: a player's founding is a root of its
   // own even when the server names the species it was detected next to
   // (playtest 9: other players' foundings drawn as "└" splits).
-  const under = (s: SpeciesView) => s.parent !== undefined && byId.has(s.parent) && s.parent !== s.id && (s.origin === undefined || s.origin === 'split');
+  // A real split shares a lineage with its parent; a "split" with none of the parent's lineages is another
+  // player's founding detected next to it (playtest 10: still drawn as "└" splits).
+  const shares = (s: SpeciesView, p: SpeciesView) => s.lineages.length === 0 || p.lineages.length === 0
+    || s.lineages.some((l) => p.lineages.some((q) => q.lineage === l.lineage));
+  const under = (s: SpeciesView) => s.parent !== undefined && byId.has(s.parent) && s.parent !== s.id
+    && (s.origin === undefined || s.origin === 'split') && shares(s, byId.get(s.parent)!);
   const children = new Map<number, SpeciesView[]>();
   for (const s of list) {
     if (under(s) && s.parent !== undefined) {
