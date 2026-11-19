@@ -527,6 +527,45 @@ fn hunger_thirst_and_cold_warnings_fit_the_lineage() {
     assert!(kinds(&g).is_empty(), "{:?}", kinds(&g));
 }
 
+/// Playtest 7: 9 drowned at a severe winter's onset with no warning; a pack
+/// went 63 → 23 over 40 days at 1–4 a day, never one day's warning.
+#[test]
+fn drownings_and_slow_die_offs_are_warned() {
+    let (mut g, _) = game();
+    run_days(&mut g, 12);
+    let n = g.history.len();
+    for (k, r) in g.history.iter_mut().enumerate() {
+        let e = r.lineages.iter_mut().find(|e| e.owner == 1).unwrap();
+        e.deaths.clear();
+        if k + 11 >= n {
+            // The last 11 days: 63 falling by 3 starved a day.
+            let day = k + 11 - n;
+            e.alive = (63 - 3 * day) as _;
+            if day > 0 {
+                e.deaths.insert("starved".into(), 3);
+            }
+        }
+    }
+    let kinds = |g: &Game| g.lineage_warnings(1).into_iter().map(|w| (w.kind, w.text)).collect::<Vec<_>>();
+    let w = kinds(&g);
+    assert!(
+        w.iter().any(|(k, t)| k == "decline" && t.contains("63 → 33 alive over the last 10 days, 30 of them")),
+        "{w:?}"
+    );
+    // One day's drownings.
+    g.history
+        .back_mut()
+        .unwrap()
+        .lineages
+        .iter_mut()
+        .find(|e| e.owner == 1)
+        .unwrap()
+        .deaths
+        .insert("drowned".into(), 4);
+    let w = kinds(&g);
+    assert!(w.iter().any(|(k, t)| k == "drowning" && t.starts_with("4 of your animals drowned")), "{w:?}");
+}
+
 /// Lineage-wide warnings (playtest 3): a hunger crash, near the hard cap,
 /// animals starving inside a territory; each said once as an alert when it
 /// starts, again after a few days, and listed in the lineage statistics.

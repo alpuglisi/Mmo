@@ -943,6 +943,20 @@ impl World {
         removed
     }
 
+    /// Whether `o` is a player's pack hunter in its lineage's first winter
+    /// (`Balance::winter_larder`): winter, within a year of the founding.
+    pub(crate) fn first_winter_pack(&self, o: &Organism) -> bool {
+        if self.config.balance.winter_larder <= 0.0
+            || self.season() != Season::Winter
+            || !decide::player_pack(&self.config.balance, o)
+        {
+            return false;
+        }
+        let founded = self.lineage_founded.get(o.lineage as usize).copied().unwrap_or(0);
+        let year = self.config.days_per_year.max(1) as u64 * self.config.ticks_per_day as u64;
+        self.tick.saturating_sub(founded) < year
+    }
+
     /// `owner`'s room for the pack larder as this tick started (0–1).
     pub(crate) fn pack_room(&self, owner: PlayerId) -> f32 {
         self.pack_room.get(&owner).copied().unwrap_or(0.0)

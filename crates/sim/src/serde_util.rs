@@ -2936,3 +2936,51 @@ pub mod before_v63 {
         }
     }
 }
+
+/// `#[serde(with = "crate::serde_util::before_v65")]` on the playtest 7
+/// predator tunable (`Balance::winter_larder`). On a thread holding a
+/// [`before_v65::Guard`] (reading or hashing a snapshot of version 64 or
+/// before) it is neither written nor read: it reads as 0 (off).
+pub mod before_v65 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The tunable before version 65: off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+}

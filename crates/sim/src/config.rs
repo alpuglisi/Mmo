@@ -1306,6 +1306,15 @@ pub struct Balance {
     /// the cap). 0: the band rule.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v63"))]
     pub prey_larder: f32,
+    // Playtest 7 predators (version 65; *Playtest 7: predators and
+    // warnings* in the README). Off at 0, what snapshots before version 65
+    // read (`serde_util::before_v65`).
+    /// A player pack's first winter: within a year of its founding, in
+    /// winter, its pack hunters have the full larder (`player_packs`)
+    /// whatever the prey there is (`World::first_winter_pack`; playtest 7:
+    /// a pure carnivore lost 60% in its first winter). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v65"))]
+    pub winter_larder: f32,
 }
 
 impl Balance {
@@ -1604,12 +1613,13 @@ impl Default for Balance {
             speciation_credit: 1.0,
             clutch_cover: 1.0,
             prey_larder: 1.0,
+            winter_larder: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 168;
+    pub const FIELD_COUNT: usize = 169;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1787,6 +1797,7 @@ impl Balance {
             ("speciation_credit", &mut self.speciation_credit),
             ("clutch_cover", &mut self.clutch_cover),
             ("prey_larder", &mut self.prey_larder),
+            ("winter_larder", &mut self.winter_larder),
         ]
     }
 

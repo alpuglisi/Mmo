@@ -713,3 +713,30 @@ fn the_pack_larder_follows_the_prey_there_is() {
     w.refresh_pack_room();
     assert_eq!(w.pack_room(HUNTER), 1.0);
 }
+
+/// Playtest 7: a pure carnivore pack lost 60% in its first winter. In its
+/// lineage's first winter a player pack has the full larder whatever the
+/// prey (`winter_larder`); not in its second, not in other seasons, not
+/// with the rule off, and never for wild packs.
+#[test]
+fn a_player_packs_first_winter_has_the_full_larder() {
+    let mut w = world();
+    let mine = place(&mut w, HUNTER, &hunter(), Vec2::new(10.5, 10.5));
+    let wild = place(&mut w, crate::WILD, &hunter(), Vec2::new(20.5, 10.5));
+    let year = w.config.days_per_year as u64 * w.config.ticks_per_day as u64;
+    let winter_day = |w: &World| (3 * w.config.days_per_year).div_ceil(4) as u64 + 1;
+    let at = |w: &mut World, tick: u64| {
+        w.tick = tick;
+        w.season_offset = crate::terrain::Map::seasonal_offset(w.day_of_year(), w.config.days_per_year);
+    };
+    let t = winter_day(&w) * w.config.ticks_per_day as u64;
+    at(&mut w, t);
+    assert_eq!(w.season(), crate::terrain::Season::Winter);
+    assert!(w.first_winter_pack(&w.organisms[mine]));
+    assert!(!w.first_winter_pack(&w.organisms[wild]));
+    at(&mut w, t + year);
+    assert!(!w.first_winter_pack(&w.organisms[mine]), "the second winter");
+    at(&mut w, t);
+    w.config.balance.winter_larder = 0.0;
+    assert!(!w.first_winter_pack(&w.organisms[mine]));
+}

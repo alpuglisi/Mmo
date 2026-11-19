@@ -539,6 +539,12 @@ fn balance62_off(b: &mut crate::Balance) {
 /// The playtest 6 predator tunable as snapshots before version 63 read it.
 fn playtest6_off(b: &mut crate::Balance) {
     b.prey_larder = crate::serde_util::before_v63::OLD_VALUE;
+    playtest7_off(b);
+}
+
+/// The playtest 7 predator tunable as snapshots before version 65 read it.
+fn playtest7_off(b: &mut crate::Balance) {
+    b.winter_larder = crate::serde_util::before_v65::OLD_VALUE;
 }
 
 /// Version 61 snapshots (before the playtest 6 balance rules) restore with
@@ -1883,4 +1889,25 @@ fn version_62_snapshots_restore_without_prey_larder() {
     let w = fixture_world();
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.prey_larder, 1.0);
+}
+
+/// Version 63 snapshots (before the playtest 7 predator rule) restore
+/// with it off, and are otherwise the same world.
+#[test]
+fn version_63_snapshots_restore_without_winter_larder() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v63();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 63);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.winter_larder, 0.0);
+    assert!(r.snapshot_v63() == old);
+    playtest7_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    // This version keeps it.
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.winter_larder, 1.0);
 }
