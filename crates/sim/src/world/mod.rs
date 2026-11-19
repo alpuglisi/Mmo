@@ -1755,16 +1755,21 @@ impl World {
         let animal_clear = self.config.balance.animal_clear > 0.0 && self.config.balance.rival_clear > 0.0 && now;
         // With `founding_safety`, 200 picks on dry land; if none has room,
         // 200 more under the old rules (better somewhere than nowhere).
-        let rounds = if settle.is_some() || animal_clear { 2 } else { 1 };
         // With `Balance::animal_clear`: twice the strict picks, every one
-        // clear of rival animals; then, if none was, the emptiest ground.
+        // clear of rival animals; then, if none was, as many again keeping
+        // every other strict rule, the emptiest ground first; then the old
+        // unchecked round.
         let picks = if animal_clear { 400 } else { 200 };
+        let crowd_rounds = usize::from(animal_clear);
+        let rounds = 1 + crowd_rounds + usize::from(settle.is_some());
         let (hard, half) = (picks * 3 / 4, picks / 2);
         for k in 0..picks * rounds {
-            if k == picks && best.0 > f32::MIN {
+            if k % picks == 0 && k > 0 && best.0 > f32::MIN {
                 break;
             }
-            let strict = k < picks;
+            // The emptiest-ground round (`animal_clear`): strict otherwise.
+            let crowded = animal_clear && k >= picks && k < 2 * picks;
+            let strict = k < picks * (1 + crowd_rounds);
             let settle = settle.as_ref().filter(|_| strict);
             let p = Vec2::new(rng.gen_range(0.0..self.map.width as f32), rng.gen_range(0.0..self.map.height as f32));
             // Passable (`passable_for`): the region map marks every tile.
@@ -1805,7 +1810,7 @@ impl World {
                 }
                 // Clear of rival animals in every strict pick
                 // (`Balance::animal_clear`; playtest 11: "0 tiles away").
-                if animal_clear && animals_close > 0 {
+                if animal_clear && !crowded && animals_close > 0 {
                     continue;
                 }
                 if k < hard && water_far {
@@ -1975,7 +1980,7 @@ impl World {
             // Rival animals at the spot itself (`Balance::rival_clear`).
             // Past the strict picks, the emptiest ground (`animal_clear`):
             // each rival animal near counts.
-            let crowd_cost = if animal_clear && !strict { 0.5 * animals_close as f32 } else { 0.0 };
+            let crowd_cost = if animal_clear && (crowded || !strict) { 0.5 * animals_close as f32 } else { 0.0 };
             let clear_cost = 4.0 * (packs_close as f32).min(1.0)
                 + 2.0 * (animals_close as f32).min(1.0)
                 + crowd_cost
