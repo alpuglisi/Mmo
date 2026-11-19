@@ -3177,11 +3177,11 @@ pub mod before_v77 {
     }
 }
 
-/// `#[serde(with = "crate::serde_util::before_v82")]` on the playtest 8
+/// `#[serde(with = "crate::serde_util::before_v83")]` on the playtest 8
 /// predator tunable (`Balance::pack_prey`). On a thread holding a
-/// [`before_v82::Guard`] (reading or hashing a snapshot of version 81 or
+/// [`before_v83::Guard`] (reading or hashing a snapshot of version 82 or
 /// before) it is neither written nor read: it reads as 0 (the constants).
-pub mod before_v82 {
+pub mod before_v83 {
     use std::cell::Cell;
 
     use super::*;
@@ -3190,7 +3190,7 @@ pub mod before_v82 {
         static OLD: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// The tunable before version 82: off.
+    /// The tunable before version 83: off.
     pub const OLD_VALUE: f32 = 0.0;
 
     /// The old layout on this thread while this guard lives.

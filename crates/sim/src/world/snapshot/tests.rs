@@ -571,9 +571,9 @@ fn playtest8_off(b: &mut crate::Balance) {
     playtest8_predators_off(b);
 }
 
-/// The playtest 8 predator tunable as snapshots before version 82 read it.
+/// The playtest 8 predator tunable as snapshots before version 83 read it.
 fn playtest8_predators_off(b: &mut crate::Balance) {
-    b.pack_prey = crate::serde_util::before_v82::OLD_VALUE;
+    b.pack_prey = crate::serde_util::before_v83::OLD_VALUE;
 }
 
 /// Version 72 snapshots (before the playtest 7 balance rules) restore with
