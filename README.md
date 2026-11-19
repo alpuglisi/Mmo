@@ -9004,6 +9004,78 @@ and 8 of 8 (8 and 8 off; viable 7 and 8 either way).
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.77 (± 0.16; 11.82 with the five tunables off). Every lineage survives 12 of 12. |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
 
+### Playtest 7: rivals and drought sleepers
+
+Playtest 7 (`docs/playtest-7.md` M10 and the founding Lows) found three
+problems with foundings:
+
+- **Late joiners in the crowd.** A late joiner's 62 founders landed inside
+  a rival's territory, with four rival lineages within 35 tiles. The home
+  search ignored other players altogether.
+- **Estivation that never slept.** A drought founding with estivation 0.4,
+  as the design check had advised ("0.3 or more"), never estivated and
+  starved inside its grace. There were two causes:
+  - estivation below `stats::STRATEGY_THRESHOLD` (0.5) does nothing;
+  - drought estivation only started in summer, and that drought was in
+    autumn.
+- **No word of the drought provision.** Nothing told the player about
+  round 7's watered founders.
+
+**`Balance::founding_rivals` (1)**, on by default from snapshot version 68
+(provisional), off at 0 for older saves (`serde_util::before_v68`):
+
+- **Out of rival territories.** A player's founding in a running world
+  never lands inside another player's territory, nor within 4 tiles of
+  its edge. This holds in every round of the search and for each
+  founder's own spot.
+- **Away from rival crowds.** A home is marked down by up to 4 points for
+  other players' animals within 35 tiles, nearer ones counting more, at
+  about 63% of the full mark for a distance-weighted 200. A rival
+  territory's edge marks a home down too, by 1.5 at the edge, falling to
+  nothing 35 tiles out.
+- **Drought sleep in any warm season.** An estivator sleeps through a
+  drought in spring and autumn too (local dryness past the drought line),
+  not only in summer. Out of summer it wakes when the drought eases or
+  winter comes.
+
+Without the tunable:
+
+- **Estivation advice.** The design check counts estivation as a drought
+  trait from 0.6 (the threshold plus room for founder variation), and its
+  advice says so.
+- **Watered note.** When the drought provision applies, the found reply
+  (`watered`) and an alert say that the founders start watered and lose
+  water at a lower rate for their first 6 days.
+- **Grace text.** The designer and the grace alert now say a small
+  founding's grace runs through the spring after its first winter, as it
+  has since playtest 6.
+- **Founding day.** `founded_day` in the API counts days from 0, as every
+  day in the API does; the client shows days from 1. That was the "off by
+  one" between the Lineage tab and the API, and is now documented on
+  `RampView`.
+
+Hibernators bedding down two weeks before winter is the temperature rule
+working: winter sleep starts once the seasonal temperature falls below
+`dormancy_temp`. Temperature lags the calendar by 1/16 of a year, so a
+cool land is cold enough well before day 90. It is left as it is.
+
+**Measured** (`examples/latejoin.rs`). In 6 grown worlds the sample players
+claim territories around their main groups. LateComer7's 62-founder cold
+flier is founded on days 200, 260 and 320, with the tunable off and on
+(1,116 founders):
+
+| `founding_rivals` | Founders inside a rival territory | Rival animals within 35 tiles of the homes | Alive after 30 days | Eaten |
+| --- | --- | --- | --- | --- |
+| 0 | 58 | 9,310 | 933 | 96 |
+| 1 | 0 | 9,324 | 945 | 99 |
+
+No founder lands in a rival's territory any more. The crowd term moves
+homes much less than intended: the total of rival animals near the homes
+hardly changes. With a stronger weight (8) it fell only to 9,156, and 108
+founders were eaten. Many of these days are droughts, where a home must be
+by water that lasts (playtest 6), and the herds drink at the same water.
+The weight stays at 4.
+
 ### Playtest 6: predators and warnings
 
 Round 7 for `docs/playtest-6.md` findings M9, M10, M14 and three low items.
