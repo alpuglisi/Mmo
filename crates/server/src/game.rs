@@ -1827,6 +1827,13 @@ impl Game {
     /// renown, ledger, records and seen alerts stay, the old lineage stays in
     /// the history as extinct, and the dead lineage's group orders go.
     pub fn found(&mut self, player: PlayerId, design: &FounderDesign) -> Result<FoundOk, FoundError> {
+        // A player with a living lineage learns that first: the name checks
+        // below (rivals' and wild names) were a free probe (playtest 9).
+        if let Some(&lineage) = self.lineage_of.get(&player) {
+            if !self.is_extinct(player) {
+                return Err(FoundError::AlreadyFounded { lineage });
+            }
+        }
         design.validate().map_err(FoundError::Design)?;
         // The design's name is the lineage's (and its founding species'):
         // the shared name filter, and not another player's name.
@@ -10332,6 +10339,9 @@ mod tests {
         let out = g.command(10, 1, None, ClientMsg::SetNameplate { color: "amber".into(), title: singular.clone() });
         assert_eq!(result(&out).1.as_deref(), Some("bad_title"));
         assert!(g.found(1, &design("Grazers of the north")).is_ok());
+        // With a living lineage, "already founded" comes before any name
+        // check (playtest 9: the name checks were a free probe).
+        assert!(matches!(g.found(1, &design(&singular)), Err(FoundError::AlreadyFounded { .. })));
         // Nor a copy of another player's living lineage's name (playtest 7).
         g.set_name(2, "bob");
         let copy = g.found(2, &design("The Grazers of the north 2"));

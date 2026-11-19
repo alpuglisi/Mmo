@@ -159,8 +159,58 @@ const PLAIN_PLURALS: &[&str] = &["root", "support"];
 /// Sunbright Drove": playtest 8); roman numerals and digits are dropped
 /// before.
 const DECORATIONS: &[&str] = &[
-    "new", "old", "true", "real", "original", "neo", "second", "third", "junior", "jr", "sr", "senior", "prime",
-    "reborn", "redux", "returns", "again", "clone", "copy", "official", "nd", "rd", "th", "st", "the", "a", "an",
+    "new",
+    "old",
+    "true",
+    "real",
+    "original",
+    "neo",
+    "second",
+    "third",
+    "junior",
+    "jr",
+    "sr",
+    "senior",
+    "prime",
+    "reborn",
+    "redux",
+    "returns",
+    "again",
+    "clone",
+    "copy",
+    "official",
+    "nd",
+    "rd",
+    "th",
+    "st",
+    "the",
+    "a",
+    "an",
+    // Group words: "Steppe Antelope herd", "Red fox pack" (playtest 9).
+    "herd",
+    "pack",
+    "drove",
+    "flock",
+    "troop",
+    "band",
+    "horde",
+    "clan",
+    "tribe",
+    "family",
+    "kin",
+    "line",
+    "lineage",
+    "bloodline",
+    "colony",
+    "swarm",
+    "crew",
+    "gang",
+    "mob",
+    "brood",
+    "pride",
+    "school",
+    "group",
+    "of",
 ];
 
 /// What a name is for: a nameplate title shows beside its owner's name, so
@@ -429,16 +479,19 @@ fn key_words(text: &str) -> Vec<String> {
 }
 
 /// A folded word without its plural ending ("foxes" "fox", "voles" "vole",
-/// "grass" as it is).
+/// "grass" as it is) and an agent `er` read as `e` ("drovers" "drove":
+/// playtest 9's "Emberwool Drovers" for "Emberwool Drove"), the same for
+/// both names compared.
 fn singular(w: &str) -> String {
-    if let Some(stem) = w.strip_suffix("es") {
-        if ["x", "s", "z", "ch", "sh"].iter().any(|e| stem.ends_with(e)) {
-            return stem.to_string();
-        }
-    }
-    match w.strip_suffix('s') {
-        Some(stem) if stem.len() >= 3 && !stem.ends_with('s') => stem.to_string(),
+    let es = w.strip_suffix("es").filter(|s| ["x", "s", "z", "ch", "sh"].iter().any(|e| s.ends_with(e)));
+    let plural = match (es, w.strip_suffix('s')) {
+        (Some(stem), _) => stem.to_string(),
+        (None, Some(stem)) if stem.len() >= 3 && !stem.ends_with('s') => stem.to_string(),
         _ => w.to_string(),
+    };
+    match plural.strip_suffix("er") {
+        Some(stem) if stem.len() >= 4 => format!("{stem}e"),
+        _ => plural,
     }
 }
 
@@ -464,9 +517,11 @@ pub fn fold(text: &str) -> String {
 /// Whether `text` looks like one of `others` (other players' names): folded
 /// alike, alike once trailing digits are dropped from both ("Herdmaster"
 /// against "Herdmaster5"), or every digit ("8Rulebender" against
-/// "Rulebender8", playtest 8), at least 4 characters; for an account, also
-/// one holding the other with at most 2 letters more ("Herdmaster8x"); for
-/// a title, containing one ("Herdmaster4 (alt)"). Names of fewer than 3
+/// "Rulebender8", playtest 8), at least 4 characters; holding one's letters
+/// (at least 5, digits dropped: "The Herdmaster9", "Herdmaster9 herd",
+/// "Real Herdmaster", "Herdmaster9fan": playtest 9), for every kind; for an
+/// account, also one held in the other with at most 2 letters fewer; for a
+/// title, containing one ("Herdmaster4 (alt)"). Names of fewer than 3
 /// folded characters only count when equal.
 pub fn impersonates<'a>(text: &str, others: impl IntoIterator<Item = &'a str>, kind: Kind) -> bool {
     let f = fold(text);
@@ -481,6 +536,7 @@ pub fn impersonates<'a>(text: &str, others: impl IntoIterator<Item = &'a str>, k
             && (o == f
                 || (ob.len() >= 4 && ob == fb)
                 || (ol.len() >= 4 && ol == fl)
+                || (ol.len() >= 5 && fl.contains(ol.as_str()))
                 || (kind == Kind::Account
                     && short.len() >= 5
                     && long.len() - short.len() <= 2
@@ -787,6 +843,13 @@ mod tests {
             ("New Sunbright Drove", "Sunbright Drove", true),
             ("Real Sunbright Drove 2", "Sunbright Drove", true),
             ("Meadow vole hunters", "Meadow vole", false),
+            // Playtest 9: near copies.
+            ("Ironjaws", "Ironjaw", true),
+            ("Ironjaw", "Ironjaws", true),
+            ("Emberwool Drovers", "Emberwool Drove", true),
+            ("Steppe Antelope herd", "Steppe antelope", true),
+            ("Red fox pack", "Red fox", true),
+            ("Pack of the Red fox", "Red fox", true),
             ("Sunbright", "Sunbright Drove", false),
             ("Red foxglove", "Red fox", false),
             ("Grass snakes", "Grass", false),
@@ -802,7 +865,10 @@ mod tests {
         let others = ["Herdmaster4", "bo"];
         assert!(impersonates("Herdmaster4 (alt)", others, Kind::Title));
         assert!(impersonates("herdrnaster4", others, Kind::Lineage));
-        assert!(!impersonates("Herdmaster4 (alt)", others, Kind::Lineage), "a lineage only when alike");
+        assert!(
+            impersonates("Herdmaster4 (alt)", others, Kind::Lineage),
+            "holding a name, for every kind (playtest 9)"
+        );
         assert!(!impersonates("Bold bodies", others, Kind::Title), "short names only when equal");
         assert!(impersonates("B0", others, Kind::Title));
         // A rival's name minus its digit (or with another) is a look-alike.
@@ -815,10 +881,22 @@ mod tests {
             ("8Rulebender", "Rulebender8", Kind::Lineage, true),
             ("Herdmaster8x", "Herdmaster8", Kind::Account, true),
             ("xHerdmaster", "Herdmaster8", Kind::Account, true),
-            ("Herdmaster8x", "Herdmaster8", Kind::Lineage, false),
-            ("Herdmasterxyz", "Herdmaster8", Kind::Account, false),
+            ("Herdmaster8x", "Herdmaster8", Kind::Lineage, true),
+            ("Herdmasterxyz", "Herdmaster8", Kind::Account, true),
             ("usera", "userb", Kind::Account, false),
-            ("Grazers", "Grazer", Kind::Lineage, false),
+            // Holding a player's name, for every kind (playtest 9).
+            ("Grazers", "Grazer", Kind::Lineage, true),
+            ("Herdmaster9x", "Herdmaster9", Kind::Lineage, true),
+            ("xHerdmaster9", "Herdmaster9", Kind::Lineage, true),
+            ("The Herdmaster9", "Herdmaster9", Kind::Lineage, true),
+            ("Herdmaster9 herd", "Herdmaster9", Kind::Lineage, true),
+            ("Herdmaster9's Drove", "Herdmaster9", Kind::Lineage, true),
+            ("Herdmaster9 II", "Herdmaster9", Kind::Species, true),
+            ("Real Herdmaster", "Herdmaster9", Kind::Title, true),
+            ("TheHerdmaster9", "Herdmaster9", Kind::Account, true),
+            ("Herdmaster9fan", "Herdmaster9", Kind::Account, true),
+            ("Steppe grazers", "Bob", Kind::Lineage, false),
+            ("Bobcats", "Bobby", Kind::Lineage, false),
         ];
         for &(text, other, kind, alike) in cases {
             assert_eq!(impersonates(text, [other], kind), alike, "{text:?} against {other:?} as {kind:?}");
