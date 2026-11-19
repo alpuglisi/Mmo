@@ -9046,6 +9046,70 @@ around it.
 
 
 
+### Playtest 10: balance
+
+Playtest 10 (`docs/playtest-10.md`, findings 7 and 8) had no runaway, with
+era-2 means from 2.1% to 7.1% and the wild at about 70%. The pack peaked at
+112 (playtest 9: 261). Four of six players ran near-identical warm egg herds,
+and the era-1 winner went from 1,372 to extinct in about 130 days.
+
+What the replay (`dominance --only Herd,Sleepers,Cold,Pack,LoopHerd,Broker
+--trace`) showed:
+- With the wild refuge, a replayed pack (40 founders, day 37) still peaks
+  near 250: 244 against 258 with the refuge off. The refuge costs a pack
+  little once the wild has grown.
+- In a fresh world, though, every wild species starts far below its cap.
+  The playtest's antelope were 150 on day 14, so a pack founded then found
+  most prey under the refuge.
+- The pack's other larder, the warm egg herds, is toxic and bright. Their
+  clutches carried no toxin, but no hunter went looking for them: eggs were
+  raided only when a hungry carnivore happened to step on the nest.
+- The leader's crash: crowding by share of the world made a lineage past
+  its share hungrier, not only slower to breed. The world's count falls
+  every winter with the wild, so the share tightened just when food did.
+
+Three rules, version 89 (each off at 0):
+
+- **Nest raids** (`Balance::nest_raids`, 1). A hungry hunter (carnivory
+  above 0.7) with no prey in sight goes for the nearest rival clutch it
+  smells, within `nest_raids × carcass_scent × (0.5 + nose)` tiles, and
+  raids it on arrival (`World::scent_clutch`). This skips its own
+  lineage's clutches and those of species it has given up on. An egg
+  herd, toxic or not, now feeds a pack through its nests: a counter to the
+  warm egg class.
+- **Share slows breeding only** (`Balance::share_litters`, 1). Past its
+  share of the world a lineage's litters shrink as before, but hunger comes
+  from the soft cap alone. The brake limits growth and no longer starves a
+  leader through its winter.
+- **Refuge ramp** (`Balance::refuge_ramp`, 1). The wild refuge comes in
+  over the world's first year, from none on day 0 to full on day 360.
+
+**Replay** (seeds 1–4, 840 days, two eras; "era mean" is the highest mean
+share over a whole era on any seed):
+
+| Player | Playtest 10 rules (v89 tunables off): era mean, peak alive, final alive, extinct | v89 rules |
+| --- | --- | --- |
+| LoopHerd (warm egg herd) | 23.6%, 904, 376, 0 | 24.0%, 1,028, 446, 0 |
+| Herd (warm egg herd) | 20.9%, 1,652, 446, 0 | 17.5%, 812, 73, 0 |
+| Cold (cold flier) | 5.3%, 288, 167, 0 | 16.8%, 605, 442, 0 |
+| Broker (live grazer) | 13.3%, 944, 20, 2 | 11.8%, 846, 11, 1 |
+| Pack | 5.9%, 217, 164, 0 | 12.3%, 236, 175, 0 |
+| Sleepers (re-found) | 2.0%, 141, 12, 2 | 3.2%, 172, 4, 1 |
+
+(Peak and final alive are means over the seeds.)
+
+The era means spread more evenly: the cold flier and the pack roughly
+double or triple, the herd falls, and no leader dies out. The pack peaks at
+236 on average and reaches 264 on seed 1 (target 200–300). The 12-seed sweep scores 11.90 (11.88 before). The wild in the
+trace (seed 1) keeps 1,900–3,300, with antelope at 150–205. Late in that
+seed the 260-strong pack raids the egg herds' nests hard. Herd's
+second-winter crashes (838 → 247, 857 → 99) were winter's, as before, but
+it then failed to breed back (12 alive at day 840). A pack this size is now
+a real threat to an egg herd. Packs still scatter (`pack_cohesion` stays
+off), and the replay's pack doesn't reproduce the playtest's 112: a played
+pack also starved through its first autumn. The ramp is aimed at that
+fresh-world start.
+
 ### Playtest 9: balance
 
 Playtest 9 (`docs/playtest-9.md`, findings 1, 6 and part of 12 here).
@@ -9373,6 +9437,50 @@ and 8 of 8 (8 and 8 off; viable 7 and 8 either way).
 | --- | --- |
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.77 (± 0.16; 11.82 with the five tunables off). Every lineage survives 12 of 12. |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
+
+### Playtest 10: server Lows
+
+Server-side Lows from `docs/playtest-10.md`:
+
+- **Wording.** The migrate dry-stretch warning no longer reads "about
+  about N days". Real-minute texts go through one helper (`real_minutes`:
+  "under a real minute", "about a real minute", "about N real minutes"),
+  used by the grace warning, the re-found rule, auction lengthening,
+  duration refusals and the reinforce block. A forfeit names the market fee
+  only when one was taken. An escrow payout says "too little for a market
+  fee" when the fee rounds to nothing.
+- **Rounding.** Listings (age, health, trait values), species views (diet,
+  size, body plan), migrate replies (dry stretch, thirsty share, route
+  points in tenths) and the `mostly_water` error's water share are rounded.
+- **Drift risk.** Player lineages always read drift risk "none", because
+  players no longer exchange genes naturally. A wild row has none once it is
+  fertile. The client words a high risk as "sterile now, but drift could soon
+  make them fertile". `fertile_with` counts only rows with fertility above
+  0.
+- **Re-founding reply.** The founding reply's `reduced` is one flat
+  sentence ("your last lineage retired on day N, and a re-founding within W
+  days of that gets half the founders"), not the whole rule nested inside
+  another sentence.
+- **Offers.** Offers made to a player while they had no connection are sent
+  as `mating_request` when they connect, once. Retiring ends the retiree's
+  pending offers with code `retired` ("ann retired their lineage, so the
+  offer ended"), not "died before the mating".
+- **`/api/species`.** A living species leaves out a player's lineage that
+  has ended (retired, replaced, or died out) and has no adults left.
+- **Survey quote.** A shop quote holds 60 real seconds (`QUOTE_SECONDS`,
+  10 before), so a survey confirmed in the client's dialog costs no more
+  than the dialog said.
+- **Drought provision.** The founding reply says founders "start fully
+  watered". It adds the slower water loss only when that loss is below 95%
+  of the usual rate. It no longer reads "100% of the usual rate".
+- **Renown taper (sink).** Balances piled up to 1,700–4,000 unspent. Daily
+  income now tapers on a balance above `economy::INCOME_TAPER_FROM` (1,000;
+  `GameConfig::income_taper_from`, 0 turns it off). Income is scaled by
+  `1,000 / balance`: half at 2,000, a quarter at 4,000, never below the
+  stipend. The ledger line says how much the full income was. Saved renown
+  keeps its value, but hoarding stops paying. A leader who spends (shop,
+  studs, auctions) keeps earning in full. Royalties and achievement bonuses
+  are not tapered.
 
 ### Playtest 9: server Lows
 
@@ -10053,7 +10161,7 @@ before then." Without hunters near, only the first sentence.
 ### Playtest 10: landings and alerts
 
 Round 11 for `docs/playtest-10.md` findings M9, M12 and M14. Snapshot version
-90 (provisional; main is at 85). It adds `Balance::reinforce_clear` and
+90 (main is at 89). It adds `Balance::reinforce_clear` and
 `Balance::founding_together`, off at 0, which is what snapshots of version 89
 and before read (`serde_util::before_v90`).
 
@@ -10117,7 +10225,7 @@ with no hint that the rule was relaxed, and 2 tiles from a territory's edge.
   - The advice to lay fewer eggs, and "a sitting parent keeps 4 eggs
     warm", come only for clutches bigger than 4.
 
-**Checks** (main f16a54f at version 85, against this round):
+**Checks** (main f16a54f at version 85, against this round; main 8791aca, balance's version 89, merged after):
 
 | Check | Result |
 | --- | --- |

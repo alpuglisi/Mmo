@@ -77,7 +77,7 @@ function softCapInfo(population: number, c: CrowdingView): CapInfo {
     + `litters shrink toward the soft cap of ${grouped(c.soft_cap)} (half size at it, smaller past it) and past it members compete for food. `
     + `Births stop only at the hard cap of ${grouped(c.hard_cap)} living organisms, young included. `
     + (worldCap !== null
-      ? `A lineage also crowds as at the soft cap once it holds ${Math.round((c.world_share ?? 0.2) * 100)}% of the world's animals (wild included): at today's numbers from ${grouped(worldCap)}. `
+      ? `A lineage's litters also shrink as at the soft cap once it holds ${Math.round((c.world_share ?? 0.2) * 100)}% of the world's animals (wild included; breeding only, not hunger): at today's numbers from ${grouped(worldCap)}. `
       : '')
     + (full
       ? 'You are at it: no young are born until some of yours die. A bigger number no longer raises your share; healthier breeding adults and their genes do.'
@@ -87,7 +87,8 @@ function softCapInfo(population: number, c: CrowdingView): CapInfo {
           ? `Now: litters are ${times(c.litter)} their size.`
           : 'Now: litters are full size.');
   return {
-    count: `${grouped(c.count)} / ${grouped(c.soft_cap)}`,
+    // The limit that binds: the share of the world when it is lower (playtest 10: "653 / 1,500" while 764 bound).
+    count: worldCap !== null ? `${grouped(c.count)} / ${grouped(worldCap)} (world share)` : `${grouped(c.count)} / ${grouped(c.soft_cap)}`,
     status,
     level: full ? 'full' : nearHard || past || slowed ? 'near' : 'ok',
     explain,

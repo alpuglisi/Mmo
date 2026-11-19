@@ -139,7 +139,9 @@ export function compatRowText(r: CompatibilityView['rows'][number]): string {
   const range = r.fertility_low !== undefined && r.fertility_high !== undefined && r.fertility_high - r.fertility_low >= 0.05
     ? `, most pairs ${pct0(r.fertility_low)}–${pct0(r.fertility_high)}` : '';
   const share = r.fertile_share !== undefined ? `${pct0(r.fertile_share)} of pairs can conceive` : null;
-  const drift = r.drift_risk === 'high' ? ' · drift risk high' : r.drift_risk === 'low' ? ' · drift risk low' : '';
+  // Only sterile wild lineages carry a drift risk (playtest 10: "sterile … drift risk high" read as a contradiction).
+  const drift = r.drift_risk === 'high' ? ' · sterile now, but drift could soon make them fertile'
+    : r.drift_risk === 'low' ? ' · sterile now; drift could make them fertile in time' : '';
   // The closest pair's widest body-plan gap: a cause, not a verdict (a
   // gap under 0.30 lowers fertility; 0.30 or more makes a pair sterile).
   const cause = r.limiting === 'morphology'

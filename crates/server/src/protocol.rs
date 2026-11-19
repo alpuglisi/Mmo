@@ -961,7 +961,9 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
         let info = ErrorInfo::new(code, e.to_string());
         match e {
             ClaimCooldown { ticks_left } => info.with_detail(serde_json::json!({ "ticks_left": ticks_left })),
-            MostlyWater { share } => info.with_detail(serde_json::json!({ "water_share": share })),
+            MostlyWater { share } => {
+                info.with_detail(serde_json::json!({ "water_share": crate::protocol::round::hundredths(*share) }))
+            }
             // The target's mass only roughly (playtest 6: a rival's exact
             // mass to 15 digits); the attacker's own limit as it is.
             TooBig { mass, limit } => {
@@ -2353,6 +2355,7 @@ impl LedgerTotals {
 pub struct TraitView {
     /// Gene key as in `/api/genes`.
     pub gene: String,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub value: f32,
 }
 
@@ -2370,6 +2373,10 @@ pub struct ListingView {
     /// meets it (playtest 7: listings outlived old animals unwarned).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub aging: bool,
+    /// Its expected lifespan in days, beside `age_days` (playtest 10: an
+    /// age with nothing to read it against); absent on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifespan_days: Option<f32>,
     /// Asleep (hibernating, brumating, estivating): it walks to no meeting
     /// until it wakes (the agreement's deadline waits).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -2394,7 +2401,9 @@ pub struct ListingView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub father: Option<OrgId>,
     pub offspring_raised: u32,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub age_days: f32,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub health: f32,
     pub x: f32,
     pub y: f32,
@@ -2950,15 +2959,19 @@ pub struct SpeciesView {
     pub adults: f64,
     pub peak_adults: f64,
     pub lineages: Vec<SpeciesLineage>,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub carnivory: f32,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub body_size: f32,
     /// Mean expressed thermoregulation and birth mode genes of its
     /// representatives, and their usual leg and eye counts: with `carnivory`
     /// and `body_size`, what decides who it can interbreed with
     /// (`mating::body_plan_gap`). Absent from older servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "crate::protocol::round::opt2")]
     pub endothermy: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "crate::protocol::round::opt2")]
     pub birth_mode: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leg_count: Option<u8>,

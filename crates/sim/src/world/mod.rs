@@ -1317,13 +1317,19 @@ impl World {
             return [1.0, 1.0];
         }
         let cap = self.config.lineage_cap.max(1) as f32;
-        let mut x = count / cap;
+        let at_cap = count / cap;
+        let mut x = at_cap;
         if bal.world_crowding > 0.0 && total > 0.0 {
             // The world's count taken as at least the soft cap: a small
             // lineage in a small world isn't crowded by its share.
             x = x.max(count / (bal.world_crowding * total.max(cap)));
         }
-        [1.0 / (1.0 + x.powf(bal.lineage_crowding)), 1.0 + bal.crowding_hunger * (x - 1.0).max(0.0)]
+        // With `Balance::share_litters` the share slows breeding only: the
+        // world's count falls every winter with the wild, and hunger from
+        // it starved a leader through its winter (playtest 10: 1,372 →
+        // extinct in 130 days). Hunger stays with the soft cap.
+        let hungry = if bal.share_litters > 0.0 { at_cap } else { x };
+        [1.0 / (1.0 + x.powf(bal.lineage_crowding)), 1.0 + bal.crowding_hunger * (hungry - 1.0).max(0.0)]
     }
 
     /// Each player's crowding count: adults, plus juveniles at
@@ -2450,9 +2456,11 @@ mod winter_tests {
             // prey-scaled pack larder, version 58, and without
             // `rival_clear`, version 85: on this crowded 64-tile map
             // nearly every spot has a rival animal within reach, and the
-            // clearance marks homes down more than the fatal spot does.)
+            // clearance marks homes down more than the fatal spot does;
+            // nor with nest raids, version 89, which move the packs.)
             w.config.balance.prey_larder = 0.0;
             w.config.balance.rival_clear = 0.0;
+            w.config.balance.nest_raids = 0.0;
             w.run_days(2);
             let found = |w: &mut World| {
                 let ids = w.found_lineage_unchecked(77, &d);

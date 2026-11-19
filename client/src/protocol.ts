@@ -733,6 +733,8 @@ export interface ListingView {
   animal_name?: string;
   /** Past 90% of its lifespan: it may die of old age before a buyer meets it. */
   aging?: boolean;
+  /** Its expected lifespan in days, beside `age_days` (absent on older servers). */
+  lifespan_days?: number;
   /** Asleep (hibernating, brumating, estivating): it walks to no meeting until it wakes. */
   dormant?: boolean;
   lineage: number;
