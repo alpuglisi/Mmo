@@ -44,10 +44,13 @@ pub enum DeathCause {
     /// Heat: too far above the comfort range (version 52; counted as
     /// `Exposure` before).
     Heat,
+    /// A hunter killed by its prey fighting back (version 63; counted as
+    /// `Predation` before, as if the prey had eaten it).
+    FoughtBack,
 }
 
 impl DeathCause {
-    pub const ALL: [DeathCause; 13] = [
+    pub const ALL: [DeathCause; 14] = [
         DeathCause::Starvation,
         DeathCause::Thirst,
         DeathCause::Exposure,
@@ -61,6 +64,7 @@ impl DeathCause {
         DeathCause::Journey,
         DeathCause::WinterSleep,
         DeathCause::Heat,
+        DeathCause::FoughtBack,
     ];
 
     pub fn label(self) -> &'static str {
@@ -78,6 +82,7 @@ impl DeathCause {
             DeathCause::Journey => "journey",
             DeathCause::WinterSleep => "winter sleep",
             DeathCause::Heat => "heat",
+            DeathCause::FoughtBack => "killed by prey",
         }
     }
 }

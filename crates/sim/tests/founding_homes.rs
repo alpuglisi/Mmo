@@ -45,6 +45,8 @@ fn homes_hash() -> u64 {
         // change the days the world grows first.
         config.balance.dry_beds = 0.0;
         config.balance.drink_reach = 0.0;
+        // Playtest 6 (version 58): the prey-scaled pack larder.
+        config.balance.prey_larder = 0.0;
         // Playtest 5 (version 52): brooders keeping their nests, young
         // following and escaping rising water change the days the world
         // grows first.
@@ -54,10 +56,13 @@ fn homes_hash() -> u64 {
         // grows first.
         config.balance.founding_drought = 0.0;
         // Playtest 6 balance (version 62): toxin upkeep, hungry hunters,
-        // toxin lessons by source and clutch cover change the days the world
-        // grows first.
-        (config.balance.toxin_upkeep, config.balance.hungry_hunters) = (0.0, 0.0);
-        (config.balance.toxin_source, config.balance.clutch_cover) = (0.0, 0.0);
+        // toxin source, speciation credit and clutch cover change how the
+        // world grows before the sample players found.
+        config.balance.toxin_upkeep = 0.0;
+        config.balance.hungry_hunters = 0.0;
+        config.balance.toxin_source = 0.0;
+        config.balance.speciation_credit = 0.0;
+        config.balance.clutch_cover = 0.0;
         // Founded empty: the wild ecosystem, then the sample players.
         let mut w = presets::standard_world(config, 1);
         for o in &w.organisms {

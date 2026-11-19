@@ -533,6 +533,12 @@ fn founding_drought_off(b: &mut crate::Balance) {
 fn balance62_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v62::OLD_VALUE;
     (b.toxin_upkeep, b.hungry_hunters, b.toxin_source, b.speciation_credit, b.clutch_cover) = (old, old, old, old, old);
+    playtest6_off(b);
+}
+
+/// The playtest 6 predator tunable as snapshots before version 63 read it.
+fn playtest6_off(b: &mut crate::Balance) {
+    b.prey_larder = crate::serde_util::before_v63::OLD_VALUE;
 }
 
 /// Version 61 snapshots (before the playtest 6 balance rules) restore with
@@ -1856,4 +1862,25 @@ fn version_58_snapshots_restore_without_founding_drought() {
     let w = fixture_world();
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.founding_drought, 1.0);
+}
+
+/// Version 62 snapshots (before the playtest 6 predator rule) restore
+/// with it off, and are otherwise the same world.
+#[test]
+fn version_62_snapshots_restore_without_prey_larder() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v62();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 62);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.prey_larder, 0.0);
+    assert!(r.snapshot_v62() == old);
+    playtest6_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    // This version keeps it.
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.prey_larder, 1.0);
 }

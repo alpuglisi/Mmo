@@ -199,6 +199,13 @@ fn a_new_lineage_ramps_into_the_seasons_legacy_score() {
 /// An attack order (`possess_attack`) through the protocol: refusals with
 /// their codes and specifics, and the target's owner alerted once it goes
 /// through.
+/// Make `player`'s animals meat eaters: only they take attack orders.
+fn hunters(g: &mut Game, player: PlayerId) {
+    for o in g.world.organisms.iter_mut().filter(|o| o.owner == player) {
+        o.traits.carnivory = 0.9;
+    }
+}
+
 #[test]
 fn an_attack_order_alerts_the_targets_owner() {
     let (mut g, a) = game();
@@ -218,6 +225,9 @@ fn an_attack_order_alerts_the_targets_owner() {
     assert_eq!(run(&mut g, msg.clone()), Err("not_possessed".into()));
     run(&mut g, ClientMsg::Possess { organism: a[0] }).unwrap();
     assert_eq!(run(&mut g, ClientMsg::PossessAttack { organism: a[0], target: a[1] }), Err("own_target".into()));
+    // A plant eater doesn't hunt (playtest 6: a possessed grazer one-shot a fox).
+    assert_eq!(run(&mut g, msg.clone()), Err("not_a_hunter".into()));
+    hunters(&mut g, 1);
     // A newcomer's grace, with the days left.
     g.world.config.balance.attack_grace = 1e6;
     // Shown: bo's lineage is listed as protected, and bo's stats give the days left.
@@ -289,6 +299,8 @@ fn the_newcomer_grace_is_in_the_state_and_lasts_real_minutes() {
     g.set_name(2, "bo");
     let b = g.found(2, &design("B")).unwrap().founders;
     g.connect(20, 2, "bo");
+    hunters(&mut g, 1);
+    hunters(&mut g, 2);
     let grace = g.grace_view(2).expect("a newcomer has its grace");
     let tpd = g.world.config.ticks_per_day as u64;
     let length = 18_000.min(60 * tpd).max(20 * tpd);
@@ -477,6 +489,42 @@ fn possession_ends_when_the_player_is_gone() {
         r.after_tick();
     }
     assert!(!r.world.organisms.iter().any(|o| o.possessed_by == Some(1)));
+}
+
+/// Playtest 6: a big lineage lost 20–75 a day unflagged (5% rule); a
+/// thirst-only crash read "going hungry"; mass cold deaths had no alert.
+#[test]
+fn hunger_thirst_and_cold_warnings_fit_the_lineage() {
+    let (mut g, _) = game();
+    run_days(&mut g, 1);
+    let set = |g: &mut Game, alive: u32, deaths: &[(&str, u64)]| {
+        let r = g.history.back_mut().unwrap();
+        let e = r.lineages.iter_mut().find(|e| e.owner == 1).unwrap();
+        e.alive = alive as _;
+        e.deaths.clear();
+        for &(c, n) in deaths {
+            e.deaths.insert(c.into(), n);
+        }
+    };
+    let kinds = |g: &Game| g.lineage_warnings(1).into_iter().map(|w| (w.kind, w.text)).collect::<Vec<_>>();
+    // 20 of 2,000 starved: 1%, but past the floor of 15 a day.
+    set(&mut g, 2000, &[("starved", 20)]);
+    let w = kinds(&g);
+    assert!(
+        w.iter().any(|(k, t)| k == "starving" && t.contains("20 starved and 0 died of thirst (1% of it)")),
+        "{w:?}"
+    );
+    // All thirst: said as thirst.
+    set(&mut g, 300, &[("thirst", 9)]);
+    let w = kinds(&g);
+    assert!(w.iter().any(|(k, t)| k == "starving" && t.starts_with("Your lineage is dying of thirst")), "{w:?}");
+    // A severe winter's cold deaths.
+    set(&mut g, 300, &[("cold", 12)]);
+    let w = kinds(&g);
+    assert!(w.iter().any(|(k, t)| k == "cold" && t.contains("12 died of cold")), "{w:?}");
+    // A small day: nothing.
+    set(&mut g, 300, &[("starved", 3), ("cold", 2)]);
+    assert!(kinds(&g).is_empty(), "{:?}", kinds(&g));
 }
 
 /// Lineage-wide warnings (playtest 3): a hunger crash, near the hard cap,

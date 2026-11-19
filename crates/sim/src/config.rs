@@ -1302,6 +1302,17 @@ pub struct Balance {
     /// 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v62"))]
     pub clutch_cover: f32,
+    // Playtest 6 predators (version 63; *Playtest 6: predators and
+    // warnings* in the README). Off at 0, what snapshots before version 63
+    // read (`serde_util::before_v63`).
+    /// The pack larder (`Balance::player_packs`) scales with the prey
+    /// there is: full from 40 plant eaters (not the player's) per pack
+    /// hunter of the player's, gone at 20 (`World::refresh_pack_room`),
+    /// instead of fading between 60 and 100 animals of the player's
+    /// (playtest 6: a well-played pack plateaued near 100 while herds held
+    /// the cap). 0: the band rule.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v63"))]
+    pub prey_larder: f32,
 }
 
 impl Balance {
@@ -1599,12 +1610,13 @@ impl Default for Balance {
             toxin_source: 1.0,
             speciation_credit: 1.0,
             clutch_cover: 2.1,
+            prey_larder: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 167;
+    pub const FIELD_COUNT: usize = 168;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1781,6 +1793,7 @@ impl Balance {
             ("toxin_source", &mut self.toxin_source),
             ("speciation_credit", &mut self.speciation_credit),
             ("clutch_cover", &mut self.clutch_cover),
+            ("prey_larder", &mut self.prey_larder),
         ]
     }
 

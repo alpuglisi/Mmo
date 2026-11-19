@@ -1300,7 +1300,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const other = possessed();
       keyed(inspActions, `own:${own.id}:${own.possessed}:${other?.id ?? ''}`, () => [
         own.possessed
-          ? h('button', { id: 'btn-release', onclick: () => void send({ type: 'release', organism: own.id }) }, 'Release')
+          // One Release, on the possession bar (playtest 6: two of them while possessing).
+          ? h('span', { class: 'muted small', id: 'btn-release' }, 'Possessed: Release is on the bar.')
           : h('button', { id: 'btn-possess', onclick: () => void possess(own.id) }, other ? `Possess (releases #${other.id})` : 'Possess'),
         h('button', { class: 'secondary', onclick: () => { view.setFollow(false); view.centerOn(own.x, own.y); } }, 'Center'),
         own.matured && h('button', { class: 'secondary', onclick: () => { matingForm.setMine(own.id); showTab('matings'); } }, 'Mate this one…'),
