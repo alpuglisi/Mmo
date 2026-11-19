@@ -63,8 +63,12 @@ async function waitFor(what, fn, timeoutMs = 60000) {
 const started = Date.now();
 const step = (msg) => console.log(`  ✓ ${msg} [${((Date.now() - started) / 1000).toFixed(0)} s]`);
 
+// The lobby and the backends share an operator token: backends tell only it
+// (not anonymous callers) that a name has a lineage there.
+const ADMIN = 'e2e-operator-token';
+
 function proc(file, args, log) {
-  const p = spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  const p = spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, EVO_ADMIN_TOKEN: ADMIN } });
   p.stdout.on('data', (d) => log.push(String(d)));
   p.stderr.on('data', (d) => log.push(String(d)));
   return p;
@@ -132,7 +136,11 @@ async function main() {
     if (reg.status !== 201) throw new Error(`register on B: ${JSON.stringify(reg)}`);
     const found = await post(B, '/api/lineage?world=b1', design, reg.body.token);
     if (found.status !== 201) throw new Error(`found on B: ${JSON.stringify(found)}`);
-    await waitFor('the lineage on B to show', async () => (await (await fetch(`${L}/lobby/assign?name=westerner`)).json()).reason === 'lineage');
+    // Routed to B; the public answer says no more (no account or lineage).
+    await waitFor('the lineage on B to show', async () => {
+      const v = await (await fetch(`${L}/lobby/assign?name=westerner`)).json();
+      return v.server === B && v.world === 'b1' && v.reason !== 'lineage' && v.has_account === false;
+    });
     const west = await play(browser, `${A}/?tour=off&lobby=${encodeURIComponent(L)}`, 'westerner', 'login');
     const u2 = new URL(west.url);
     if (u2.port !== String(pb) || u2.searchParams.get('world') !== 'b1') throw new Error(`westerner went to ${west.url}`);
@@ -143,7 +151,9 @@ async function main() {
     const reg2 = await post(A, '/api/register', { name: 'islander', password: 'a long password' });
     const found2 = await post(A, '/api/lineage?world=a2', design, reg2.body.token);
     if (found2.status !== 201) throw new Error(`found on A: ${JSON.stringify(found2)}`);
-    await waitFor('the lineage in a2 to show', async () => (await (await fetch(`${A}/api/assign?name=islander`)).json()).reason === 'lineage');
+    await waitFor('the lineage in a2 to show', async () => (await (await fetch(`${A}/api/assign?name=islander`)).json()).world === 'a2');
+    const told = await (await fetch(`${A}/api/assign?name=islander`, { headers: { 'x-admin-token': ADMIN } })).json();
+    if (told.reason !== 'lineage') throw new Error(`the operator should be told: ${JSON.stringify(told)}`);
     // A fresh browser profile: no lobby remembered from the pages above.
     const plain = cappedBrowser(await chromium.launch({ headless: !process.env.HEADED }));
     try {

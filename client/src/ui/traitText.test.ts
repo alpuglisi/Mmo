@@ -55,7 +55,9 @@ describe('trait text', () => {
     // Muscle's food upkeep follows the caption (stats.rs metabolism × √mass).
     expect(caption('muscle', design({ muscle: 0.5 }))!.text).toBe(`${t.mid} · upkeep +44% food a day vs. lean`);
     expect(caption('muscle', design({ muscle: 0.9 }))!.text).toMatch(new RegExp(`^${t.high.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} · upkeep \\+\\d+% food a day vs\\. lean$`));
-    expect(caption('body_size', design({ body_size: 0.8 }))!.text).toMatch(/upkeep \+\d+% food a day vs\. the default size/);
+    expect(caption('body_size', design({ body_size: 0.8 }))!.text).toMatch(/upkeep \+\d+% food a day vs\. the starting size/);
+    // None at the slider's default, the starting size (playtest 8: "+78%" there).
+    expect(caption('body_size', design({ body_size: 0.5 }))!.text).not.toMatch(/upkeep/);
   });
 
   it('switches at a trait’s own thresholds', () => {

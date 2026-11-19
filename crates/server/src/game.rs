@@ -287,9 +287,6 @@ pub const SURVIVAL_HELD: f64 = 0.25;
 /// A migration given while at least this share of the group is dormant
 /// draws a warning.
 pub const DORMANT_WARN_SHARE: f32 = 0.3;
-/// A journey's food share below which its warning says "heavy losses"
-/// (above, "some hunger": playtest 8 read "heavy losses" at 94%).
-pub const JOURNEY_HEAVY_SHARE: f32 = 0.75;
 
 /// Whether a "species founded" achievement of `player` for `species` on
 /// `day` earns its renown bonus (and a season count), recording it if so.
@@ -390,8 +387,9 @@ fn egg_loss_why(cause: &str, abandoned: bool, asleep: bool) -> &'static str {
         "chilled" if abandoned => "chilled: abandoned eggs lie exposed, by design",
         // Most of the lineage asleep (playtest 7: blamed straying while the
         // parents slept).
-        "chilled" if asleep => "chilled: no parent was brooding them (the parents were asleep)",
-        "chilled" => "chilled: no parent was brooding them (it strayed too far from the nest, or died)",
+        // No parentheses: the summary puts the causes in parentheses already (playtest 8).
+        "chilled" if asleep => "chilled: no parent was brooding them, the parents were asleep",
+        "chilled" => "chilled: no parent was brooding them, it strayed too far from the nest or died",
         "overheated" => "overheated",
         _ => "eaten by egg raiders",
     }
@@ -678,6 +676,13 @@ pub const MEET_PREDATOR_CLEAR: f32 = 12.0;
 /// (playtest 7: fee-free 5-renown sales in a ring of three colluders).
 pub const MARKET_TITLE_MIN_PRICE: u64 = 10;
 
+/// Tiles the partner's animal may end farther from the meeting point than
+/// it started before a lapse is the seller's fault (`Game::lapse`).
+pub const SELLER_DRIFT: f32 = 3.0;
+
+/// Within this many tiles of the meeting point an animal has arrived there.
+pub const MEET_ARRIVED: f32 = 3.0;
+
 /// Renown for the first re-founding within the window (see [`refound_fee`]).
 pub const REFOUND_FEE: u64 = 100;
 
@@ -757,6 +762,14 @@ struct Offer {
     /// (playtest 6: walking a possessed animal into a pack to get a refund).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     steered: Option<u64>,
+    /// Each side's distance to the meeting point when it was fixed
+    /// (requester's, partner's), and the nearest the requester's animal has
+    /// come since: who failed to meet, at a lapse (playtest 8: a seller
+    /// could walk its animal away and the buyer forfeited).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    start_dist: Option<(f32, f32)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    buyer_best: Option<f32>,
     /// Ticks the deadline has waited for a sleeper (at most
     /// [`HOLD_MAX_DAYS`] of them).
     #[serde(default)]
@@ -821,6 +834,11 @@ pub struct Game {
     progress: BTreeMap<PlayerId, Progress>,
     /// Organisms whose spell of need was alerted (the day it was), until it eases.
     need_alerted: BTreeMap<OrgId, u64>,
+    /// When each possessed animal was first seen possessed (not saved): its
+    /// need alert waits a moment, for the order that usually follows
+    /// (playtest 8: "foraging on its own until you give it an order" 0.3 s
+    /// before the order).
+    possessed_seen: BTreeMap<OrgId, u64>,
     /// The tick an alerted need eased below the threshold: the spell ends
     /// once it stays eased a game day (playtest 4: a hunter's hunger swung
     /// across the threshold with each small kill, and the alert came every
@@ -1204,6 +1222,7 @@ impl Game {
             watched: BTreeMap::new(),
             progress: BTreeMap::new(),
             need_alerted: BTreeMap::new(),
+            possessed_seen: BTreeMap::new(),
             need_eased: BTreeMap::new(),
             sleep_alerted: BTreeSet::new(),
             pending_deaths: BTreeMap::new(),
@@ -1679,7 +1698,7 @@ impl Game {
                 } else {
                     self.economy.refound_debt.insert(player, left);
                 }
-                (delta - take as i64, format!("{text} (less {take} toward the re-founding fee owed)"))
+                (delta - take as i64, format!("{text} (less {take} toward renown owed)"))
             }
             _ => (delta, text),
         };
@@ -1806,13 +1825,9 @@ impl Game {
                 // taken from their next renown (a player without renown can
                 // still play; spending it first doesn't dodge the fee).
                 let fee = t.fee;
-                let paid = fee.min(self.balance(player));
-                if paid > 0 {
+                if fee > 0 {
                     let text = format!("Re-founding fee (re-founding {} within the window)", t.count + 1);
-                    let _ = self.post(player, -(paid as i64), LedgerKind::Purchase, text, None, None);
-                }
-                if fee > paid {
-                    *self.economy.refound_debt.entry(player).or_default() += fee - paid;
+                    self.charge_owed(player, fee, text, None, None);
                 }
                 ok.refound_fee = fee;
                 let (today, window) = (self.world.day(), self.refound_window_days());
@@ -2091,13 +2106,13 @@ impl Game {
         for id in ids {
             let o = self.offers[&id].clone();
             let info = if o.to == player {
-                let fee = (o.escrow * LAPSE_FEE_PERCENT / 100).max(LAPSE_FEE_MIN).min(self.balance(player));
-                if fee > 0 {
-                    let text = format!("Penalty: retired with a mating sold to {} (offer #{id})", self.name(o.from));
-                    let _ = self.post(player, -(fee as i64), LedgerKind::Purchase, text, Some(id), o.listing);
-                    let text = format!("Compensation: {} retired before your mating (offer #{id})", self.name(player));
-                    let _ = self.post(o.from, fee as i64, LedgerKind::Refund, text, Some(id), o.listing);
-                }
+                // The full fee: what the seller lacks is owed (playtest 8:
+                // capped at the balance, spending first dodged it).
+                let fee = (o.escrow * LAPSE_FEE_PERCENT / 100).max(LAPSE_FEE_MIN);
+                let text = format!("Penalty: retired with a mating sold to {} (offer #{id})", self.name(o.from));
+                self.charge_owed(player, fee, text, Some(id), o.listing);
+                let text = format!("Compensation: {} retired before your mating (offer #{id})", self.name(player));
+                let _ = self.post(o.from, fee as i64, LedgerKind::Refund, text, Some(id), o.listing);
                 ErrorInfo::new(
                     "seller_retired",
                     format!(
@@ -2300,9 +2315,9 @@ impl Game {
                         ));
                     }
                 }
-                // One "At the destination:" for all it says (playtest 8: repeated per warning).
+                // One "Destination:" for all it says (playtest 8: repeated per warning).
                 if !there.is_empty() {
-                    warnings.push(format!("At the destination: {}", capitalize_join(&there)));
+                    warnings.push(format!("Destination: {}", capitalize_join(&there)));
                 }
                 dest.as_object_mut().map(|o| o.remove("distance"));
                 let supports = dest["food_supports"].as_u64().map(|v| v as usize);
@@ -2957,6 +2972,8 @@ impl Game {
             slept: 0,
             held: 0,
             steered: None,
+            start_dist: None,
+            buyer_best: None,
             paused: 0,
         };
         self.offers.insert(id, offer);
@@ -3971,7 +3988,7 @@ impl Game {
             distance_fertility: r(p.distance_fertility),
             body_plan_gaps: body_plan_gaps(&p).into_iter().map(|g| BodyPlanGap { gap: r(g.gap), ..g }).collect(),
             mismatch: r(p.mismatch),
-            cost: p.cost,
+            cost: r(p.cost),
             failure_chance: r(p.failure_chance),
             // Exact only for a partner the player can see: distances to
             // hidden organisms would locate them (rounded up to 16 tiles).
@@ -4057,8 +4074,64 @@ impl Game {
     /// of the fee and the rest is refunded; with nothing paid, the buyer
     /// forfeits a mating slot instead. Buying a rival's dam and never coming
     /// used to hold her until the season ended.
+    /// Accepted agreement `id` failed by the seller's side (its animal
+    /// moved away or never came, or its own lineage killed the buyer's
+    /// animal): the buyer gets the price back and the hold fee from the
+    /// seller (owed when the seller is short).
+    fn seller_at_fault(&mut self, id: u64, why: &str, out: &mut Outbox) {
+        let o = self.offers[&id].clone();
+        let fee = (o.escrow * LAPSE_FEE_PERCENT / 100).max(LAPSE_FEE_MIN);
+        let text = format!("Penalty: offer #{id} failed by your side ({why})");
+        self.charge_owed(o.to, fee, text, Some(id), o.listing);
+        let text = format!("Compensation: offer #{id} failed by {}'s side", self.name(o.to));
+        let _ = self.post(o.from, fee as i64, LedgerKind::Refund, text, Some(id), o.listing);
+        let info = ErrorInfo::new(
+            "seller_fault",
+            format!("{why}: the price is refunded and {} pays {fee} renown compensation", self.name(o.to)),
+        );
+        self.close(id, OfferStatus::Failed, None, Some(info), out);
+    }
+
+    /// Take `amount` from `player`: what they have now, the rest owed
+    /// (`Economy::refound_debt`) and taken from their next renown. What was
+    /// taken now.
+    fn charge_owed(
+        &mut self,
+        player: PlayerId,
+        amount: u64,
+        text: String,
+        offer: Option<u64>,
+        listing: Option<u64>,
+    ) -> u64 {
+        let paid = amount.min(self.balance(player));
+        if paid > 0 {
+            let _ = self.post(player, -(paid as i64), LedgerKind::Purchase, text, offer, listing);
+        }
+        if amount > paid {
+            *self.economy.refound_debt.entry(player).or_default() += amount - paid;
+        }
+        paid
+    }
+
     fn lapse(&mut self, id: u64, out: &mut Outbox) {
         let o = self.offers[&id].clone();
+        // The seller's side failed to meet: its animal ended farther from
+        // the meeting point than it started, or the buyer's reached it and
+        // the seller's never came. Then the seller pays, not the buyer.
+        let seller_now = o.meet.and_then(|(x, y)| self.world.organism(o.partner).map(|p| p.pos.dist(Vec2::new(x, y))));
+        if let (Some((_, start)), Some(now)) = (o.start_dist, seller_now) {
+            let moved_away = now > start + SELLER_DRIFT;
+            let stood_up = o.lost.is_none() && o.buyer_best.is_some_and(|b| b <= MEET_ARRIVED) && now > MEET_ARRIVED;
+            if moved_away || stood_up {
+                let why = if moved_away {
+                    format!("{}'s #{} moved away from the meeting point", self.name(o.to), o.partner)
+                } else {
+                    format!("#{} reached the meeting point and {}'s #{} never came", o.mine, self.name(o.to), o.partner)
+                };
+                self.seller_at_fault(id, &why, out);
+                return;
+            }
+        }
         let forfeit = self.forfeit_hold(id, "the buyer never came");
         let what = match &o.lost {
             Some(how) => format!("#{} {how} and no other animal came to #{} within the deadline", o.mine, o.partner),
@@ -4328,6 +4401,17 @@ impl Game {
     /// refund when the buyer's animal died, which also held a dam for free.
     fn buyer_lost(&mut self, id: u64, due: bool, out: &mut Outbox) {
         let o = self.offers[&id].clone();
+        // Killed by the seller's own lineage: the seller's fault (playtest
+        // 8: the seller's pack ate the buyer's animal and the buyer paid).
+        let seller_lineage = self.lineage_of(o.to);
+        if o.lost.is_none()
+            && seller_lineage.is_some()
+            && self.world.organisms.iter().any(|x| x.id == o.mine && !x.alive && x.killer == seller_lineage)
+        {
+            let why = format!("#{} was killed by {}'s own lineage", o.mine, self.name(o.to));
+            self.seller_at_fault(id, &why, out);
+            return;
+        }
         if o.lost.is_none() {
             let cause = self.world.organisms.iter().find(|x| x.id == o.mine && !x.alive).and_then(|x| x.death);
             let how = self
@@ -4434,6 +4518,8 @@ impl Game {
         x.lost = None;
         x.excused = false;
         x.meet = None;
+        x.start_dist = None;
+        x.buyer_best = None;
         self.start_rendezvous(request);
         self.sync_focus();
         let o = self.offers[&request].clone();
@@ -4458,22 +4544,30 @@ impl Game {
             None => self.safe_meeting_point(o.from, o.to, a, b),
         };
         if let Some(m) = meet {
-            self.offers.get_mut(&id).unwrap().meet = Some((m.x, m.y));
+            let d = |id: OrgId| self.world.organism(id).map_or(0.0, |x| x.pos.dist(m));
+            let (da, db) = (d(a), d(b));
+            let o = self.offers.get_mut(&id).unwrap();
+            o.meet = Some((m.x, m.y));
+            if o.start_dist.is_none() {
+                o.start_dist = Some((da, db));
+                o.buyer_best = Some(da);
+            }
             self.world.set_rendezvous(a, b, m);
         }
     }
 
     /// The meeting point of `a` (the requester's) and `b` (the partner's):
     /// [`MEET_TOWARD_PARTNER`] of the way to the partner, or nearer it, the
-    /// first candidate with no predator of a third party (or the wild)
-    /// within [`MEET_PREDATOR_CLEAR`] tiles; else at the partner. (Playtest
-    /// 7: a buyer could still line the point up with a third party's pack.)
-    fn safe_meeting_point(&self, from: PlayerId, to: PlayerId, a: OrgId, b: OrgId) -> Option<Vec2> {
+    /// first candidate with no predator but the requester's own (the
+    /// partner owner's included: playtest 8) within [`MEET_PREDATOR_CLEAR`]
+    /// tiles; else at the partner. (Playtest 7: a buyer could still line
+    /// the point up with a third party's pack.)
+    fn safe_meeting_point(&self, from: PlayerId, _to: PlayerId, a: OrgId, b: OrgId) -> Option<Vec2> {
         let predators: Vec<Vec2> = self
             .world
             .organisms
             .iter()
-            .filter(|x| x.alive && x.owner != from && x.owner != to && x.genome.expr(Gene::Carnivory) >= 0.5)
+            .filter(|x| x.alive && x.owner != from && x.genome.expr(Gene::Carnivory) >= 0.5)
             .map(|x| x.pos)
             .collect();
         let clear = |p: Vec2| predators.iter().all(|q| q.dist(p) > MEET_PREDATOR_CLEAR);
@@ -4563,7 +4657,13 @@ impl Game {
                             .iter()
                             .any(|g| g.id == x.group && (g.migration.is_some() || g.rally.is_some()))
                 });
+                let near = self.offers[&id]
+                    .meet
+                    .and_then(|(x, y)| self.world.organism(mine).map(|b| b.pos.dist(Vec2::new(x, y))));
                 let o = self.offers.get_mut(&id).unwrap();
+                if let Some(d) = near {
+                    o.buyer_best = Some(o.buyer_best.map_or(d, |b| b.min(d)));
+                }
                 o.held += 1;
                 if sb && !sa {
                     o.slept += 1;
@@ -4646,6 +4746,14 @@ impl Game {
                     self.close(id, OfferStatus::Failed, None, Some(info), &mut out);
                 }
             }
+        }
+        // Possessed animals (and for two game days after) don't mate
+        // naturally with other players' animals (`World::bar_cross_mating`).
+        let bar_until = tick + 2 * self.world.config.ticks_per_day as u64;
+        let possessed: Vec<OrgId> =
+            self.world.organisms.iter().filter(|o| o.alive && o.possessed_by.is_some()).map(|o| o.id).collect();
+        for id in possessed {
+            self.world.bar_cross_mating(id, bar_until);
         }
         // Accepted agreements' escort views (positions, sleep, the moving
         // deadline) refresh twice a game day (playtest 7: stale while the
@@ -4987,9 +5095,13 @@ impl Game {
         let (tick, tpd) = (self.world.tick(), self.world.config.ticks_per_day as u64);
         let mut needy = Vec::new();
         let mut sleepers = Vec::new();
+        // Ticks a fresh possession waits before its need alert (about 5 real seconds).
+        let settle = ((5000.0 / self.cfg.tick_ms.max(1.0)).ceil() as u64).max(2);
+        self.possessed_seen.retain(|id, _| self.world.organism(*id).is_some_and(|o| o.possessed_by.is_some()));
         for o in self.world.organisms.iter().filter(|o| o.alive && o.owner != WILD) {
             let Some(p) = o.possessed_by else { continue };
             self.watched.entry(o.id).or_insert((p, Watch::Possessed));
+            let seen = *self.possessed_seen.entry(o.id).or_insert(tick);
             // Bedded down with its kind (`Balance::possessed_sleep`): said
             // once per sleep.
             if o.dormancy.is_deep() {
@@ -5013,7 +5125,7 @@ impl Game {
                 }
             } else if self.need_alerted.contains_key(&o.id) {
                 self.need_eased.remove(&o.id);
-            } else if need >= NEED_ALERT {
+            } else if need >= NEED_ALERT && tick >= seen + settle {
                 // Already broken off to drink or eat (the sim's own rule:
                 // urgency, or water near with `Balance::drink_priority`).
                 let tending = matches!(o.action, evo_sim::organism::Action::Drink | evo_sim::organism::Action::Graze);
@@ -5631,7 +5743,8 @@ impl Game {
             lost += ["starved", "thirst", "cold"].iter().map(|c| e.deaths.get(*c).copied().unwrap_or(0)).sum::<u64>();
             now = e.alive as u64;
         }
-        (then >= 10 && lost as f64 >= DECLINE_SHARE * then as f64).then_some((lost, then, now))
+        // Only a lineage that is actually shrinking (playtest 8: "dying off slowly: 954 → 1251").
+        (then >= 10 && now < then && lost as f64 >= DECLINE_SHARE * then as f64).then_some((lost, then, now))
     }
 
     /// Say each lineage warning as an alert when it starts, and again every
@@ -6091,12 +6204,18 @@ impl Game {
                     let long = j.days >= JOURNEY_WARN_DAYS && (starve || j.days >= 2.0 * JOURNEY_WARN_DAYS);
                     if long || share < JOURNEY_BARE_SHARE {
                         let food = if starve {
-                            // "Heavy losses" for a real shortfall, not at 94% (playtest 8).
+                            // Graded, and shared with the other grazers (playtest 8: "heavy losses" at 94%).
+                            let expect = if share < 0.5 {
+                                "expect heavy losses"
+                            } else if share < 0.8 {
+                                "expect losses"
+                            } else {
+                                "expect some hunger"
+                            };
                             format!(
                                 "The land along the way holds about {:.0}% of the food the group needs for it, shared \
-                                 with the other grazers there; expect {}. ",
-                                share * 100.0,
-                                if share < JOURNEY_HEAVY_SHARE { "heavy losses" } else { "some hunger" }
+                                 with the other grazers there; {expect}. ",
+                                share * 100.0
                             )
                         } else {
                             String::new()
@@ -6538,7 +6657,8 @@ impl Game {
                         .iter()
                         .map(|(c, n)| format!("{n} {}", egg_loss_why(c, abandoned, asleep)))
                         .collect();
-                    format!(" · {eggs_lost} egg{} lost ({})", if eggs_lost == 1 { "" } else { "s" }, why.join(", "))
+                    // ";" between causes: a cause's own text has commas.
+                    format!(" · {eggs_lost} egg{} lost ({})", if eggs_lost == 1 { "" } else { "s" }, why.join("; "))
                 } else {
                     String::new()
                 };
@@ -8084,7 +8204,7 @@ mod tests {
             .find(|x| x.kind == AlertKind::DailySummary)
             .expect("a day with lost eggs is summarised");
         assert!(
-            summary.text.contains("6 eggs lost (5 chilled: no parent was brooding them (it strayed too far from the nest, or died), 1 eaten by egg raiders)"),
+            summary.text.contains("6 eggs lost (5 chilled: no parent was brooding them, it strayed too far from the nest or died; 1 eaten by egg raiders)"),
             "{}",
             summary.text
         );
@@ -8741,11 +8861,29 @@ mod tests {
             o.needs.thirst = t;
             o.needs.hunger = 0.0;
         };
-        // Thirsty, but not yet severely: an alert, and it keeps walking.
+        // Right after possessing, the alert waits a moment for the order
+        // that usually follows (playtest 8): none on the first ticks.
         set_thirst(&mut g, 80.0);
         g.world.step();
         let out = g.after_tick();
-        let need = alerts_in(&out, 1).into_iter().find(|x| x.kind == AlertKind::Need).expect("need alert");
+        assert!(
+            alerts_in(&out, 1).iter().all(|x| x.kind != AlertKind::Need),
+            "no need alert straight after possessing"
+        );
+        // (As if possessed a while ago, without walking it further.)
+        g.possessed_seen.insert(id, 0);
+        // Thirsty, but not yet severely: an alert (on the next check), and it keeps walking.
+        let mut need = None;
+        for _ in 0..6 {
+            set_thirst(&mut g, 80.0);
+            g.world.step();
+            let out = g.after_tick();
+            need = alerts_in(&out, 1).into_iter().find(|x| x.kind == AlertKind::Need);
+            if need.is_some() {
+                break;
+            }
+        }
+        let need = need.expect("need alert");
         assert!(need.text.contains("parched") && need.text.contains("stops to drink"), "{}", need.text);
         let o = g.world.organism(id).unwrap();
         assert_eq!(o.action, evo_sim::organism::Action::Ordered);
@@ -9682,6 +9820,8 @@ mod tests {
             slept: 0,
             held: 0,
             steered: None,
+            start_dist: None,
+            buyer_best: None,
             paused: 0,
         };
         let tpd = g.world.config.ticks_per_day as u64;
@@ -9733,6 +9873,7 @@ mod tests {
         let ok = g.found(1, &design("A4").founders(10)).unwrap();
         assert_eq!((ok.refound_fee, g.balance(1)), (4 * REFOUND_FEE, 0), "what they have now");
         assert_eq!(g.economy.refound_debt.get(&1), Some(&(4 * REFOUND_FEE - 50)), "the rest owed");
+        assert_eq!(g.shop_view(1).refound_debt, Some(4 * REFOUND_FEE - 50), "the shop shows the debt");
         // Owed renown comes out of the next renown coming in.
         let _ = g.post(1, 400, LedgerKind::Income, "test".into(), None, None);
         assert_eq!((g.balance(1), g.economy.refound_debt.get(&1)), (50, None));
@@ -11502,6 +11643,93 @@ mod tests {
         not_pregnant(&mut g, &[id]);
         let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: id, fee: 10, expires_days: None });
         assert_eq!(data(&out)["listing"]["animal_name"], "Old Grey");
+    }
+
+    /// Playtest 8: the seller's own lineage killing the buyer's animal, or
+    /// the seller's animal walking away from the meeting point, is the
+    /// seller's fault: the buyer is refunded and paid the hold fee (owed
+    /// when the seller is short). The buyer's old animal dying of age is
+    /// not excused.
+    #[test]
+    fn seller_caused_failures_refund_and_compensate_the_buyer() {
+        let setup = || {
+            let (mut g, a, b) = game();
+            g.cfg.purchase_deadline_ticks = 20;
+            let dam = female(&g, &a);
+            let stud = male(&g, &b);
+            not_pregnant(&mut g, &[dam]);
+            let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: dam, fee: 20, expires_days: None });
+            let listing = data(&out)["listing"]["id"].as_u64().unwrap();
+            g.economy.balances.insert(2, 100);
+            g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().pos = Vec2::new(10.0, 10.0);
+            g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().pos = Vec2::new(50.0, 50.0);
+            assert!(result(&g.command(20, 2, None, ClientMsg::BuyListing { listing, mine: stud })).0);
+            let id = *g.offers.keys().next().unwrap();
+            (g, dam, stud, id)
+        };
+        // Killed by the seller's lineage.
+        let (mut g, _dam, stud, id) = setup();
+        let ann = g.lineage_of(1);
+        let before = g.balance(2);
+        // Killed within a step, seen by the bookkeeping right after it.
+        g.world.step();
+        g.economy.balances.insert(1, 0);
+        let o = g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap();
+        o.alive = false;
+        o.death = Some(DeathCause::Predation);
+        o.killer = ann;
+        g.after_tick();
+        assert!(
+            !g.offers.contains_key(&id),
+            "{:?} {:?}",
+            g.offers.get(&id).map(|o| (o.lost.clone(), o.status)),
+            g.world.organisms.iter().find(|o| o.id == stud).map(|o| (o.alive, o.killer))
+        );
+        let back = |g: &Game| -> i64 {
+            g.ledger(2, 50)
+                .iter()
+                .filter(|e| e.kind == LedgerKind::Refund && e.offer == Some(id))
+                .map(|e| e.delta)
+                .sum()
+        };
+        let _ = before;
+        assert_eq!(back(&g), 20 + 5, "the price and the hold fee back");
+        // Short of renown, the seller owes it (taken from what comes in next,
+        // maybe already this tick's income).
+        let owed = g.economy.refound_debt.get(&1).is_some()
+            || g.ledger(1, 50).iter().any(|e| e.text.contains("toward renown owed"));
+        assert!(owed, "the seller owes what it lacked: {:?}", g.ledger(1, 5));
+
+        // The seller's dam walks away: a lapse is the seller's fault.
+        let (mut g, dam, stud, id) = setup();
+        let before = g.balance(2);
+        for _ in 0..30 {
+            g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().pos = Vec2::new(2.0, 2.0);
+            g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().pos = Vec2::new(50.0, 50.0);
+            g.world.step();
+            g.after_tick();
+            if !g.offers.contains_key(&id) {
+                break;
+            }
+        }
+        assert!(!g.offers.contains_key(&id));
+        let _ = before;
+        let back: i64 = g
+            .ledger(2, 50)
+            .iter()
+            .filter(|e| e.kind == LedgerKind::Refund && e.offer == Some(id))
+            .map(|e| e.delta)
+            .sum();
+        assert_eq!(back, 20 + 5, "moved away: the seller pays");
+
+        // The buyer's animal dies of old age: not excused, the buyer pays.
+        let (mut g, _dam, stud, id) = setup();
+        g.world.step();
+        let o = g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap();
+        o.alive = false;
+        o.death = Some(DeathCause::OldAge);
+        g.after_tick();
+        assert!(g.offers[&id].lost.is_some() && !g.offers[&id].excused, "old age is the buyer's risk");
     }
 
     /// A pending request naming a listed animal doesn't make it busy (a

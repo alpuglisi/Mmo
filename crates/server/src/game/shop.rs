@@ -180,6 +180,7 @@ impl Game {
         let reinforced = self.reinforcements_this_season(player);
         let max_alive = self.reinforce_max_alive();
         ShopView {
+            refound_debt: self.economy.refound_debt.get(&player).copied().filter(|&d| d > 0),
             balance: self.balance(player),
             slots_left: self.world.mating_slots_left(player),
             slots_bought: bought,
@@ -361,7 +362,12 @@ impl Game {
         self.spend(
             player,
             price,
-            format!("Survey: {} rival groups within {} tiles", groups.len(), economy::SURVEY_RADIUS),
+            format!(
+                "Survey: {} rival group{} within {} tiles",
+                groups.len(),
+                if groups.len() == 1 { "" } else { "s" },
+                economy::SURVEY_RADIUS
+            ),
         )?;
         Ok(crate::protocol::SurveyView {
             price,
@@ -792,7 +798,9 @@ impl Game {
                     cost: crate::game::RefoundTerms::cost(design, n),
                     until_day: t.until_day,
                     minutes_left: t.minutes_left,
-                    fee: t.fee.min(self.balance(player)),
+                    fee: t.fee,
+                    fee_now: t.fee.min(self.balance(player)),
+                    fee_owed: t.fee.saturating_sub(self.balance(player)),
                     reason: t.reason,
                 }
             }),
@@ -826,7 +834,9 @@ impl Game {
             let scale = evo_sim::mating::wild_gap_scale(&self.world.config.balance, player, o.owner);
             if let Some(s) = spread(&own, &[&*o.genome], relief, scale) {
                 v.compatible = Some(compatible(&s));
-                v.body_plan_fertility = Some(s.mean);
+                // Tenths: exact means over a rival's animal solved its body
+                // plan (playtest 8).
+                v.body_plan_fertility = Some((s.mean * 10.0).round() / 10.0);
             }
         }
     }

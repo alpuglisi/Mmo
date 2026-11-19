@@ -83,7 +83,13 @@ impl Lobby {
                 Some(n) => format!("{b}/api/assign?name={n}"),
                 None => format!("{b}/api/assign"),
             };
-            let req = self.http.get(url);
+            // The operator token (`EVO_ADMIN_TOKEN`, shared with the
+            // backends) lets a backend tell the lobby about a lineage, which it
+            // keeps from anonymous callers.
+            let mut req = self.http.get(url);
+            if let Ok(t) = std::env::var("EVO_ADMIN_TOKEN") {
+                req = req.header("x-admin-token", t);
+            }
             async move { (b.clone(), json::<AssignView>(req).await) }
         });
         futures_util::future::join_all(calls).await
@@ -110,7 +116,15 @@ fn choose(answers: Vec<(String, Option<AssignView>)>) -> Option<LobbyAssign> {
 
 async fn lobby_assign(State(lobby): State<Lobby>, Query(q): Query<AssignQuery>) -> Response {
     match choose(lobby.ask(q.name.as_deref()).await) {
-        Some(a) => Json(a).into_response(),
+        Some(mut a) => {
+            // Routed to the lineage's server, but the public answer doesn't
+            // say an account or a lineage exists (playtest 8).
+            if a.view.reason == AssignReason::Lineage {
+                a.view.reason = AssignReason::Fill;
+            }
+            a.view.has_account = false;
+            Json(a).into_response()
+        }
         None => error(StatusCode::SERVICE_UNAVAILABLE, "full", "every world is full or no server answered"),
     }
 }
