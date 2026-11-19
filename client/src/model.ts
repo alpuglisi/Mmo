@@ -145,6 +145,13 @@ export class GameModel {
     this.emit('toast');
   }
 
+  /** Drop error toasts of a command that has since succeeded ("Label: …"), so a fixed mistake doesn't linger beside the success. */
+  dismissErrors(label: string): void {
+    const before = this.toasts.length;
+    this.toasts = this.toasts.filter((t) => !(t.kind === 'error' && t.text.startsWith(`${label}:`)));
+    if (this.toasts.length !== before) this.emit('toast');
+  }
+
   addFeed(entries: FeedEntry[]): void {
     const before = this.feed.length === 0 ? '' : key(this.feed[this.feed.length - 1]);
     this.feed = mergeFeed(this.feed, entries);

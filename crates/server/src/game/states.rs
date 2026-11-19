@@ -556,6 +556,7 @@ impl Game {
             | ClientMsg::BuyMatingSlot
             | ClientMsg::Compatibility
             | ClientMsg::Provision
+            | ClientMsg::Survey
             | ClientMsg::SetNameplate { .. }
             | ClientMsg::NameSpecies { .. }
             | ClientMsg::Nameplates
@@ -693,7 +694,28 @@ impl Game {
             escrow,
             grace: self.grace_view(player),
             poisonous: self.poisonous_to(player),
+            territories: self.rival_territories(player, view),
         }
+    }
+
+    /// Other players' territories reaching into `view` (`StateView::territories`).
+    pub(super) fn rival_territories(
+        &self,
+        player: PlayerId,
+        view: ViewWindow,
+    ) -> Vec<crate::protocol::TerritoryOutline> {
+        let mut v: Vec<crate::protocol::TerritoryOutline> = self
+            .world
+            .all_territories()
+            .filter(|&(p, _, t)| {
+                p != player
+                    && (t.center.x - view.x).abs() <= view.radius + t.radius
+                    && (t.center.y - view.y).abs() <= view.radius + t.radius
+            })
+            .map(|(_, _, t)| crate::protocol::TerritoryOutline { x: t.center.x, y: t.center.y, radius: t.radius })
+            .collect();
+        v.sort_by(|a, b| (a.x, a.y).partial_cmp(&(b.x, b.y)).unwrap_or(std::cmp::Ordering::Equal));
+        v
     }
 
     /// The lineages `player`'s animals have learned are poisonous, in order.

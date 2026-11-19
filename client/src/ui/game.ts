@@ -1744,10 +1744,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         subPick.hidden = !show;
         subSend.hidden = !show;
         if (show && document.activeElement !== subPick) {
-          // Only the partner's opposite sex (playtest 6 listed females to stand in for a dam's mate),
-          // when the partner is in sight to tell; the server refuses a same-sex pair anyway.
+          // Only the sex the partner needs (playtest 6 listed females to stand in for a dam's mate): the
+          // server says which (`substitute_sex`); else the partner's opposite when it is in sight.
           const partnerSex = s?.nearby.find((o) => o.id === e.offer.partner)?.sex;
-          const adults = (s?.organisms ?? []).filter((o) => o.matured && !o.pregnant && (!partnerSex || o.sex !== partnerSex)).slice(0, 200);
+          const want = e.offer.substitute_sex ?? (partnerSex ? (partnerSex === 'male' ? 'female' : 'male') : undefined);
+          const adults = (s?.organisms ?? []).filter((o) => o.matured && !o.pregnant && (!want || o.sex === want)).slice(0, 200);
           const key = adults.map((o) => o.id).join(',');
           if (subPick.dataset.key !== key) {
             const keep = subPick.value;
@@ -1874,7 +1875,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     // The window the server enforces, fetched now (game days, real minutes).
     const w = await api.world().catch(() => null);
     // The server's own words for the re-founding rule (its pricing changes: playtest 5).
-    const rule = w?.refound_rule ? `After retiring, ${w.refound_rule}.` : 'Founding again soon after retiring costs more per founder.';
+    const rule = w?.refound_rule ? `After retiring, ${w.refound_rule}.` : 'Founding again soon after retiring founds fewer founders and costs renown.';
     const yes = await confirmDialog({
       id: 'retire-confirm', title: `Retire lineage #${lineage}?`, ok: 'Retire lineage', danger: true,
       body: [

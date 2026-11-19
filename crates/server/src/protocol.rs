@@ -271,6 +271,10 @@ pub enum ClientMsg {
     /// share fertile), the drift risk, and the body-plan gene that keeps
     /// you apart. Data: [`CompatibilityView`].
     Compatibility,
+    /// A survey: rivals' groups and territories within 64 tiles of your
+    /// main group, in 8-tile cells, now (30 renown plus 1 per 10 of your
+    /// animals alive). Data: [`SurveyView`].
+    Survey,
     /// The requester of an accepted agreement whose animal died sends
     /// `mine` instead, within the deadline (the same checks as buying).
     /// Data: `{offer}`.
@@ -324,6 +328,18 @@ fn opt_price<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::E
     price_of(&v).map(Some).ok_or_else(|| serde::de::Error::custom("a price is a whole number of renown"))
 }
 
+/// A rival animal's mass as an error may give it: whole kilograms under
+/// 10, then to 5 kg under 100, then to 10 kg.
+pub fn coarse_kg(x: f32) -> f32 {
+    if x < 10.0 {
+        x.round().max(1.0)
+    } else if x < 100.0 {
+        (x / 5.0).round() * 5.0
+    } else {
+        (x / 10.0).round() * 10.0
+    }
+}
+
 impl ClientMsg {
     pub fn name(&self) -> &'static str {
         match self {
@@ -362,6 +378,7 @@ impl ClientMsg {
             ClientMsg::Compatibility => "compatibility",
             ClientMsg::Provision => "provision",
             ClientMsg::SubstituteMating { .. } => "substitute_mating",
+            ClientMsg::Survey => "survey",
             ClientMsg::SetNameplate { .. } => "set_nameplate",
             ClientMsg::NameSpecies { .. } => "name_species",
             ClientMsg::Nameplates => "nameplates",
@@ -414,6 +431,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "nameplates",
     "provision",
     "substitute_mating",
+    "survey",
     "end_grace",
 ];
 
@@ -896,7 +914,20 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
         match e {
             ClaimCooldown { ticks_left } => info.with_detail(serde_json::json!({ "ticks_left": ticks_left })),
             MostlyWater { share } => info.with_detail(serde_json::json!({ "water_share": share })),
-            TooBig { mass, limit } => info.with_detail(serde_json::json!({ "mass": mass, "limit": limit })),
+            // The target's mass only roughly (playtest 6: a rival's exact
+            // mass to 15 digits); the attacker's own limit as it is.
+            TooBig { mass, limit } => {
+                let mass = coarse_kg(*mass);
+                let kg = |x: f32| if x < 10.0 { format!("{x:.1}") } else { format!("{x:.0}") };
+                ErrorInfo::new(
+                    code,
+                    format!(
+                        "that animal (about {mass:.0} kg) is too big to take on; this one can tackle up to {} kg, counting the pack-mates around it now",
+                        kg(*limit)
+                    ),
+                )
+                .with_detail(serde_json::json!({ "mass": mass, "limit": limit }))
+            }
             NewcomerGrace { days_left } | OwnGrace { days_left } => {
                 info.with_detail(serde_json::json!({ "days_left": days_left }))
             }
@@ -1045,6 +1076,9 @@ pub struct OfferView {
     /// another with `substitute_mating` before `expires_tick`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lost: Option<String>,
+    /// While `lost`: the sex a substitute must be (the partner's other).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substitute_sex: Option<String>,
 }
 
 /// `OfferView::meet`.
@@ -1392,6 +1426,19 @@ pub struct StateView {
     /// poisonous to you".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub poisonous: Vec<u32>,
+    /// Other players' territories reaching into the view window, as
+    /// outlines (claimed ground is public: a claim over one is refused, so
+    /// players need to see them). Absent: none in view.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub territories: Vec<TerritoryOutline>,
+}
+
+/// Another player's territory as the map shows it (`StateView::territories`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerritoryOutline {
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
 }
 
 /// The newcomer grace left (`StateView::grace`). It lasts a number of game
@@ -1833,6 +1880,9 @@ pub struct ShopView {
     /// Adults a provision would feed now (the price is per adult).
     #[serde(default)]
     pub provision_size: usize,
+    /// The price of a survey now.
+    #[serde(default)]
+    pub survey_price: u64,
     #[serde(default)]
     pub provisions_bought: u32,
     #[serde(default)]
@@ -1960,10 +2010,43 @@ pub struct RefoundView {
     /// about how many wall-clock minutes until then.
     pub until_day: u64,
     pub minutes_left: u64,
+    /// Renown the re-founding costs now (after a retirement: doubling with
+    /// each re-founding in the window; at most the balance).
+    #[serde(default)]
+    pub fee: u64,
     pub reason: String,
 }
 
 /// One player's standing over a season of the history.
+/// A survey's findings (`survey`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SurveyView {
+    /// Renown it cost.
+    pub price: u64,
+    /// Where it was taken from (your main group's middle) and how far it saw.
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+    pub groups: Vec<SurveyGroup>,
+    /// The shop after (the next survey's price).
+    pub shop: ShopView,
+}
+
+/// A rival group a survey saw.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SurveyGroup {
+    pub player: PlayerId,
+    pub name: String,
+    /// The centre of the 8-tile cell its middle is in.
+    pub x: f32,
+    pub y: f32,
+    /// Members, rounded to tens.
+    pub members: usize,
+    /// Its claimed territory, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub territory: Option<[f32; 3]>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SeasonRow {
     pub player: PlayerId,
@@ -2328,6 +2411,18 @@ mod tests {
     /// A price past `u64::MAX` (JavaScript's `2 ** 64`) parses, saturated,
     /// so the range check answers `bad_price`; a fraction or a negative
     /// doesn't parse.
+    #[test]
+    fn a_too_big_target_gives_its_mass_roughly() {
+        let e = ErrorInfo::from(&evo_sim::world::commands::CommandError::TooBig { mass: 5.402_76, limit: 2.9 });
+        assert_eq!(e.detail.as_ref().unwrap()["mass"].as_f64(), Some(5.0));
+        assert!(
+            e.message.contains("about 5 kg") && e.message.contains("2.9 kg") && !e.message.contains("5.4"),
+            "{}",
+            e.message
+        );
+        assert_eq!((coarse_kg(47.3), coarse_kg(312.0)), (45.0, 310.0));
+    }
+
     #[test]
     fn huge_prices_reach_the_range_check() {
         let m: ClientEnvelope =

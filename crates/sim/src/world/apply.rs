@@ -1261,6 +1261,11 @@ impl World {
             hunger += bal.hunger_rate * FLIGHT_HUNGER * wings * (o.traits.body.mass / 4.0).powf(0.3) * size_burn * dt;
             thirst += bal.thirst_rate * FLIGHT_THIRST * wings * (1.0 + 0.05 * heat) * size_burn * dt;
         }
+        // A new founding's founders lose water more slowly in a drought, for
+        // their first `FOUNDER_WATER_DAYS` (`Balance::founding_drought`):
+        // time to find the water. Playtest 6's founders at 52% drought
+        // died of thirst within days.
+        thirst *= self.founder_water_relief(o);
         if o.dormancy != Dormancy::Awake {
             hunger *= dormant_rate;
             if deep {

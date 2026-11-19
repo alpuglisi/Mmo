@@ -174,6 +174,7 @@ mod old {
             escrow,
             grace: g.grace_view(player),
             poisonous: Vec::new(),
+            territories: g.rival_territories(player, view),
         })
     }
 

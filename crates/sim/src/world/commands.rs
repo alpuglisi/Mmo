@@ -76,6 +76,8 @@ pub enum GroupEvent {
         /// drink first).
         needy_share: f32,
         never_moved: bool,
+        /// Tiles the median member got closer than it started.
+        gained: f32,
         pending_claim: bool,
     },
     /// A far territory claim's migration arrived and the territory was
@@ -213,7 +215,11 @@ impl fmt::Display for CommandError {
             }
             CommandError::NoRally(g) => write!(f, "group {g} has no rally to cancel"),
             CommandError::Overlaps => {
-                write!(f, "that circle overlaps another player's territory; claim ground of your own")
+                write!(
+                    f,
+                    "that circle overlaps another player's territory (territories show on the map); claim ground of \
+                     your own (the attempt costs a short wait)"
+                )
             }
             CommandError::BadRadius => write!(f, "a territory's radius must be a positive number of tiles"),
             CommandError::MostlyWater { share } => write!(
@@ -588,7 +594,8 @@ impl World {
     /// [`GRACE_WINTER_FOUNDERS`] founders) whose grace would end late in
     /// autumn or in its first winter, at that winter's end: a small early
     /// founding isn't left to predators exactly as its first winter starts
-    /// (playtest 5).
+    /// (playtest 5), or with `Balance::founding_drought` at the end of the
+    /// spring after it, when its first young are grown (playtest 6).
     pub fn grace_end(&self, l: u32, start: u64) -> u64 {
         let end = start + self.grace_length();
         let small = self.lineages.get(l as usize).is_some_and(|x| x.founders <= GRACE_WINTER_FOUNDERS);
@@ -603,7 +610,12 @@ impl World {
         let winter = year + (3 * dpy).div_ceil(4);
         let late_autumn = winter.saturating_sub(dpy / 12);
         if (late_autumn..year + dpy).contains(&day) && start / tpd < winter {
-            (year + dpy) * tpd
+            // With `Balance::founding_drought`, through the spring after it
+            // too, while its first young grow up: playtest 6's egg layer,
+            // founded before winter, laid nothing until spring and left
+            // grace with no young, to be hunted out by a player's pack.
+            let spring = if self.config.balance.founding_drought > 0.0 { dpy / 4 } else { 0 };
+            (year + dpy + spring) * tpd
         } else {
             end
         }

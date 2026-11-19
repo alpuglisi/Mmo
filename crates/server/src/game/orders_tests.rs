@@ -867,10 +867,23 @@ fn founding_says_whether_grace_applies_and_why() {
 }
 
 /// A small founding whose grace would end late in autumn or in its first
-/// winter keeps it to that winter's end; a big one doesn't.
+/// winter keeps it to that winter's end (playtest 5), and with
+/// `Balance::founding_drought` through the spring after it, while its
+/// first young grow up (playtest 6); a big one doesn't.
 #[test]
 fn a_small_foundings_grace_lasts_through_its_first_winter() {
-    let (g, a) = game();
+    let (mut g, a) = game();
+    let w = &mut g.world;
+    let tpd = w.config.ticks_per_day as u64;
+    let dpy = w.config.days_per_year as u64;
+    let l = w.organism(a[0]).unwrap().lineage;
+    let len = w.grace_length();
+    let winter = (3 * dpy).div_ceil(4) * tpd;
+    let start = winter.saturating_sub(len) + tpd;
+    if start + len < dpy * tpd && start < winter {
+        assert_eq!(w.grace_end(l, start), (dpy + dpy / 4) * tpd, "through the spring after");
+    }
+    w.config.balance.founding_drought = 0.0;
     let w = &g.world;
     let tpd = w.config.ticks_per_day as u64;
     let dpy = w.config.days_per_year as u64;
@@ -886,4 +899,76 @@ fn a_small_foundings_grace_lasts_through_its_first_winter() {
     let summer = dpy / 4 * tpd + tpd;
     assert_eq!(w.grace_end(l, summer.saturating_sub(len).max(1)), summer.saturating_sub(len).max(1) + len);
     assert!(w.lineages[l as usize].founders <= evo_sim::world::commands::GRACE_WINTER_FOUNDERS);
+}
+
+/// Playtest 6: long walks of big groups warn of the journey; the
+/// destination is rated for the group's size, without a distance warning.
+#[test]
+fn a_long_migration_warns_of_the_journey() {
+    let (mut g, _) = game();
+    let home = g.world.group_middle(1, 0).unwrap();
+    let far = land_away(&g, home, 45.0);
+    // Bare land all along: no food on the way.
+    for t in &mut g.world.map.tiles {
+        t.veg = 0.0;
+    }
+    let d = run(&mut g, ClientMsg::Migrate { x: far.x, y: far.y, group: None }).unwrap();
+    let j = &d["journey"];
+    assert!(j["days"].as_f64().unwrap() > 0.0 && j["tiles"].as_f64().unwrap() > 30.0, "{d}");
+    let warning = d["warning"].as_str().unwrap_or("");
+    if j["days"].as_f64().unwrap() >= JOURNEY_WARN_DAYS as f64 {
+        assert!(warning.contains("days on the way") && warning.contains("heavy losses"), "{d}");
+    }
+    assert!(!warning.contains("At the destination: It is"), "no distance warning for the destination: {d}");
+}
+
+#[test]
+fn other_players_territories_show_in_the_state() {
+    let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
+    let mut g = Game::new(world, GameConfig::default());
+    g.found(1, &design("A")).unwrap();
+    g.found(2, &design("B")).unwrap();
+    g.connect(10, 1, "ann");
+    let mine = g.world.group_middle(1, 0).unwrap();
+    // Bob's territory right by ann's herd: in her view.
+    let near = g.world.map.clamp(mine + Vec2::new(4.0, 0.0));
+    g.world.claim_territory(2, 0, near, 3.0).unwrap();
+    let s = g.state_for(10).unwrap();
+    assert!(s.territories.iter().any(|t| (t.x - near.x).abs() < 0.01 && t.radius == 3.0), "{:?}", s.territories);
+    // Her own territory isn't in that list (it is in her groups).
+    let theirs_only = s.territories.len();
+    g.world.claim_territory(1, 0, mine, 3.0).ok();
+    assert_eq!(g.state_for(10).unwrap().territories.len(), theirs_only);
+}
+
+#[test]
+fn a_stalled_migration_says_how_far_it_got_and_bare_alerts_dont_repeat() {
+    assert_eq!(timeout_reason(0.0, 0.0, 0.0, false, 12.4).1, "stalled after 12 tiles");
+    assert_eq!(timeout_reason(0.0, 0.0, 0.0, true, 0.2).1, "never got going");
+    let (mut g, _) = game();
+    let home = g.world.group_middle(1, 0).unwrap();
+    run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 100.0 }).unwrap();
+    let t = g.world.territory(1, 0).unwrap();
+    let record = g.daily_record();
+    let mut out = Outbox::new();
+    let set_veg = |g: &mut Game, f: f32| {
+        for k in 0..g.world.map.tiles.len() {
+            let max = g.world.map.ground()[k].veg_max;
+            g.world.map.tiles[k].veg = f * max;
+        }
+    };
+    let bare = |g: &Game| alerts(g, AlertKind::Group).iter().filter(|a| a.contains("grazed bare")).count();
+    set_veg(&mut g, 0.0);
+    g.daily_group_checks(&record, &mut out);
+    assert_eq!(bare(&g), 1);
+    // A little regrowth (not recovered): no new alert when it dips again.
+    set_veg(&mut g, 0.02);
+    let f = g.world.food_check(1, 0, t.center, t.radius).unwrap();
+    // Plants for about 4 days: above bare (3), below recovered (6).
+    set_veg(&mut g, 0.02 * 4.0 / f.standing_days);
+    assert!((3.0..6.0).contains(&g.world.food_check(1, 0, t.center, t.radius).unwrap().standing_days));
+    g.daily_group_checks(&record, &mut out);
+    set_veg(&mut g, 0.0);
+    g.daily_group_checks(&record, &mut out);
+    assert_eq!(bare(&g), 1, "said once until it really recovers");
 }

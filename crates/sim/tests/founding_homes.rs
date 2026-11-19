@@ -49,6 +49,10 @@ fn homes_hash() -> u64 {
         // following and escaping rising water change the days the world
         // grows first.
         config.balance.brood_care = 0.0;
+        // Playtest 6 (version 58): drought foundings move homes by design;
+        // watered founders and no winter clutches change the days the world
+        // grows first.
+        config.balance.founding_drought = 0.0;
         // Founded empty: the wild ecosystem, then the sample players.
         let mut w = presets::standard_world(config, 1);
         for o in &w.organisms {
