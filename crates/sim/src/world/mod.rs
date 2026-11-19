@@ -139,6 +139,9 @@ pub const FOUND_WATER_NEAR: u16 = 6;
 /// With `Balance::founding_together`, a player's founding's later homes
 /// lie within this many tiles of its first.
 pub const FOUNDING_TOGETHER: f32 = 20.0;
+/// Degrees past a warm-blooded animal's comfort ceiling from which heat
+/// harms it (`apply::update_needs`).
+pub const HEAT_HARM: f32 = 8.0;
 /// Side in tiles of the cells a pack's thickest cluster is found in
 /// (`World::refresh_pack_homes`, `Balance::pack_cohesion`).
 const PACK_CELL: f32 = 12.0;
@@ -1991,6 +1994,36 @@ impl World {
             }
         }
         best.1
+    }
+
+    /// For a warm-blooded design: the share of the dry land whose summer
+    /// peak (the year's mean plus the seasonal swing) is hot enough to harm
+    /// its founders, and that temperature (°C). Forest and water don't cool
+    /// an animal; a lighter coat, a smaller body, a burrow or estivation do.
+    /// None for a cold-blooded design.
+    pub fn summer_heat(&self, design: &crate::design::FounderDesign) -> Option<(f32, f32)> {
+        if design.thermo != crate::design::Thermo::Warm {
+            return None;
+        }
+        let mut rng = rng_for(self.config.seed, stream::FOUNDING, 1 << 41, 0);
+        let mut o = Organism::new(0, 0, design.founder_genome(0, &mut rng), Sex::Female, Vec2::ZERO);
+        o.growth = 1.0;
+        let insulation = o.traits.insulation(self.config.balance.scale_cover);
+        // `apply::update_needs`: heat past the comfort ceiling, harmful from
+        // `HEAT_HARM` degrees over it.
+        let limit = 30.0 - 8.0 * insulation + o.traits.morph.heat_tolerance + HEAT_HARM;
+        let ground = self.map.ground();
+        let (mut land, mut hot) = (0usize, 0usize);
+        for (i, g) in ground.iter().enumerate() {
+            if self.map.tiles[i].water_depth > 0.0 || g.base_water > 0.0 {
+                continue;
+            }
+            land += 1;
+            if g.base_temp + self.map.climate_temp + crate::terrain::SEASONAL_AMPLITUDE > limit {
+                hot += 1;
+            }
+        }
+        (land > 0).then(|| (hot as f32 / land as f32, limit))
     }
 
     /// The dry tiles beside drinkable water today (`Map::can_drink_at` and no

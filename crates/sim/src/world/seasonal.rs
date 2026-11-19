@@ -1484,6 +1484,22 @@ mod tests {
         assert!(w.may_conceive(&o(&w, sleeper)));
     }
 
+    /// Playtest 11: a furred design died of heat in its first summer, with
+    /// no designer warning. `World::summer_heat` gives the share of dry
+    /// land whose summer peak harms a warm-blooded design: all of a 24 °C
+    /// map for a thick coat, none for a light one; none on a cool map.
+    #[test]
+    fn a_thick_coat_overheats_on_a_warm_map() {
+        let furred = design(Thermo::Warm).with(Gene::Fur, 1.0).with(Gene::FatStores, 1.0);
+        let light = design(Thermo::Warm).with(Gene::Fur, 0.0).with(Gene::FatStores, 0.0);
+        let warm = flat_world(24.0, 10.0, 40);
+        let (share, limit) = warm.summer_heat(&furred).unwrap();
+        assert!(share > 0.99 && limit < 24.0 + crate::terrain::SEASONAL_AMPLITUDE, "{share} {limit}");
+        assert_eq!(warm.summer_heat(&light).unwrap().0, 0.0);
+        assert_eq!(flat_world(2.0, 10.0, 40).summer_heat(&furred).unwrap().0, 0.0);
+        assert_eq!(warm.summer_heat(&design(Thermo::Cold)), None);
+    }
+
     #[test]
     fn estivators_sleep_through_summer_heat() {
         let mut w = flat_world(28.0, 10.0, 40);

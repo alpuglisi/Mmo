@@ -365,6 +365,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   let serverEggs: { design: string; text: string } | null = null;
   /** The server's carnivore egg warning (`carnivore_egg_warning`) for the design it last checked. */
   let serverCarnEggs: string | null = null;
+  /** The server's summer heat warning (`heat_warning`) for the design it last checked (playtest 11). */
+  let serverHeat: string | null = null;
   function renderHybrid(): void {
     if (!species) return;
     const p = payload();
@@ -460,6 +462,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
         hybridKey = '';
         serverEggs = r.egg_warning ? { design: key, text: serverText(r.egg_warning) } : null;
         serverCarnEggs = r.carnivore_egg_warning ? serverText(r.carnivore_egg_warning) : null;
+        serverHeat = r.heat_warning ? serverText(r.heat_warning) : null;
         refoundNow = r.refound ? { design: key, terms: r.refound } : null;
       }
       // Every answer redraws the warnings, the budget and the card at once
@@ -543,6 +546,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     const warns = designWarnings(payload(), world, serverCompat?.view.drought_warning).filter((w) => !(w.id === 'eggs' && serverEggs));
     if (serverEggs) warns.unshift({ id: 'eggs', level: 'bad', text: serverEggs.text });
     if (serverCarnEggs) warns.push({ id: 'carnivore_eggs', level: 'warn', text: serverCarnEggs });
+    if (serverHeat) warns.push({ id: 'heat', level: 'bad', text: serverHeat });
     const wkey = JSON.stringify(warns);
     if (warnBox.dataset.key !== wkey) {
       warnBox.dataset.key = wkey;

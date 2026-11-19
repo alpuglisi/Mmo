@@ -118,6 +118,21 @@ pub fn drought_design_text(drought: f32) -> String {
     )
 }
 
+/// Share of the dry land too hot in summer for a design from which the
+/// design check warns (`DesignCompatView::heat_warning`).
+pub const HEAT_DESIGN_SHARE: f32 = 0.25;
+
+/// [`DesignCompatView::heat_warning`]'s text.
+pub fn heat_design_text(share: f32, limit: f32) -> String {
+    format!(
+        "Heat: in summer about {:.0}% of the land gets hotter than this design can bear (about {limit:.0} °C, its coat \
+         and body hold the heat in), and founders landing there die of heat in their first summer. Shade and water \
+         don't cool them; less fur and fat, a smaller body, burrowing (a burrow keeps the midday heat off) or \
+         estivation (sleeping through the hottest weeks) do.",
+        share * 100.0
+    )
+}
+
 /// [`DesignCompatView::carnivore_egg_warning`]'s text.
 pub const CARNIVORE_EGG_WARNING: &str = "An egg-laying hunter leaves its clutch to hunt, and unattended eggs chill or \
      are raided: expect several eggs lost for each one that hatches. Live birth suits a roaming carnivore; an egg layer \
@@ -1013,6 +1028,11 @@ impl Game {
             .then(|| CARNIVORE_EGG_WARNING.to_string());
         let egg_warning = (design.thermo == evo_sim::Thermo::Warm && design.birth == evo_sim::BirthType::AbandonedEggs)
             .then(|| EGG_WARNING.to_string());
+        let heat_warning = self
+            .world
+            .summer_heat(design)
+            .filter(|&(share, _)| share >= HEAT_DESIGN_SHARE)
+            .map(|(share, limit)| heat_design_text(share, limit));
         DesignCompatView {
             day: self.world.day(),
             sample: SAMPLE,
@@ -1024,6 +1044,7 @@ impl Game {
             egg_warning,
             drought_warning,
             carnivore_egg_warning,
+            heat_warning,
             refound: self.refound_terms(player).map(|t| {
                 let n = t.founders(design);
                 crate::protocol::RefoundView {

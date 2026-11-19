@@ -6166,8 +6166,10 @@ impl Game {
                 out.push(LineageWarning {
                     kind: "heat".into(),
                     text: format!(
-                        "Heat is killing your animals: {heat} died of heat on day {}. Thick fur, fat and big bodies hold heat; \
-                         shade (forest), water, estivation or a lighter coat let them shed it.",
+                        "Heat is killing your animals: {heat} died of heat on day {}. Thick fur, fat and big bodies hold heat, \
+                         and shade or water don't cool them: a burrow keeps the midday heat off burrowers, and \
+                         estivators sleep through the hottest weeks. Move groups to the map's cooler parts, \
+                         or found a lighter-coated design.",
                         r.day.max(1)
                     ),
                 });
@@ -8632,7 +8634,7 @@ fn with_hunters(text: String, deaths: &[(OrgId, Watch, Why)], killers: &BTreeMap
     if let [(id, ..)] = deaths {
         return match killers.get(id) {
             Some(by) => match text.strip_suffix('.') {
-                Some(t) => format!("{t} by {by}."),
+                Some(t) => own_kind_note(format!("{t} by {by}."), by.starts_with("your own ")),
                 None => text,
             },
             None => text,
@@ -8649,7 +8651,20 @@ fn with_hunters(text: String, deaths: &[(OrgId, Watch, Why)], killers: &BTreeMap
     }
     count.sort_by_key(|&(b, n)| (std::cmp::Reverse(n), b.clone()));
     let who: Vec<String> = count.iter().map(|(b, n)| format!("{b} ({n})")).collect();
-    format!("{text} Eaten by: {}.", who.join(", "))
+    let text = format!("{text} Eaten by: {}.", who.join(", "));
+    own_kind_note(text, killers.values().any(|b| b.starts_with("your own ")))
+}
+
+/// A death notice naming the player's own lineage as the hunter, with why
+/// (playtest 11: "eaten by your own Duskmaw Pack", unexplained).
+fn own_kind_note(text: String, own: bool) -> String {
+    if !own {
+        return text;
+    }
+    format!(
+        "{text} A starving hunter turns on its own kind when no other prey is in reach: lead the pack to prey, or \
+         split it so fewer share what there is."
+    )
 }
 
 /// What a founding now is told of the drought provision
@@ -9008,6 +9023,17 @@ mod tests {
             &by,
         );
         assert_eq!(one, "Founder #5 was eaten by bob's B.");
+        // By its own kind: said why (playtest 11).
+        let own: BTreeMap<OrgId, String> = [(5, g.hunter_words(la, 1))].into();
+        let mine = with_hunters(
+            "Founder #5 was eaten.".into(),
+            &[(5, Watch::Founder, Why::Of(Some(DeathCause::Predation)))],
+            &own,
+        );
+        assert!(
+            mine.starts_with("Founder #5 was eaten by your own A.") && mine.contains("turns on its own kind"),
+            "{mine}"
+        );
         let two = [(5, Watch::Founder, Why::Of(Some(DeathCause::Predation))), (6, Watch::Founder, Why::Cold)];
         let (text, _) = death_alert_text(&two);
         assert!(with_hunters(text, &two, &by).ends_with("Eaten by: bob's B (1)."));
@@ -11635,6 +11661,12 @@ mod tests {
             FounderDesign::new("H", Thermo::Warm, BirthType::IncubatedEggs, 3).with(Gene::Carnivory, 0.8).founders(6);
         assert!(g.design_compatibility(9, &hunter).carnivore_egg_warning.is_some());
         assert_eq!(g.design_compatibility(9, &plain).carnivore_egg_warning, None);
+        // Heat (playtest 11; `World::summer_heat` is tested in the sim): a
+        // cold-blooded design is never warned, and the text says shade and
+        // water don't help.
+        let cold = FounderDesign::new("C", Thermo::Cold, BirthType::Live, 2).with(Gene::Fur, 1.0).founders(6);
+        assert_eq!(g.design_compatibility(9, &cold).heat_warning, None);
+        assert!(shop::heat_design_text(0.4, 31.0).contains("Shade and water don't cool them"));
     }
 
     /// Warm and cold lineages of one plan are partly fertile

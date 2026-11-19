@@ -1222,6 +1222,8 @@ export interface DesignCompatView {
   egg_warning?: string;
   /** Incubated eggs on a meat eater (carnivory ≥ 0.5): a roaming hunter leaves its clutch (shown verbatim). */
   carnivore_egg_warning?: string;
+  /** A warm-blooded design that overheats in summer on a quarter or more of the land (playtest 11). */
+  heat_warning?: string;
   /** Balance's drought-founding warning, when the server sends one (shown verbatim). */
   drought_warning?: string;
   /** Founding now is a re-founding soon after your last lineage ended: `founders` of `requested` (founders cost double points: as many as fit, at least half), costing

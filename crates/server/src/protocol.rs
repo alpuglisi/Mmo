@@ -2109,6 +2109,12 @@ pub struct DesignCompatView {
     /// eggs lost per hatching).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carnivore_egg_warning: Option<String>,
+    /// Set when a warm-blooded design overheats in summer on
+    /// [`crate::game::shop::HEAT_DESIGN_SHARE`] or more of the land
+    /// (`World::summer_heat`; playtest 11: a furred design died of heat in
+    /// its first summer, with no warning).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heat_warning: Option<String>,
     /// Set when founding now is a re-founding soon after the player's last
     /// lineage ended: it founds `founders` of the design's (founders cost
     /// double points: as many as fit, at least half), costing
