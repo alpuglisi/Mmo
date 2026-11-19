@@ -47,6 +47,8 @@ fn homes_hash() -> u64 {
         config.balance.drink_reach = 0.0;
         // Playtest 6 (version 58): the prey-scaled pack larder.
         config.balance.prey_larder = 0.0;
+        // Playtest 7 (version 72): the first-winter larder.
+        config.balance.winter_larder = 0.0;
         // Playtest 5 (version 52): brooders keeping their nests, young
         // following and escaping rising water change the days the world
         // grows first.
@@ -59,6 +61,7 @@ fn homes_hash() -> u64 {
         // design; estivating through spring and autumn droughts changes
         // the days the world grows first.
         config.balance.founding_rivals = 0.0;
+        config.balance.prey_floor = 0.0;
         // Playtest 6 balance (version 62): toxin upkeep, hungry hunters,
         // toxin source, speciation credit and clutch cover change how the
         // world grows before the sample players found.

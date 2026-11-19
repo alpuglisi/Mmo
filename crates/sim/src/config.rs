@@ -1323,8 +1323,26 @@ pub struct Balance {
     /// drought founding with estivation never slept and starved).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v70"))]
     pub founding_rivals: f32,
-    // Playtest 7 balance (version 71; off at 0, what snapshots before
-    // version 71 read, `serde_util::before_v71`).
+    // Playtest 7 predators (version 72; *Playtest 7: predators and
+    // warnings* in the README). Off at 0, what snapshots before version 72
+    // read (`serde_util::before_v72`).
+    /// A founding-sized pack's first winter: within a year of its
+    /// founding, in winter, a player with up to 60 animals has the full
+    /// larder room (`player_packs`) whatever the prey there is
+    /// (`World::first_winter_room`; playtest 7: a pure carnivore lost 60%
+    /// in its first winter). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v72"))]
+    pub winter_larder: f32,
+    /// Prey a pack's larder counts (`prey_larder`) comes only from
+    /// lineages with at least this many living plant eaters
+    /// (`World::refresh_pack_room`; version 72, `serde_util::before_v72`):
+    /// a small population isn't counted, so it doesn't feed a bigger pack
+    /// that then hunts it out (round 7: the wild newts were lost on more
+    /// `predlong` seeds with the larder). 0: every plant eater counts.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v72"))]
+    pub prey_floor: f32,
+    // Playtest 7 balance (version 73; off at 0, what snapshots before
+    // version 73 read, `serde_util::before_v73`).
     /// Honest signals, whole: a hunter's avoidance of a bright prey (its
     /// own aversion, the warning-colour group benefit and its lineage's
     /// lesson together) is lowered by hunger (`Balance::hungry_hunters`)
@@ -1332,14 +1350,14 @@ pub struct Balance {
     /// own aversion after a bite fades (half-life about 40 days); and
     /// coloration from 0.6 counts as warning colours (it was above 0.6).
     /// Playtest 7: a pack starved beside a bright toxic herd. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v71"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v73"))]
     pub honest_signals: f32,
     /// A player's lineage and a wild one are less fertile together than
     /// their body plans alone say: the fertility gap between a player-owned
     /// and a wild-owned animal counts `1 + wild_isolation` times (at 0.6,
     /// body sizes 0.19 apart are sterile instead of 0.3), so player herds
     /// of most sizes aren't diluted by a wild species. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v71"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v73"))]
     pub wild_isolation: f32,
 }
 
@@ -1640,6 +1658,8 @@ impl Default for Balance {
             clutch_cover: 2.1,
             prey_larder: 1.0,
             founding_rivals: 1.0,
+            winter_larder: 1.0,
+            prey_floor: 40.0,
             honest_signals: 1.0,
             wild_isolation: 0.6,
         }
@@ -1647,7 +1667,7 @@ impl Default for Balance {
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 171;
+    pub const FIELD_COUNT: usize = 173;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1826,6 +1846,8 @@ impl Balance {
             ("clutch_cover", &mut self.clutch_cover),
             ("prey_larder", &mut self.prey_larder),
             ("founding_rivals", &mut self.founding_rivals),
+            ("winter_larder", &mut self.winter_larder),
+            ("prey_floor", &mut self.prey_floor),
             ("honest_signals", &mut self.honest_signals),
             ("wild_isolation", &mut self.wild_isolation),
         ]

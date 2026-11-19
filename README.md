@@ -9367,6 +9367,100 @@ How the prey-per-hunter bounds were chosen (the six-player study,
   full run. It also accepts "in its burrow" as a reason for a disabled
   inspector button, and picks another target.
 
+### Playtest 7: predators and warnings
+
+Round 8 for `docs/playtest-7.md` findings H3, M4 and the predator and
+warning lows. Snapshot version 72 (provisional; main is at 70). It adds
+`Balance::winter_larder` and `Balance::prey_floor`, off at 0, which is what snapshots of version 71
+and before read (`serde_util::before_v72`).
+
+**H3: predators can't compete.** Playtest 7 ran without round 7's
+prey-scaled larder and honest prey check. In it, a pure carnivore pack
+plateaued at 60–84 and lost 60% in its first winter, inside its grace.
+- **The first-winter larder** (`Balance::winter_larder` 1). Within a year
+  of its founding, in winter, a player with up to 60 animals has the full
+  larder room whatever the prey count (`World::first_winter_room`,
+  counted as each tick starts). A founding pack on thin prey isn't starved
+  by the prey scaling in its first winter.
+- **Limited to founding-sized packs.** The first version applied at any
+  size, and the strong "Apex Wolves" design overshot: 36% of six players'
+  animals.
+- **Measured, it changes little.** In the six-player study the prey there
+  already gives the Stalkers the full larder through their first winter,
+  and with this round's rules they grow through it: 65 at day 80, 74 at
+  day 90, 85 at day 120 (seed 1). It is a guarantee for a pack whose prey
+  is thin, not a gain where prey is plenty.
+- **Small prey populations aren't counted** (`Balance::prey_floor` 40,
+  version 72). The prey-scaled larder counts a lineage's plant eaters only
+  when it has 40 or more alive (`World::refresh_pack_room`). With round 7's
+  larder the wild newts were lost on 4 of 16 `predlong` seeds against 2
+  without it: a few prey fed a bigger pack that then hunted them out.
+  Measured below (PREY_FLOOR_RESULT).
+- **Balance's H1** (hungry hunters may take bright toxic prey) hadn't landed
+  on main when this was measured. Once merged it should feed packs that
+  live among toxic herds; it is not measured here.
+
+| Study (New arm, on instinct) | `winter_larder` 0 | Default |
+| --- | --- | --- |
+| `predators --playtest4 --seeds 6 --days 180`: Apex Stalkers at the end | 60 | 62, none extinct (49 with the first, any-size version) |
+| `predators` (round 3's designs): Apex Wolves, share | 191, 26.9% | 170, 29.2% (193, 35.9% with the any-size version) |
+
+- **The wolves' higher share is main's, not this rule's.** Under round 5's
+  band rule, on this main, they take 27.9%. In round 7, before balance's
+  playtest 6 rules, they took 17.6%.
+
+
+**M4: warnings for slow die-offs.** Round 7's hunger floor (15 a day or
+2%), thirst wording and cold warning cover part of the finding. Added:
+- **A slow die-off** (`kind` `decline`). It fires when hunger, thirst and
+  cold killed 20% or more of the lineage (as it was then) over the last
+  10 recorded days (`Game::slow_decline`): "Your lineage is dying off
+  slowly: 63 → 33 alive over the last 10 days, 30 of them of hunger,
+  thirst or cold …". Playtest 7's pack went 63 → 23 over 40 days at 1–4 a
+  day, never enough for one day's warning.
+- **Drownings** (`kind` `drowning`). It fires at 3 or more in a day, with
+  the likely cause: rivers in flood, winter ice or rising water, or water
+  too deep.
+- **Grazed bare, again.** While a ground stays grazed bare and animals keep
+  starving, the alert is said again every few days ("… is still grazed
+  bare: N of your animals starved yesterday"). Before, it was said once
+  until the ground recovered.
+- **Starving on the way.** Once per migration, when a quarter or more of a
+  migrating group is starving or parched (hunger or thirst 80), the
+  player is told, with what to do.
+
+**Lows:**
+- **A pack eating its own** is told as "your own Cinder Wolves", and it no
+  longer counts toward the "being hunted" warning.
+- **Pack-mates' kills** credit the attacker: "your #a's pack killed #t".
+  Before, a kill more than 3 tiles from the possessed attacker read as a
+  failure.
+- **"Possessed … is starving: foraging on its own until you give it an
+  order"** right after an attack order: an attack order now counts as an
+  order in that alert.
+- **"Drifted from its home"** is no longer said for a pack of hunters
+  (mean carnivory over 0.6), which roam by nature. For other groups it
+  is said again only after the group has come back home.
+- **Learning a new poisonous prey** is announced once: "Your hunters have
+  learned that bob's Rolling Herd are poisonous …".
+- **Founder old-age deaths:** the first per lineage is told with "Your
+  founders are reaching old age: the daily summary counts the rest", and
+  the rest are left to the daily summary.
+- **Chilled eggs** while most of the egg layers sleep are told as "the
+  parents were asleep", not as straying.
+- **The migrate warning** names how the group sleeps (hibernating,
+  brumating or estivating) instead of "hibernating or estivating" for
+  brumators.
+
+**Checks:**
+
+| Check | `winter_larder` 0 | Defaults |
+| --- | --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` (main: 11.91) | | 11.91 (± 0.09) before the perf merge; 11.87 (± 0.16) on v72 with `prey_floor`; every lineage 12 of 12 |
+| `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 14/16 (12), 16/16 (16); 4 | 13/16 (11), 16/16 (16); 4 |
+| workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (459), build | | pass |
+| e2e (16 scripts, `E2E_JOBS=2`) | | 14 of 16: smoke and builder failed under load. Alone, builder passed; smoke failed once on a `claim_territory` near water (`mostly_water`, the group's position at that moment) and passed twice after |
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many

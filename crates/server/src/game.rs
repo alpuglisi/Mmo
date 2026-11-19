@@ -377,9 +377,12 @@ fn egg_losses(now: &evo_sim::world::EggCounts, before: &evo_sim::world::EggCount
 /// An egg loss cause in a sentence. `abandoned`: the lineage leaves its
 /// eggs by design (abandoned eggs), so a chilled clutch is expected, not a
 /// parent's failure.
-fn egg_loss_why(cause: &str, abandoned: bool) -> &'static str {
+fn egg_loss_why(cause: &str, abandoned: bool, asleep: bool) -> &'static str {
     match cause {
         "chilled" if abandoned => "chilled: abandoned eggs lie exposed, by design",
+        // Most of the lineage asleep (playtest 7: blamed straying while the
+        // parents slept).
+        "chilled" if asleep => "chilled: no parent was brooding them (the parents were asleep)",
         "chilled" => "chilled: no parent was brooding them (it strayed too far from the nest, or died)",
         "overheated" => "overheated",
         _ => "eaten by egg raiders",
@@ -446,6 +449,16 @@ pub const STARVING_SHARE: f64 = 0.02;
 pub const STARVING_FLOOR: u64 = 15;
 /// …and never fewer than this.
 pub const STARVING_MIN: u64 = 5;
+/// Drownings in a day that raise the drowning warning.
+pub const DROWNED_MIN: u64 = 3;
+/// Days over which a slow die-off is summed (`Game::slow_decline`)…
+pub const DECLINE_DAYS: u64 = 10;
+/// …and the share of the lineage (as it was then) lost to hunger, thirst
+/// and cold over them that raises the warning.
+pub const DECLINE_SHARE: f64 = 0.2;
+/// Hunger or thirst (0–100) at which a migrant counts as starving or
+/// parched for the en-route alert (`Game::daily_group_checks`).
+pub const EN_ROUTE_NEED: f32 = 80.0;
 /// Cold deaths in a day that raise the cold warning (playtest 6: 11–23 a
 /// day in a severe winter, unflagged).
 pub const COLD_MIN: u64 = 5;
@@ -915,6 +928,19 @@ pub struct Game {
     territory_alerted: BTreeSet<(PlayerId, u8, u8)>,
     /// Groups already told they drifted from their home; not saved.
     drift_alerted: BTreeSet<(PlayerId, u8)>,
+    /// The day a grazed-bare ground was last said again while animals kept
+    /// starving (playtest 7: one alert, then nothing for weeks). Not saved.
+    bare_repeated: BTreeMap<(PlayerId, u8), u64>,
+    /// Prey lineages each player's hunters were last known to find
+    /// poisonous (`announce_poison_lessons`); `None` until the first daily
+    /// check sets the baseline. Not saved.
+    poison_known: Option<BTreeMap<PlayerId, BTreeSet<u32>>>,
+    /// Lineages whose founders' old age has been told once (playtest 7:
+    /// ~30 founder old-age alerts in 3 minutes); the daily summary counts
+    /// the rest. Not saved.
+    old_age_told: BTreeSet<u32>,
+    /// Players whose next death alert says that once (`announce_deaths`).
+    old_age_note: BTreeSet<PlayerId>,
     /// How each group's last order ended on its own (arrived, stalled,
     /// claimed on arrival), shown on its card until its next order: alerts
     /// scroll away (playtest 4: a migration "silently did nothing"). Not
@@ -1203,6 +1229,10 @@ impl Game {
             founded_day: BTreeMap::new(),
             territory_alerted: BTreeSet::new(),
             drift_alerted: BTreeSet::new(),
+            bare_repeated: BTreeMap::new(),
+            poison_known: None,
+            old_age_told: BTreeSet::new(),
+            old_age_note: BTreeSet::new(),
             outcomes: BTreeMap::new(),
             hosts,
             pending_out,
@@ -4576,6 +4606,7 @@ impl Game {
             self.pay_royalties(record.day);
             self.daily_alerts(&record, &mut out);
             self.daily_group_checks(&record, &mut out);
+            self.announce_poison_lessons(&mut out);
             self.chronicle_alerts(&mut out);
             self.history.push_back(record.clone());
             self.warning_alerts(record.day, &mut out);
@@ -4879,7 +4910,10 @@ impl Game {
                 // Already broken off to drink or eat (the sim's own rule:
                 // urgency, or water near with `Balance::drink_priority`).
                 let tending = matches!(o.action, evo_sim::organism::Action::Drink | evo_sim::organism::Action::Graze);
-                needy.push((p, o.id, o.needs.thirst, o.needs.hunger, o.order.is_some(), tending));
+                // An attack order is an order too (playtest 7: "foraging on
+                // its own until you give it an order" right after one).
+                let ordered = o.order.is_some() || self.world.attack_target(o.id).is_some();
+                needy.push((p, o.id, o.needs.thirst, o.needs.hunger, ordered, tending));
             }
         }
         for (p, id, thirst, hunger, walking, tending) in needy {
@@ -5137,7 +5171,7 @@ impl Game {
                 let by = (o.death == Some(DeathCause::Predation))
                     .then_some(o.killer)
                     .flatten()
-                    .map_or(String::new(), |l| format!(" by {}", self.hunter_words(l)));
+                    .map_or(String::new(), |l| format!(" by {}", self.hunter_words(l, player)));
                 let text = format!(
                     "#{id}, the animal you were possessing, {}{by}. Possess another from the map or the Lineage tab.",
                     death_words(why_died(o))
@@ -5145,8 +5179,16 @@ impl Game {
                 self.alert(player, AlertKind::Death, text, Some(id), out);
                 continue;
             }
+            // Founders dying of old age: the first is said, the rest are left
+            // to the daily summary.
+            if watch == Watch::Founder && o.death == Some(DeathCause::OldAge) {
+                if !self.old_age_told.insert(o.lineage) {
+                    continue;
+                }
+                self.old_age_note.insert(player);
+            }
             if let Some(by) = (o.death == Some(DeathCause::Predation)).then_some(o.killer).flatten() {
-                let words = self.hunter_words(by);
+                let words = self.hunter_words(by, player);
                 self.pending_killers.entry(player).or_default().insert(id, words);
             }
             self.pending_deaths.entry(player).or_default().push((id, watch, why_died(o)));
@@ -5159,17 +5201,24 @@ impl Game {
             let (text, organism) = death_alert_text(&deaths);
             // Instinct kills say by whom (playtest 5: "Founder #N was eaten"
             // never named the hunter).
-            let text = with_hunters(text, &deaths, &killers.remove(&player).unwrap_or_default());
+            let mut text = with_hunters(text, &deaths, &killers.remove(&player).unwrap_or_default());
+            if self.old_age_note.remove(&player) {
+                text.push_str(" Your founders are reaching old age: the daily summary counts the rest.");
+            }
             self.alert(player, AlertKind::Death, text, organism, out);
         }
     }
 
-    /// Who a hunter of lineage `l` is, in words: "Rulebender's Apex
-    /// Stalkers" for a player's, "a wild Red fox" for a wild one.
-    fn hunter_words(&self, l: u32) -> String {
+    /// Who a hunter of lineage `l` is, in words, told to `viewer`:
+    /// "Rulebender's Apex Stalkers" for another player's, "your own Cinder
+    /// Wolves" for the viewer's (playtest 7: a pack eating its own read like
+    /// a rival's kill), "a wild Red fox" for a wild one.
+    fn hunter_words(&self, l: u32, viewer: PlayerId) -> String {
         let Some(lin) = self.world.lineages.get(l as usize) else { return "a hunter".into() };
         if lin.owner == WILD {
             format!("a wild {}", lin.name)
+        } else if lin.owner == viewer {
+            format!("your own {}", lin.name)
         } else {
             format!("{}'s {}", self.name(lin.owner), lin.name)
         }
@@ -5362,16 +5411,52 @@ impl Game {
                     ),
                 });
             }
+            // Drowning (playtest 7: 9 drowned at a severe winter's onset
+            // with no warning).
+            let drowned = e.deaths.get("drowned").copied().unwrap_or(0);
+            if drowned >= DROWNED_MIN {
+                let why = if w.map.flood >= FLOOD_CLEAR {
+                    "rivers are over their banks: floodplains and lake margins go under"
+                } else if season_of(w, r.day) == evo_sim::terrain::Season::Winter {
+                    "ice that won't hold a heavy animal, or water rising under the snow"
+                } else {
+                    "water too deep for them to wade or swim"
+                };
+                out.push(LineageWarning {
+                    kind: "drowning".into(),
+                    text: format!(
+                        "{drowned} of your animals drowned on day {}: {why}. Keep groups on high, dry ground away from \
+                         rivers and lakes; swimming helps.",
+                        r.day.max(1)
+                    ),
+                });
+            }
+        }
+        // A slow die-off (playtest 7: a pack went 63 → 23 over 40 days at 1–4
+        // a day, never enough for one day's warning).
+        if let Some((lost, then, now)) = self.slow_decline(lineage) {
+            out.push(LineageWarning {
+                kind: "decline".into(),
+                text: format!(
+                    "Your lineage is dying off slowly: {then} → {now} alive over the last {DECLINE_DAYS} days, {lost} of \
+                     them of hunger, thirst or cold ({:.0}% of the lineage). Day by day it looks small; find better ground \
+                     or water, or fatten them before the cold.",
+                    100.0 * lost as f64 / then.max(1) as f64
+                ),
+            });
         }
         // Being hunted (playtest 5: 5–21 eaten a day, and one alert all game).
         if let Some((day, by)) = self.hunted.get(&player) {
+            // Other lineages' hunters only: a pack eating its own isn't hunted.
+            let mine = |l: u32| self.world.lineages.get(l as usize).is_some_and(|x| x.owner == player);
+            let by: Vec<(u32, u64)> = by.iter().copied().filter(|&(l, _)| !mine(l)).collect();
             let eaten: u64 = by.iter().map(|&(_, n)| n).sum();
             let alive = w.population_counts().get(lineage as usize).map_or(0, |c| c.alive) as u64;
             // Scaled with the lineage (playtest 6): 5 a day, or half a
             // percent of a big one, or 4% of a small one.
             if eaten >= HUNTED_MIN.max(alive / 200) || (eaten >= 2 && eaten * 25 >= alive.max(1)) {
                 let who: Vec<String> =
-                    by.iter().take(3).map(|&(l, n)| format!("{} ({n})", self.hunter_words(l))).collect();
+                    by.iter().take(3).map(|&(l, n)| format!("{} ({n})", self.hunter_words(l, player))).collect();
                 out.push(LineageWarning {
                     kind: "hunted".into(),
                     text: format!(
@@ -5419,6 +5504,27 @@ impl Game {
             });
         }
         out
+    }
+
+    /// Deaths of hunger, thirst and cold over the last [`DECLINE_DAYS`]
+    /// recorded days, when they are at least [`DECLINE_SHARE`] of the
+    /// lineage as it was then: `(deaths, alive then, alive now)`.
+    fn slow_decline(&self, lineage: u32) -> Option<(u64, u64, u64)> {
+        let n = self.history.len();
+        if n < DECLINE_DAYS as usize + 1 {
+            return None;
+        }
+        let window: Vec<&DailyRecord> = self.history.iter().skip(n - DECLINE_DAYS as usize - 1).collect();
+        let entry = |r: &DailyRecord| r.lineages.iter().find(|e| e.lineage == lineage).cloned();
+        let first = entry(window[0])?;
+        let then = first.alive as u64;
+        let (mut lost, mut now) = (0u64, then);
+        for r in &window[1..] {
+            let e = entry(r)?;
+            lost += ["starved", "thirst", "cold"].iter().map(|c| e.deaths.get(*c).copied().unwrap_or(0)).sum::<u64>();
+            now = e.alive as u64;
+        }
+        (then >= 10 && lost as f64 >= DECLINE_SHARE * then as f64).then_some((lost, then, now))
     }
 
     /// Say each lineage warning as an alert when it starts, and again every
@@ -5896,9 +6002,9 @@ impl Game {
         let dormant = self.world.dormant_share(player, group);
         if dormant >= DORMANT_WARN_SHARE {
             warnings.push(format!(
-                "{:.0}% of the group is dormant (hibernating or estivating) and won't walk until it wakes; the \
-                 order may run out before then.",
-                dormant * 100.0
+                "{:.0}% of the group is dormant ({}) and won't walk until it wakes; the order may run out before then.",
+                dormant * 100.0,
+                sleep_words(&self.world, player, group)
             ));
         }
         warnings
@@ -6017,6 +6123,22 @@ impl Game {
                             texts.push(format!(
                                 "{name}'s {what} at ({x:.0}, {y:.0}) is grazed bare (food for {days}): {fix}.{tail}"
                             ));
+                            self.bare_repeated.insert(key, record.day);
+                        } else if bare
+                            && starved > 0
+                            && self.bare_repeated.get(&key).is_none_or(|&d| record.day >= d + WARNING_REPEAT_DAYS)
+                        {
+                            // Still bare and still starving: said again every few
+                            // days (playtest 7: one alert, then weeks of deaths).
+                            self.bare_repeated.insert(key, record.day);
+                            texts.push(format!(
+                                "{name}'s {what} at ({x:.0}, {y:.0}) is still grazed bare: {starved} of your animals \
+                                 starved yesterday. {}.",
+                                capitalized(fix)
+                            ));
+                        }
+                        if !bare {
+                            self.bare_repeated.remove(&key);
                         }
                         // Outgrown: the herd has grown past what the ground feeds,
                         // before anyone starves (playtest 5: claimed at 475, held
@@ -6053,17 +6175,43 @@ impl Game {
                         }
                     }
                 }
+                // Starving on the way (playtest 7: a migrating group starved
+                // with no alert): once per migration, when a quarter of it is
+                // starving or parched.
+                if let Some(target) = g.migration {
+                    let (mut n, mut needy) = (0usize, 0usize);
+                    for o in self.world.organisms.iter().filter(|o| o.alive && o.owner == p && o.group == g.id) {
+                        n += 1;
+                        needy += usize::from(o.needs.hunger >= EN_ROUTE_NEED || o.needs.thirst >= EN_ROUTE_NEED);
+                    }
+                    let bad = needy >= STARVING_MIN as usize && needy * 4 >= n;
+                    if self.condition_begins((p, g.id, 5), bad, needy * 8 < n) {
+                        texts.push(format!(
+                            "{name} is starving on its way to ({:.0}, {:.0}): {needy} of its {n} animals are starving or \
+                             parched. Migrants stop to eat and drink when a need presses; if the way has no food or water, \
+                             cancel the migration or pick a nearer goal.",
+                            target.x, target.y
+                        ));
+                    }
+                } else {
+                    self.territory_alerted.remove(&(p, g.id, 5));
+                }
                 // Drifted from home, only while nothing else holds the group
                 // elsewhere (a rally or territory there is the player's doing).
-                let drifted = g
-                    .settle
-                    .filter(|_| g.territory.is_none() && g.rally.is_none() && g.migration.is_none())
-                    .and_then(|s| {
-                        let m = self.world.group_median_dist(p, g.id, s.center)?;
-                        (m > DRIFT_FACTOR * s.radius).then_some((s, m))
-                    });
-                match drifted {
-                    Some((s, m)) => {
+                // A pack of hunters roams by nature (playtest 7: the alert
+                // repeated for a roaming pack); and once said, it is said
+                // again only after the group came back home.
+                let pack = self
+                    .world
+                    .organisms
+                    .iter()
+                    .filter(|o| o.alive && o.owner == p && o.group == g.id)
+                    .fold((0usize, 0.0f32), |(n, c), o| (n + 1, c + o.traits.carnivory));
+                let roams = pack.0 > 0 && pack.1 / pack.0 as f32 > 0.6;
+                let home = g.settle.filter(|_| g.territory.is_none() && g.rally.is_none() && g.migration.is_none());
+                let dist = home.and_then(|s| self.world.group_median_dist(p, g.id, s.center).map(|m| (s, m)));
+                match dist {
+                    Some((s, m)) if m > DRIFT_FACTOR * s.radius && !roams => {
                         if self.drift_alerted.insert(key) {
                             texts.push(format!(
                                 "{name} has drifted from its home at ({:.0}, {:.0}): half the group is more than {m:.0} \
@@ -6072,7 +6220,8 @@ impl Game {
                             ));
                         }
                     }
-                    None => {
+                    Some((s, m)) if m > s.radius => {}
+                    _ => {
                         self.drift_alerted.remove(&key);
                     }
                 }
@@ -6083,6 +6232,37 @@ impl Game {
             let live: BTreeSet<u8> = groups.iter().map(|g| g.id).collect();
             self.territory_alerted.retain(|&(q, g, _)| q != p || live.contains(&g));
             self.drift_alerted.retain(|&(q, g)| q != p || live.contains(&g));
+        }
+    }
+
+    /// Daily: tell each player of prey kinds their hunters have newly
+    /// learned are poisonous (`World::looks_poisonous_to`; playtest 7: the
+    /// lesson was learned without a word). The first check after a start
+    /// only sets the baseline.
+    fn announce_poison_lessons(&mut self, out: &mut Outbox) {
+        let players: Vec<PlayerId> = self.lineage_of.keys().copied().collect();
+        let mut now: BTreeMap<PlayerId, BTreeSet<u32>> = BTreeMap::new();
+        for &p in &players {
+            let set: BTreeSet<u32> =
+                (0..self.world.lineages.len() as u32).filter(|&l| self.world.looks_poisonous_to(p, l)).collect();
+            now.insert(p, set);
+        }
+        let Some(before) = self.poison_known.replace(now.clone()) else { return };
+        for (p, set) in now {
+            let known = before.get(&p);
+            for l in set.into_iter().filter(|l| known.is_none_or(|k| !k.contains(l))) {
+                let Some(lin) = self.world.lineages.get(l as usize) else { continue };
+                let whose = if lin.owner == WILD {
+                    format!("the wild {}", lin.name)
+                } else {
+                    format!("{}'s {}", self.name(lin.owner), lin.name)
+                };
+                let text = format!(
+                    "Your hunters have learned that {whose} are poisonous: on their own they pass them up most of the time \
+                     (less so when starving), and an attack order on one warns you."
+                );
+                self.alert(p, AlertKind::Attack, text, None, out);
+            }
         }
     }
 
@@ -6185,10 +6365,10 @@ impl Game {
                     .get(&p)
                     .filter(|(d, _)| *d == record.day)
                     .map(|(_, by)| match by.as_slice() {
-                        [(l, _)] => format!(" by {}", self.hunter_words(*l)),
+                        [(l, _)] => format!(" by {}", self.hunter_words(*l, p)),
                         _ => {
                             let named: Vec<String> =
-                                by.iter().take(3).map(|&(l, n)| format!("{} ({n})", self.hunter_words(l))).collect();
+                                by.iter().take(3).map(|&(l, n)| format!("{} ({n})", self.hunter_words(l, p))).collect();
                             let more = if by.len() > 3 { " and others" } else { "" };
                             format!(" by {}{more}", named.join(" and "))
                         }
@@ -6212,8 +6392,19 @@ impl Game {
                             (a + usize::from(o.traits.birth == evo_sim::design::BirthType::AbandonedEggs), n + 1)
                         });
                     let abandoned = layers > 0 && abandon * 2 > layers;
-                    let why: Vec<String> =
-                        entry.eggs_lost.iter().map(|(c, n)| format!("{n} {}", egg_loss_why(c, abandoned))).collect();
+                    // Most of the egg layers asleep.
+                    let (sleeping, layers_now) = self
+                        .world
+                        .organisms
+                        .iter()
+                        .filter(|o| o.alive && o.lineage == lineage && o.traits.birth.lays_eggs())
+                        .fold((0usize, 0usize), |(a, n), o| (a + usize::from(o.dormancy.is_deep()), n + 1));
+                    let asleep = layers_now > 0 && sleeping * 2 >= layers_now;
+                    let why: Vec<String> = entry
+                        .eggs_lost
+                        .iter()
+                        .map(|(c, n)| format!("{n} {}", egg_loss_why(c, abandoned, asleep)))
+                        .collect();
                     format!(" · {eggs_lost} egg{} lost ({})", if eggs_lost == 1 { "" } else { "s" }, why.join(", "))
                 } else {
                     String::new()
@@ -7113,6 +7304,11 @@ fn attack_result_text(w: &World, attacker: OrgId, target: OrgId) -> Option<Strin
             Some(DeathCause::Predation) if a.pos.dist(t.pos) <= 3.0 => {
                 format!("Attack over: your #{attacker} killed #{target}.")
             }
+            // A pack-mate it summoned made the kill (playtest 7: read as a
+            // failure when the kill fell more than 3 tiles from the attacker).
+            Some(DeathCause::Predation) if t.killer == Some(a.lineage) => {
+                format!("Attack over: your #{attacker}'s pack killed #{target}.")
+            }
             _ => format!("Attack over: #{target} {} before your #{attacker} could kill it.", death_words(why_died(t))),
         }),
         Some(t) if t.sheltered => {
@@ -7348,7 +7544,7 @@ fn timeout_reason(
     if dormant_share >= 0.5 {
         (
             format!(
-                "{:.0}% of the group is dormant (hibernating or estivating) and can't walk; migrate again once it wakes",
+                "{:.0}% of the group is dormant (hibernating, brumating or estivating) and can't walk; migrate again once it wakes",
                 dormant_share * 100.0
             ),
             "dormant".to_string(),
@@ -7447,6 +7643,37 @@ pub fn founding_ramp(founded: Option<u64>, day: u64) -> f64 {
     }
 }
 
+/// `text` with its first letter in upper case.
+fn capitalized(text: &str) -> String {
+    let mut c = text.chars();
+    c.next().map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+}
+
+/// How a group's sleepers sleep, in words (playtest 7: "hibernating or
+/// estivating" for brumators): "hibernating", "brumating", "estivating", or
+/// those found, joined.
+fn sleep_words(w: &World, player: PlayerId, group: u8) -> String {
+    let (mut hib, mut brum, mut est) = (false, false, false);
+    for o in w.organisms.iter().filter(|o| o.alive && o.owner == player && o.group == group) {
+        match o.dormancy {
+            evo_sim::organism::Dormancy::Winter if o.traits.warm => hib = true,
+            evo_sim::organism::Dormancy::Winter => brum = true,
+            evo_sim::organism::Dormancy::Summer => est = true,
+            _ => {}
+        }
+    }
+    let words: Vec<&str> = [(hib, "hibernating"), (brum, "brumating"), (est, "estivating")]
+        .iter()
+        .filter(|(on, _)| *on)
+        .map(|&(_, w)| w)
+        .collect();
+    if words.is_empty() {
+        "asleep".into()
+    } else {
+        words.join(" or ")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7464,7 +7691,7 @@ mod tests {
         let (mut g, _, _) = game();
         let (la, lb) = (g.lineage_of(1).unwrap(), g.lineage_of(2).unwrap());
         // Death notices.
-        let by: BTreeMap<OrgId, String> = [(5, g.hunter_words(lb))].into();
+        let by: BTreeMap<OrgId, String> = [(5, g.hunter_words(lb, 1))].into();
         let one = with_hunters(
             "Founder #5 was eaten.".into(),
             &[(5, Watch::Founder, Why::Of(Some(DeathCause::Predation)))],
@@ -7479,18 +7706,34 @@ mod tests {
         g.count_hunted(10);
         assert!(g.lineage_warnings(1).iter().all(|w| w.kind != "hunted"));
         *g.world.counters.kills_by_lineage.get_mut(&(la, lb)).unwrap() += 6;
+        // One eaten by the player's own pack (lineage 0 here is ann's): not
+        // being hunted (playtest 7).
+        assert_eq!(g.world.lineages[0].owner, 1);
         g.world.counters.kills_by_lineage.insert((la, 0), 1);
         g.count_hunted(11);
         let w = g.lineage_warnings(1);
         let hunted = w.iter().find(|w| w.kind == "hunted").expect("a hunted warning");
         assert!(
-            hunted.text.contains("7 of your animals were eaten on day 11") && hunted.text.contains("bob's B (6)"),
+            hunted.text.contains("6 of your animals were eaten on day 11") && hunted.text.contains("bob's B (6)"),
             "{}",
             hunted.text
         );
         // A quiet day: no warning.
         g.count_hunted(12);
         assert!(g.lineage_warnings(1).iter().all(|w| w.kind != "hunted"));
+    }
+
+    /// Playtest 7 lows: a pack eating its own read like a rival's kill;
+    /// chilled eggs blamed straying while the parents slept.
+    #[test]
+    fn own_hunters_and_sleeping_parents_are_said_as_they_are() {
+        let (g, _, _) = game();
+        let (la, lb) = (g.lineage_of(1).unwrap(), g.lineage_of(2).unwrap());
+        assert_eq!(g.hunter_words(la, 1), "your own A");
+        assert_eq!(g.hunter_words(lb, 1), "bob's B");
+        assert!(egg_loss_why("chilled", false, true).contains("the parents were asleep"));
+        assert!(egg_loss_why("chilled", false, false).contains("strayed"));
+        assert_eq!(sleep_words(&g.world, 1, 0), "asleep");
     }
 
     /// Playtest 5: floods had no alert at all (droughts did).

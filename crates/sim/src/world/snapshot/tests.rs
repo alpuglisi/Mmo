@@ -545,29 +545,36 @@ fn playtest6_off(b: &mut crate::Balance) {
 /// The playtest 7 founding tunable as snapshots before version 70 read it.
 fn founding_rivals_off(b: &mut crate::Balance) {
     b.founding_rivals = crate::serde_util::before_v70::OLD_VALUE;
-    balance71_off(b);
+    playtest7_off(b);
 }
 
-/// The playtest 7 balance tunables as snapshots before version 71 read
+/// The playtest 7 predator tunables as snapshots before version 72 read them.
+fn playtest7_off(b: &mut crate::Balance) {
+    b.winter_larder = crate::serde_util::before_v72::OLD_VALUE;
+    b.prey_floor = crate::serde_util::before_v72::OLD_VALUE;
+    balance73_off(b);
+}
+
+/// The playtest 7 balance tunables as snapshots before version 73 read
 /// them.
-fn balance71_off(b: &mut crate::Balance) {
-    let old = crate::serde_util::before_v71::OLD_VALUE;
+fn balance73_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v73::OLD_VALUE;
     (b.honest_signals, b.wild_isolation) = (old, old);
 }
 
-/// Version 70 snapshots (before the playtest 7 balance rules) restore with
+/// Version 72 snapshots (before the playtest 7 balance rules) restore with
 /// those tunables off, and are otherwise the same world.
 #[test]
-fn version_70_snapshots_restore_without_playtest7_balance() {
+fn version_72_snapshots_restore_without_playtest7_balance() {
     let mut w = fixture_world();
-    let old = w.snapshot_v70();
+    let old = w.snapshot_v72();
     let h = SnapshotHeader::read(&old).unwrap();
-    assert_eq!(h.version, 70);
+    assert_eq!(h.version, 72);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
-    assert_eq!(r.config.balance.honest_signals, crate::serde_util::before_v71::OLD_VALUE);
-    assert!(r.snapshot_v70() == old);
-    balance71_off(&mut w.config.balance);
+    assert_eq!(r.config.balance.honest_signals, crate::serde_util::before_v73::OLD_VALUE);
+    assert!(r.snapshot_v72() == old);
+    balance73_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     // This version keeps them.
@@ -1965,4 +1972,27 @@ fn version_66_snapshots_restore_without_founding_rivals() {
     let w = fixture_world();
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.founding_rivals, 1.0);
+}
+
+/// Version 70 snapshots (before the playtest 7 predator rules) restore
+/// with them off, and are otherwise the same world.
+#[test]
+fn version_70_snapshots_restore_without_winter_larder() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v70();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 70);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.winter_larder, 0.0);
+    assert_eq!(r.config.balance.prey_floor, 0.0);
+    assert!(r.snapshot_v70() == old);
+    playtest7_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    // This version keeps them.
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.winter_larder, 1.0);
+    assert_eq!(r.config.balance.prey_floor, 40.0);
 }

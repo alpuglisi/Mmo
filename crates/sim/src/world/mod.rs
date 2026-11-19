@@ -1022,12 +1022,27 @@ impl World {
                 let room = (apply::BAND_CROWD - n as f32) / (apply::BAND_CROWD - apply::BAND_SMALL);
                 self.pack_room.insert(p, room.clamp(0.0, 1.0));
             }
+            self.first_winter_room();
             return;
         }
         let (mut grazers, mut grazers_of, mut hunters) =
             (0usize, BTreeMap::<PlayerId, usize>::new(), BTreeMap::<PlayerId, usize>::new());
+        // A lineage under `prey_floor` living plant eaters isn't counted as
+        // prey: a small population doesn't feed a bigger pack that would
+        // then hunt it out.
+        let mut per_lineage: BTreeMap<u32, usize> = BTreeMap::new();
+        if bal.prey_floor > 0.0 {
+            for o in self.organisms.iter().filter(|o| o.alive && o.traits.carnivory <= decide::HUNTER_CARNIVORY) {
+                *per_lineage.entry(o.lineage).or_default() += 1;
+            }
+        }
+        let counted =
+            |l: u32| bal.prey_floor <= 0.0 || per_lineage.get(&l).copied().unwrap_or(0) as f32 >= bal.prey_floor;
         for o in self.organisms.iter().filter(|o| o.alive) {
             if o.traits.carnivory <= decide::HUNTER_CARNIVORY {
+                if !counted(o.lineage) {
+                    continue;
+                }
                 grazers += 1;
                 *grazers_of.entry(o.owner).or_default() += 1;
             } else if decide::player_pack(bal, o) {
@@ -1039,6 +1054,34 @@ impl World {
             let prey = grazers - grazers_of.get(&p).copied().unwrap_or(0);
             let per = prey as f32 / h.max(1) as f32;
             self.pack_room.insert(p, ((per - none) / (full - none)).clamp(0.0, 1.0));
+        }
+        self.first_winter_room();
+    }
+
+    /// A founding-sized pack's first winter (`Balance::winter_larder`): a
+    /// player with up to `apply::BAND_SMALL` animals whose lineage was
+    /// founded within the year has the full larder room in winter, whatever
+    /// the prey. A strong pack that outgrew that by its first winter gets
+    /// nothing extra (it overshot: ApexHunter2's wolves took 36% of six
+    /// players' animals with the rule at any size).
+    fn first_winter_room(&mut self) {
+        let bal = &self.config.balance;
+        if bal.winter_larder <= 0.0 || self.season() != Season::Winter {
+            return;
+        }
+        let year = self.config.days_per_year.max(1) as u64 * self.config.ticks_per_day as u64;
+        let mut young: BTreeMap<PlayerId, bool> = BTreeMap::new();
+        for (l, lin) in self.lineages.iter().enumerate() {
+            if lin.owner == crate::WILD {
+                continue;
+            }
+            let founded = self.lineage_founded.get(l).copied().unwrap_or(0);
+            *young.entry(lin.owner).or_default() |= self.tick.saturating_sub(founded) < year;
+        }
+        for (p, first) in young {
+            if first && (self.owner_count(p) as f32) <= apply::BAND_SMALL {
+                self.pack_room.insert(p, 1.0);
+            }
         }
     }
 

@@ -704,14 +704,53 @@ fn the_pack_larder_follows_the_prey_there_is() {
         w.refresh_pack_room();
         w.pack_room(HUNTER)
     };
+    // Each placed prey founds its own lineage: count them all for now.
+    w.config.balance.prey_floor = 0.0;
     // 2 hunters: 30 prey is 15 each (none), 60 is 30 (half), 80 is 40 (full).
     assert_eq!(room(&mut w, 30), 0.0);
     assert!((room(&mut w, 60) - 0.5).abs() < 1e-4);
+    assert_eq!(room(&mut w, 80), 1.0);
+    // `prey_floor`: 80 one-animal lineages are 80 small populations, not
+    // counted; as one lineage of 80 they are.
+    w.config.balance.prey_floor = 40.0;
+    assert_eq!(room(&mut w, 80), 0.0);
+    let one = w.organisms.iter().find(|o| o.owner == PREY).unwrap().lineage;
+    for o in w.organisms.iter_mut().filter(|o| o.owner == PREY) {
+        o.lineage = one;
+    }
     assert_eq!(room(&mut w, 80), 1.0);
     // The band rule: a band of 2 is small.
     w.config.balance.prey_larder = 0.0;
     w.refresh_pack_room();
     assert_eq!(w.pack_room(HUNTER), 1.0);
+}
+
+/// Playtest 7: a pure carnivore pack lost 60% in its first winter. A
+/// founding-sized player pack has the full larder room in its lineage's
+/// first winter whatever the prey (`winter_larder`); not in its second, not
+/// in other seasons, not with the rule off.
+#[test]
+fn a_player_packs_first_winter_has_the_full_larder() {
+    let mut w = world();
+    place(&mut w, HUNTER, &hunter(), Vec2::new(10.5, 10.5));
+    let year = w.config.days_per_year as u64 * w.config.ticks_per_day as u64;
+    let winter_day = (3 * w.config.days_per_year).div_ceil(4) as u64 + 1;
+    let room = |w: &mut World, tick: u64| {
+        w.tick = tick;
+        w.season_offset = crate::terrain::Map::seasonal_offset(w.day_of_year(), w.config.days_per_year);
+        w.refresh_pack_room();
+        w.pack_room(HUNTER)
+    };
+    // No prey at all: no room by the prey rule…
+    let summer = (winter_day - 30) * w.config.ticks_per_day as u64;
+    assert_eq!(room(&mut w, summer), 0.0);
+    // …but in the first winter, full.
+    let t = winter_day * w.config.ticks_per_day as u64;
+    assert_eq!(room(&mut w, t), 1.0);
+    assert_eq!(w.season(), crate::terrain::Season::Winter);
+    assert_eq!(room(&mut w, t + year), 0.0, "the second winter");
+    w.config.balance.winter_larder = 0.0;
+    assert_eq!(room(&mut w, t), 0.0);
 }
 
 /// Honest signals, whole (`Balance::honest_signals`): a hunter's own

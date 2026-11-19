@@ -1278,6 +1278,8 @@ impl World {
                     * lean_times(o.needs.hunger));
         // A player's pack shares its kills: in lean times the band's meals
         // carry a hungry member (`Balance::player_packs`, by the meat gut).
+        // (A founding-sized pack's first winter has the full room:
+        // `World::first_winter_room`, `Balance::winter_larder`.)
         let diet = diet * (1.0 - player_pack_larder(&bal, o, self.pack_room(o.owner)));
         // Crowding: competition with many kin, felt by group-intolerant organisms.
         let crowd = 1.0 + bal.crowding * (o.kin_nearby as f32 - 8.0).max(0.0) * (1.0 - o.pheno[Gene::GroupTolerance]);
