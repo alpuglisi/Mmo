@@ -235,8 +235,10 @@ impl fmt::Display for CommandError {
                     f,
                     "that circle overlaps another player's territory (rival territories near your groups show on the \
                      map); claim ground of your own (the attempt costs a short wait). A group ten times the size of a \
-                     small holder (at most {}) may claim over its ground",
-                    super::groups::SQUAT_MEMBERS
+                     small holder (at most {} adults; young don't count) may claim over its ground, and a group twice \
+                     the size of one holding {} times the food it needs",
+                    super::groups::SQUAT_MEMBERS,
+                    super::groups::OVERCLAIM_FOOD
                 )
             }
             CommandError::BadRadius => write!(f, "a territory's radius must be a positive number of tiles"),
@@ -739,8 +741,11 @@ impl World {
     /// grace: twice the grace's whole length (its real-time minimum
     /// included), so a re-founding never starts afresh a grace that would
     /// still be running; the time left carries over.
+    /// At least `World::set_grace_carry_min_ticks` (the server's whole
+    /// re-founding window): small re-foundings chained just past twice the
+    /// grace each got a fresh one (playtest 8).
     fn grace_cooldown(&self) -> u64 {
-        2 * self.grace_length()
+        (2 * self.grace_length()).max(self.grace_carry_min_ticks)
     }
 
     /// Recomputes every lineage's grace start (after founding or restoring).
@@ -753,6 +758,19 @@ impl World {
     /// says (the server's minimum of real minutes; not saved).
     pub fn set_attack_grace_min_ticks(&mut self, ticks: u64) {
         self.grace_min_ticks = ticks;
+        self.rebuild_grace_starts();
+    }
+
+    /// How long after a founding the owner's next one continues its grace.
+    pub fn grace_carry_ticks(&self) -> u64 {
+        self.grace_cooldown()
+    }
+
+    /// A founding within this many ticks of the owner's previous one
+    /// continues its grace, never starts a new one (at least twice the
+    /// grace either way; not saved).
+    pub fn set_grace_carry_min_ticks(&mut self, ticks: u64) {
+        self.grace_carry_min_ticks = ticks;
         self.rebuild_grace_starts();
     }
 
