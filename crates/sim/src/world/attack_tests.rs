@@ -805,3 +805,22 @@ fn hungry_hunters_take_bright_prey_and_aversions_fade() {
     aversive.retain(|&i| w.organisms[i].bright_aversion);
     assert!((n / 3..2 * n / 3).contains(&aversive.len()), "{} of {n} still averse", aversive.len());
 }
+
+/// Grace carry-over runs from the earlier lineage's end, as the server's
+/// re-founding window does (playtest 9: a lineage older than the window
+/// retired and re-founded with a brand-new grace).
+#[test]
+fn a_refounding_right_after_an_old_lineage_ends_gets_no_fresh_grace() {
+    let mut w = flat_world(1500.0);
+    w.config.balance.attack_grace = 2.0;
+    let tpd = w.config.ticks_per_day as u64;
+    w.set_grace_carry_min_ticks(10 * tpd);
+    w.tick = 5;
+    place(&mut w, HUNTER, &hunter(), Vec2::new(10.5, 10.5));
+    // Long past the carry window since the founding, the lineage retires.
+    w.tick += 40 * tpd;
+    w.retire_player(HUNTER);
+    let b = place(&mut w, HUNTER, &hunter(), Vec2::new(20.5, 20.5));
+    assert_eq!(w.lineage_grace_ticks(w.organisms[b].lineage), None, "continues the old, run-out grace");
+    assert_eq!(w.grace_start_for(HUNTER, w.tick), 5);
+}
