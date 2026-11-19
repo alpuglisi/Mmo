@@ -129,6 +129,21 @@ pub fn survey_price(alive: usize) -> u64 {
     SURVEY_BASE + alive as u64 / SURVEY_PER_ANIMALS
 }
 
+/// Radius in tiles of a pasture restoration (`Game::restore_pasture`).
+pub const RESTORE_RADIUS: f32 = 12.0;
+/// Renown per living member of the lineage for a pasture restoration (at
+/// least [`RESTORE_MIN`]), doubled for each one already bought within a
+/// ranked season's length: a sink that scales with the leaders (playtest 8:
+/// 3,200–19,990 renown unspent).
+pub const RESTORE_PER_ANIMAL: u64 = 1;
+pub const RESTORE_MIN: u64 = 200;
+
+/// The price of a pasture restoration for a lineage of `alive`, the
+/// `bought`-th within the window.
+pub fn restore_price(alive: usize, bought: u32) -> u64 {
+    (alive as u64 * RESTORE_PER_ANIMAL).max(RESTORE_MIN) << bought.min(16)
+}
+
 /// Renown for a first nameplate (a cosmetic sink for leaders).
 pub const NAMEPLATE_PRICE: u64 = 500;
 /// Renown to change a nameplate afterwards.
@@ -298,6 +313,9 @@ pub struct Economy {
     pub reinforce_days: BTreeMap<PlayerId, Vec<u64>>,
     /// The simulated day of each player's recent provisions (`provision`).
     pub provision_days: BTreeMap<PlayerId, Vec<u64>>,
+    /// The simulated day of each player's recent pasture restorations
+    /// (`restore_pasture`; absent from older saves: none).
+    pub restore_days: BTreeMap<PlayerId, Vec<u64>>,
     /// The day each player's last lineage ended, retired or died out
     /// (re-founding soon after costs founders: `Game::refound_terms`).
     pub retired_day: BTreeMap<PlayerId, u64>,
