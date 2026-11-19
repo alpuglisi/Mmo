@@ -1635,7 +1635,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   append(tabs.matings, [
     h('h3', {}, 'Request a directed mating'), matingForm.el,
     h('h3', {}, 'Incoming requests'), incomingEl, matePrefsEl,
-    h('h3', {}, 'My open offers'), openEl,
+    h('h3', {}, 'Open offers and agreements'), openEl,
     h('h3', {}, 'Recent outcomes'), closedEl,
   ]);
 
@@ -1828,13 +1828,24 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (Date.now() - previewAt > 3000 && partner.value !== '') void updateCompat();
       slots.textContent = `${s.slots_left} directed-mating slot${s.slots_left === 1 ? '' : 's'} left this season.`;
     }
+    // One tap to put the chosen adult on the market (playtest 12: nobody else listed all game).
+    const listIt = h('button', { class: 'secondary', id: 'mating-list-it', title: 'List this adult on the market: anyone may buy one mating with it' }, 'List it for 10') as HTMLButtonElement;
+    listIt.addEventListener('click', async () => {
+      const m = Number(mine.value);
+      if (!m) return model.toast('error', 'Choose one of your adults to list.');
+      if (!(await confirmDialog({ id: 'list-it-confirm', title: `List #${m} on the market for 10 renown?`, ok: 'List it',
+        body: 'Anyone may buy one mating with it; a listing\'s sale pays no market fee. Change the price or withdraw it in the Market tab.' }))) return;
+      const r = await send({ type: 'create_listing', organism: m, fee: 10 });
+      if (r.ok) model.toast('info', `#${m} listed for 10 renown (no market fee on a listing's sale).`);
+      else if (r.error && !LOCAL_CODES.has(r.error.code)) model.toast('error', friendlyError(r.error));
+    });
     const el = h('div', { class: 'form' },
       h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'My adult'), mine),
       h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Partner'), partnerPick),
       partnerNote,
       h('div', { class: 'row' }, h('label', { class: 'partner-id' }, 'Partner id', partner), h('label', {}, 'Price', price)),
       compat,
-      h('div', { class: 'row' }, submit, walk), slots,
+      h('div', { class: 'row' }, submit, walk, listIt), slots,
       h('p', { class: 'muted small' }, `Pick a partner from the list, or on the map ("Request mating…"). Within your own lineage the pair mates at once when within ${MEETING_TILES} tiles; another player must agree, then the two must meet.`));
     return {
       el,
@@ -1921,8 +1932,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     }, (row, e) => {
       setText(row.querySelector('.offer-line')!, offerLine(e.offer));
       // How far the walk would be, before accepting (playtest 10): the server's figure, else the client's own.
+      // An offer to the lineage meets halfway; one to your animal three quarters of the way to it (playtest 12).
       const apart = e.offer.apart !== undefined
-        ? `About ${e.offer.apart} tiles apart: they meet three quarters of the way to your animal, which walks the last quarter.`
+        ? (e.offer.lineage !== undefined
+          ? `Your nearest suitable animal is about ${e.offer.apart} tiles away: they would meet halfway.`
+          : `About ${e.offer.apart} tiles apart: they meet three quarters of the way to your animal, which walks the last quarter.`)
         : apartText(e.offer, s?.organisms ?? [], s?.nearby ?? []);
       setText(row.querySelector('.offer-time')!, [offerTime(e.offer), meetText(e.offer, model.player), apart].filter(Boolean).join(' '));
       const pick = row.querySelector<HTMLSelectElement>('.pick-own');
@@ -1974,7 +1988,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           h('button', { class: 'secondary', onclick: () => void send({ type: 'cancel_mating', request: e.offer.id }) }, 'Cancel')));
     }, (row, e) => {
       setText(row.querySelector('.offer-line')!, offerLine(e.offer));
-      setText(row.querySelector('.offer-time')!, [offerTime(e.offer), meetText(e.offer, model.player)].filter(Boolean).join(' '));
+      // Outgoing pending offers say how far the walk would be too (playtest 12), and an old animal its age.
+      const away = e.offer.status === 'pending' && e.offer.apart !== undefined && e.offer.from_player === me
+        ? `About ${e.offer.apart} tiles from ${e.offer.lineage !== undefined ? 'their nearest suitable animal' : 'the partner'}.` : null;
+      const age = e.offer.mine_age && e.offer.mine_age[0] >= 0.8 * e.offer.mine_age[1]
+        ? `#${e.offer.mine} is ${e.offer.mine_age[0]} of about ${e.offer.mine_age[1]} days old.` : null;
+      setText(row.querySelector('.offer-time')!, [offerTime(e.offer), meetText(e.offer, model.player), away, age].filter(Boolean).join(' '));
       const note = row.querySelector<HTMLElement>('.offer-note');
       if (note) {
         const mineId = e.offer.from_player === me ? e.offer.mine : e.offer.partner;

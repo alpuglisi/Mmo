@@ -843,7 +843,9 @@ async function main() {
     // Settlement: the ledgers must agree with the outcome.
     const [annLedger, bobLedger] = [await ledgerOf(page), await ledgerOf(bob)];
     const entry = (l, kind) => l.entries.find((e) => e.kind === kind && e.offer === bought.id);
-    if (!entry(bobLedger, 'escrow') || entry(bobLedger, 'escrow').delta !== -fee) throw new Error(`no escrow entry: ${JSON.stringify(bobLedger.entries.slice(0, 5))}`);
+    // The escrow going in (a completed mating adds a 0-delta "paid out" line too).
+    const into = bobLedger.entries.find((e) => e.kind === 'escrow' && e.offer === bought.id && e.delta < 0);
+    if (!into || into.delta !== -fee) throw new Error(`no escrow entry: ${JSON.stringify(bobLedger.entries.slice(0, 5))}`);
     if (fin.status === 'completed') {
       // A fixed listing pays no market fee (playtest 11): the seller gets it all.
       const net = fee;

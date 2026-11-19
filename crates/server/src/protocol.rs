@@ -1151,6 +1151,10 @@ pub struct OfferView {
     /// Why an accepted agreement's meeting point isn't the usual one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meet_note: Option<String>,
+    /// The requester's animal's age and lifespan in days (an old animal may
+    /// die before the two meet).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mine_age: Option<[f32; 2]>,
     /// A long lone walk for the requester's animal: what to watch for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub walk_warning: Option<String>,
@@ -1965,6 +1969,9 @@ pub struct ShopView {
     pub reinforce_blocked: Option<String>,
     /// Kept (destroyed) from every stud fee or price paid out, percent.
     pub market_fee_percent: u64,
+    /// What a fixed listing's sale pays (0: listings are fee-free).
+    #[serde(default)]
+    pub listing_fee_percent: u64,
     /// Royalty: renown a day per percentage point of all alleles that are
     /// yours and live in other players' lineages.
     pub royalty_per_point: f64,
@@ -2360,6 +2367,10 @@ pub struct LedgerTotals {
     pub royalties: u64,
     /// Paid into escrow.
     pub escrow: u64,
+    /// Of that, paid out to sellers (matings that ran); the rest came back
+    /// as refunds or is still held.
+    #[serde(default)]
+    pub escrow_paid: u64,
     pub sales: u64,
     pub refunds: u64,
     /// Spent in the shop.
