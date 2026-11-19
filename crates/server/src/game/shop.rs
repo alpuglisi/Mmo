@@ -188,7 +188,7 @@ impl Game {
             slots_bought: bought,
             slot_price: economy::slot_price(bought),
             reinforce_size: economy::REINFORCE_SIZE,
-            reinforce_price: economy::reinforce_price(reinforced),
+            reinforce_price: self.reinforce_price_quote(player, reinforced),
             reinforce_max_alive: max_alive,
             reinforce_blocked: self.reinforce_blocked(player).err().map(|e| e.message),
             market_fee_percent: economy::MARKET_FEE_PERCENT,
@@ -223,6 +223,21 @@ impl Game {
     fn recent_count(&self, days: Option<&Vec<u64>>) -> u32 {
         let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
         days.map_or(0, |d| d.iter().filter(|&&day| day + window > today).count() as u32)
+    }
+
+    /// The price of the next reinforcement: now, or with the window full,
+    /// on the day it frees a slot (playtest 8: a blocked purchase quoted
+    /// 600, the price with every recent purchase still counted, and the
+    /// next one cost 150).
+    fn reinforce_price_quote(&self, player: PlayerId, reinforced: u32) -> u64 {
+        let Some((day, _)) = self.reinforce_next(player) else { return economy::reinforce_price(reinforced) };
+        let window = self.cfg.season_days.max(1);
+        let then = self
+            .economy
+            .reinforce_days
+            .get(&player)
+            .map_or(0, |d| d.iter().filter(|&&x| x + window > day).count() as u32);
+        economy::reinforce_price(then)
     }
 
     /// When the reinforcement window frees a slot, if it is full: the day
@@ -365,7 +380,11 @@ impl Game {
                     x: coarse(mid.x),
                     y: coarse(mid.y),
                     members: g.members.div_ceil(10) * 10,
-                    territory: g.territory.map(|t| [t.center.x.round(), t.center.y.round(), t.radius.round()]),
+                    // Or the one it holds while away (playtest 8: left out).
+                    territory: g
+                        .territory
+                        .or_else(|| self.world.territory_away(p, g.id))
+                        .map(|t| [t.center.x.round(), t.center.y.round(), t.radius.round()]),
                 });
             }
         }
@@ -401,6 +420,14 @@ impl Game {
             .map_err(|why| ErrorInfo::new("bad_name", format!("that name can't be used: {why}")))?;
         if self.impersonates(player, &name, names::Kind::Species) {
             return Err(ErrorInfo::new("bad_name", "an animal's name can't look like another player's name"));
+        }
+        // Nor a wild species' or a rival's lineage name (playtest 8: a stud
+        // listed under a rival's lineage name).
+        if self.wild_name(&name) {
+            return Err(ErrorInfo::new("bad_name", "that name can't be used: it is a wild species' name"));
+        }
+        if self.rival_name(player, &name) {
+            return Err(ErrorInfo::new("name_taken", "another player's lineage or species has that name"));
         }
         match self.world.organism(organism) {
             Some(o) if o.owner == player => {}
@@ -440,6 +467,9 @@ impl Game {
         }
         if self.impersonates(player, &title, names::Kind::Title) {
             return Err(ErrorInfo::new("bad_title", "that title can't be used: it looks like another player's name"));
+        }
+        if self.rival_name(player, &title) {
+            return Err(ErrorInfo::new("bad_title", "that title can't be used: it is another player's lineage name"));
         }
         let price = if self.economy.nameplates.contains_key(&player) {
             economy::NAMEPLATE_CHANGE_PRICE
@@ -507,24 +537,20 @@ impl Game {
     /// lineage "Meadow vole" would found a second species of that name
     /// (playtest 6).
     pub(crate) fn wild_name(&self, text: &str) -> bool {
-        // Articles and digits don't make it another name ("The Meadow vole",
-        // "Meadow vole 2": playtest 7).
-        let k = names::name_key(text);
+        // Articles, digits and decorations don't make it another name ("The
+        // Meadow vole", "Meadow vole 2", "Meadow vole II", "Red Foxes":
+        // playtests 7 and 8).
         let wild_lineages = self.world.lineages.iter().filter(|l| l.owner == WILD).map(|l| l.name.as_str());
         let wild_species =
             (self.world.chronicle.species.species.iter()).filter(|s| s.dominant == WILD).map(|s| s.name.as_str());
-        k.len() >= 4 && wild_lineages.chain(wild_species).any(|n| names::name_key(n) == k)
+        wild_lineages.chain(wild_species).any(|n| names::copies(text, n))
     }
 
     /// Whether `text` copies the name of another player's living lineage or
-    /// species (`names::name_key` alike): playtest 7 founded a second "Ash
-    /// Fang Pack" beside its owner's.
+    /// species (`names::copies`: "Sunbright Drove II", "New Sunbright Drove"
+    /// too): playtest 7 founded a second "Ash Fang Pack" beside its owner's.
     pub(crate) fn rival_name(&self, player: PlayerId, text: &str) -> bool {
-        let k = names::name_key(text);
-        // At least 4 letters left: "L1" and "L2" aren't copies.
-        if k.len() < 4 {
-            return false;
-        }
+        // At least 4 letters left: "L1" and "L2" aren't copies (`copies`).
         let counts = self.world.lineage_counts();
         let lineages = (self.world.lineages.iter().enumerate())
             .filter(|(l, x)| x.owner != WILD && x.owner != player && counts.get(*l).is_some_and(|c| c.alive > 0))
@@ -532,7 +558,7 @@ impl Game {
         let species = (self.world.chronicle.species.species.iter())
             .filter(|s| s.dominant != WILD && s.dominant != player && s.is_alive())
             .map(|s| s.name.as_str());
-        lineages.chain(species).any(|n| names::name_key(n) == k)
+        lineages.chain(species).any(|n| names::copies(text, n))
     }
 
     /// Who may name species `s`: the player credited with a split, or for a
@@ -638,6 +664,11 @@ impl Game {
     pub(super) fn buy_mating_slot(&mut self, player: PlayerId) -> Result<ShopView, ErrorInfo> {
         if self.lineage_of(player).is_none() {
             return Err(ErrorInfo::new("no_lineage", "found a lineage first"));
+        }
+        // Playtest 8: slots were sold to a player whose lineage had retired
+        // (they lapse with the weather season, unused).
+        if self.is_extinct(player) {
+            return Err(ErrorInfo::new("no_lineage", "your lineage has no living animals: found a new one first"));
         }
         let bought = self.world.bonus_slots(player);
         let price = economy::slot_price(bought).ok_or_else(|| {

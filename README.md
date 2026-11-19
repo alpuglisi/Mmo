@@ -1070,6 +1070,8 @@ square MP4s and GIFs, with a manifest of titles, captions and hashtags. See
 
 ### HTTP API (JSON)
 
+Every `day` field in the API (and in WebSocket messages) counts from 0: day 0 is the world's first. The client and every text the server writes count from 1, so `founded_day` 56 is "founded on day 57" on the Lineage tab, and `reinforce_next_day` 165 is "day 166" in the refusal.
+
 | Method and path | Auth | What it does |
 | --- | --- | --- |
 | `POST /api/register` `{name, password}` | | Create an account (name 3–24 of `[A-Za-z0-9_-]`, password ≥ 8 characters and ≤ 1024 bytes). `201 {token, player, name}`; `409 name_taken` |
@@ -1235,7 +1237,7 @@ Server → client:
 | --- | --- |
 | `welcome` `{player, name, lineage, proto?}` | On connect; `proto: 2` when the connection speaks protocol 2 (absent for protocol 1) |
 | `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration` (the main group's), `groups` (yours by id, the main group always: `{id, members, adults, migration?, territory?: {x, y, radius, claimed_tick}, rally?: {x, y, radius, expires_tick}, max_radius, claim_ready_tick?, obedience}` (`obedience`: the members' mean obedience gene, to hundredths)), `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`, `group` when not 0; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one; `heading`, its facing as one of 32 directions, and `vision`, its eyes for the vision cones: see *Vision cones* below), `nearby` (others in the window, also with `look`; never a heading or eyes), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements), `grace` while your lineage's newcomer grace lasts (`{days_left, until_tick, real_seconds_left?}`: game days to a tenth, the tick it ends, real seconds rounded up to tens; absent otherwise), and `protected: true` on a `nearby` organism whose lineage is under its grace |
-| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command, with its `id` (also for a message that doesn't parse, when its `id` can be read: a number, a numeric string, or found in text that isn't valid JSON: `bad_message`, named after its `type` if that is a command, else `message`, and never with the parser's text). Day numbers in `day` fields count from 0; player-facing texts (ledger, alerts) count from 1. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor`, the request rules' `requests_refused` (the partner's owner blocked you or declines every request), `too_many_requests` (at most 3 requests to one player an hour; `detail.ticks_left`), `too_many_blocked`, `partner_unavailable` (another player's female can't mate now: her pregnancy is not told), `out_of_sight` (`set_view`; `request_mating` and `preview_mating` for a partner not within your animals' sight plus 16 tiles, not on the market and not in your offers, and for an id that doesn't exist), `no_such_player` (`mating_prefs`; `detail.players`), `self_block`, `newcomer_grace` and `own_grace` (`possess_attack`; `detail.days_left`, `detail.real_seconds_left`), `no_grace` (`end_grace`), `bad_title` and `bad_name` (every chosen name, lineage and design names included, goes through one filter, `crate::names`: ASCII letters, digits, single spaces and `. , ' ! ? - : + # ( )` only, nothing passing for the server, its staff, the wild or another player, also read run together ("G.M.", "TheOwner", "SupportTeam", "the wild") and with trailing digits dropped ("Herdmaster" for "Herdmaster5"); a title can't contain another player's name; names saved before the filter are cleaned on load; `/api/design/compatibility` gives `name_warning` for a look-alike before Found), `bad_price` (also for a price past `u64::MAX`), `too_large` (a command message over 16 KB: answered with its id when readable, the connection stays open; a design body over 64 KB), `duplicate_gene` (two trait keys naming one gene, or one key twice), `bad_coordinates` also for a bare `NaN`/`Infinity` and a `set_view` radius of 0 or less, `in_auction` (a dam in an open auction is locked against other requests, acceptances, purchases, bids and directed matings until it closes or is withdrawn; `detail.listing`) |
+| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command, with its `id` (also for a message that doesn't parse, when its `id` can be read: a number, a numeric string, or found in text that isn't valid JSON: `bad_message`, named after its `type` if that is a command, else `message`, and never with the parser's text). Day numbers in `day` fields count from 0; player-facing texts (ledger, alerts) count from 1. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor`, the request rules' `requests_refused` (the partner's owner blocked you or declines every request), `too_many_requests` (at most 3 requests to one player an hour; `detail.ticks_left`), `too_many_blocked`, `partner_unavailable` (another player's female can't mate now: her pregnancy is not told), `out_of_sight` (`set_view`; `request_mating` and `preview_mating` for a partner not within your animals' sight plus 16 tiles, not on the market and not in your offers, and for an id that doesn't exist), `no_such_player` (`mating_prefs`; `detail.players`), `self_block`, `newcomer_grace` and `own_grace` (`possess_attack`; `detail.days_left`, `detail.real_seconds_left`), `no_grace` (`end_grace`), `bad_title` and `bad_name` (every chosen name, lineage and design names included, goes through one filter, `crate::names`: ASCII letters, digits, single spaces and `. , ' ! ? - : + # ( )` only, nothing passing for the server, its staff, the wild or another player, also read run together ("G.M.", "TheOwner", "SupportTeam", "the wild"), per word (a staff word at a word's end, or inside after a lead-in or before a role word: "claudebot", "realclaudebot", "mygmherd", "serverbot"; common words holding one pass: "Taproot", "Ecosystem", "Badminton", "Modesty", "Wildly") and with digits around it ("2claude2"); another player's name with its digits moved ("8Rulebender") is a look-alike, and so is a new account's with up to 2 letters more ("Herdmaster8x"); lineage, species and animal names and titles can't copy a wild species' or a rival's lineage name, decorations aside ("Meadow vole II", "New Sunbright Drove"); a title can't contain another player's name; names saved before the filter are cleaned on load; `/api/design/compatibility` gives `name_warning` for a look-alike before Found), `bad_price` (also for a price past `u64::MAX`), `too_large` (a command message over 16 KB: answered with its id when readable, the connection stays open; a design body over 64 KB), `duplicate_gene` (two trait keys naming one gene, or one key twice), `bad_coordinates` also for a bare `NaN`/`Infinity` and a `set_view` radius of 0 or less, `in_auction` (a dam in an open auction is locked against other requests, acceptances, purchases, bids and directed matings until it closes or is withdrawn; `detail.listing`) |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
 | `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe), `market` (someone bought a mating with your listed organism, a sale paid to you, a price paid or refunded from your escrow, a listing closed by expiry or death, an achievement's renown bonus, a bid on your auction, outbid and refunded, an auction won, sold, unsold or failed) |
@@ -9277,6 +9279,62 @@ and 8 of 8 (8 and 8 off; viable 7 and 8 either way).
 | --- | --- |
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.77 (± 0.16; 11.82 with the five tunables off). Every lineage survives 12 of 12. |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
+
+### Playtest 8: server Lows
+
+Server-side Lows from `docs/playtest-8.md`, fixed or explained:
+
+- **Prey check.** It said "feeds 0–2" everywhere near the herd a pack
+  lived on. Poisonous prey now counts as often as a hungry hunter takes it
+  (`World::hunter_avoidance` at full hunger) instead of not at all.
+- **Shop.**
+  - No mating slots for a player with no living lineage.
+  - A blocked reinforcement quotes the next one's price, as of the day the
+    window frees a slot. It quoted 600 with every recent purchase still
+    counted, and the next cost 150.
+  - `reinforce_next_day` counts days from 0 like every API day; the reply's
+    text counts from 1.
+- **Survey.** It includes territories held while their group is away. It
+  surveys from the largest group when the main group is empty (it was
+  refused with 88 animals alive), and says "1 rival group".
+- **Drinking spots.** `drinkable_tiles` counts tiles beside drinkable
+  water. Snow made nearly every winter tile a "drinking spot" (912 in a
+  17-tile circle).
+- **Feed days.** `mating_update` carries the day, and the client's feed
+  entry uses it.
+- **Alert ids.** Ids never repeat. A per-player counter is saved with the
+  game; an id was reused when the alert holding the highest one was
+  dropped.
+- **Ledger totals.** The reply carries `totals` by kind over every entry
+  since counting began. "Spent in the shop 0" counted only the entries
+  sent.
+- **Founder deaths.** The first founder lost to hunger, thirst, cold, heat
+  or winter sleep is told per lineage and cause; the daily summary counts
+  the rest. Old age was folded the same way in round 8.
+- **Grace preview.** It says the day this founding's grace would end, so a
+  change with the date or the founders is explained.
+- **Slow die-off.** For a mostly sleeping herd, it advises keeping the
+  awake ones fed and fattening the herd before the next sleep. When births
+  hide the losses (954 → 1,251) it says so instead of "dying off".
+- **Over budget.** The refusal says by how much and what to lower, and the
+  designer no longer sends an over-budget check.
+- **Drift alert.** Fixed on main: the home a migration left no longer
+  counts until the group has a new one.
+- **Ledger income a day early.** Already fixed on main: income is dated
+  the day it is for.
+- **"Lost since founding" dropped.** The server's counts only grow. Two
+  overlapping stats requests could resolve out of order in the client,
+  which now keeps the newest.
+- **Founding day, API against UI.** The API counts days from 0, the client
+  and every server text from 1. This is now stated under *HTTP API*.
+- **Group sizes, state against replies.** Not reproduced. Both count the
+  same living members of the group at the time.
+- **Founders land old.** `Balance::founder_youth` (1), on by default from
+  snapshot version 81, off at 0 for older saves
+  (`serde_util::before_v81`). A player's founders in a running world land
+  at most 10% of their lifespan past maturity instead of 30%. One landed
+  85 days old 11 days after founding, and the first died of old age 69
+  days in. A new world's founding is unchanged.
 
 ### Playtest 7: rivals and drought sleepers
 

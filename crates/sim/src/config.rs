@@ -1383,10 +1383,28 @@ pub struct Balance {
     /// Prey per hunter from which a player pack's larder is full
     /// (`prey_larder`; gone at half of it), in place of `apply::PREY_FULL`
     /// (40) and `apply::PREY_NONE` (20): playtest 8's best pack peaked at
-    /// 190–240 beside herds of 2,000 (M12). 0: the constants. Version 83
-    /// (`serde_util::before_v83`).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v83"))]
+    /// 190–240 beside herds of 2,000 (M12). 0: the constants.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v77"))]
     pub pack_prey: f32,
+    /// Playtest 8 founders (version 81; off at 0, what snapshots before
+    /// version 81 read, `serde_util::before_v81`). A player's founders in a
+    /// running world land as young adults: at most 10% of their lifespan
+    /// past maturity instead of 30% (playtest 8: a founder 85 days old 11
+    /// days after landing; the first died of old age 69 days after the
+    /// founding). Reinforcements already land at most 5% past it. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v81"))]
+    pub founder_youth: f32,
+    /// Founding search, farther-sighted (version 82; off at 0, what
+    /// snapshots before version 82 read, `serde_util::before_v82`): with
+    /// `founding_rivals`, other players' groups count where they range and
+    /// are headed, not only where their animals stand: each group's middle
+    /// with its forage circle, its migration target and its rally count as
+    /// a territory (no home inside, and marked down near); and predators
+    /// (carnivory above 0.6) count 3 times as much, out to twice the
+    /// range. Playtest 8: late joiners landed inside a third group's
+    /// territory 8 days later, and beside a pack.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v82"))]
+    pub rival_reach: f32,
 }
 
 impl Balance {
@@ -1693,12 +1711,14 @@ impl Default for Balance {
             clutch_split: 1.0,
             dry_spell: 1.0,
             pack_prey: 40.0,
+            founder_youth: 1.0,
+            rival_reach: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 176;
+    pub const FIELD_COUNT: usize = 178;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1884,6 +1904,8 @@ impl Balance {
             ("clutch_split", &mut self.clutch_split),
             ("dry_spell", &mut self.dry_spell),
             ("pack_prey", &mut self.pack_prey),
+            ("founder_youth", &mut self.founder_youth),
+            ("rival_reach", &mut self.rival_reach),
         ]
     }
 
