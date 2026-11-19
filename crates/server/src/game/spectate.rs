@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, HashMap};
 use evo_sim::WILD;
 use serde::{Deserialize, Serialize};
 
-use super::{catastrophe_view, Game};
+use super::Game;
 use crate::appearance::Appearance;
 use crate::protocol::{CatastropheView, ClockView};
 
@@ -145,7 +145,13 @@ impl Game {
             height: w.map.height,
             cell: SPECTATE_CELL,
             player_cell: PLAYER_CELL,
-            catastrophes: w.chronicle.catastrophes.iter().filter(|c| c.is_active()).map(catastrophe_view).collect(),
+            catastrophes: w
+                .chronicle
+                .catastrophes
+                .iter()
+                .filter(|c| c.is_active())
+                .map(|c| self.catastrophe_view(c))
+                .collect(),
             lineages,
         }
     }
