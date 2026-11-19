@@ -11696,7 +11696,7 @@ mod tests {
         assert_eq!(back(&g), 20 + 5, "the price and the hold fee back");
         // Short of renown, the seller owes it (taken from what comes in next,
         // maybe already this tick's income).
-        let owed = g.economy.refound_debt.get(&1).is_some()
+        let owed = g.economy.refound_debt.contains_key(&1)
             || g.ledger(1, 50).iter().any(|e| e.text.contains("toward renown owed"));
         assert!(owed, "the seller owes what it lacked: {:?}", g.ledger(1, 5));
 
