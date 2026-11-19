@@ -1264,7 +1264,9 @@ pub struct Balance {
     // a late cold flier still reached first place; toxic + bright was in
     // every leading lineage.
     /// Toxins cost food to make: hunger × `1 + 0.4 × toxins × toxin_upkeep`
-    /// (+24% at toxins 0.6), whatever the body's metabolism. 0: off.
+    /// (+12% at toxins 0.6 and the default 0.5), whatever the body's
+    /// metabolism. At 1 and 2 it hurt the toxic fliers and the playtest 2
+    /// egg layer but not playtest 6's herd (dominance replay). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v62"))]
     pub toxin_upkeep: f32,
     /// A hungry hunter heeds a warning less: its learned avoidance of a
@@ -1289,10 +1291,15 @@ pub struct Balance {
     /// cluster. 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v62"))]
     pub speciation_credit: f32,
-    /// A sitting parent covers 3 eggs fully: a bigger clutch's brooded
-    /// temperature is `site + (brooded − site) × (3 / eggs)^clutch_cover`
-    /// (a clutch of 6 at 1: halfway to the nest's own temperature), so a
-    /// big incubated clutch chills on cool nights. 0: off.
+    /// A sitting parent covers 4 eggs fully: a bigger clutch's brooded
+    /// temperature is `site + (brooded − site) × (4 / eggs)^clutch_cover`
+    /// (a clutch of 6 at 2.1: 42% of the way to the brooded temperature),
+    /// so a big incubated clutch chills on cool nights. Tuned in the
+    /// dominance replay with 3 eggs covered (1.25 there gave the same 42%
+    /// for 6 eggs, and Herdmaster6's herd 13 of 40 titles); 4 are covered so
+    /// the wild burrowing omnivores' four-egg clutches are spared (with 3,
+    /// two wild prey species died out on single seeds in `predlong`).
+    /// 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v62"))]
     pub clutch_cover: f32,
     // Playtest 6 predators (version 63; *Playtest 6: predators and
@@ -1598,11 +1605,11 @@ impl Default for Balance {
             dry_beds: 1.0,
             drink_reach: 1.0,
             founding_drought: 1.0,
-            toxin_upkeep: 1.0,
+            toxin_upkeep: 0.5,
             hungry_hunters: 1.0,
             toxin_source: 1.0,
             speciation_credit: 1.0,
-            clutch_cover: 1.0,
+            clutch_cover: 2.1,
             prey_larder: 1.0,
         }
     }
