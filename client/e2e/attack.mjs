@@ -269,7 +269,11 @@ async function main() {
         const far = await page.evaluate(([px, py]) => window.evo.model.state.nearby.filter((o) => o.owner === 0)
           .sort((a, b) => Math.hypot(a.x - px, a.y - py) - Math.hypot(b.x - px, b.y - py))[0], [p.x, p.y]);
         if (far) await send(page, { type: 'order_move', organism: p.id, x: far.x, y: far.y });
-        await page.waitForTimeout(2500);
+        // Until one is within reach (a slow machine walks slower), or a while.
+        await waitFor('a wild animal within reach', async () => {
+          const q = await possessedNow(page);
+          return q && (await wildNear(page, q)).length > 0 ? true : null;
+        }, 15000).catch(() => null);
         continue;
       }
       for (const target of wild.slice(0, 4)) {
