@@ -1207,7 +1207,9 @@ pub struct Balance {
     pub flight_upkeep: f32,
     /// The most a predator lineage's learned avoidance of a toxic prey
     /// lineage reaches (`World::toxic_avoidance`): an honest signal is not
-    /// immunity, and hunters still try a bright toxic prey some days.
+    /// immunity, and hunters still try a bright toxic prey some days. 0.85
+    /// until playtest 7; 0.95 since `Balance::honest_signals` caps the whole
+    /// avoidance (at 0.85 the small bright toxic herds were hunted out).
     /// 0: uncapped (a fully learned, bright prey was never taken).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v56"))]
     pub avoid_cap: f32,
@@ -1645,7 +1647,7 @@ impl Default for Balance {
             brood_care: 1.0,
             thermo_hybrid: 0.7,
             flight_upkeep: 0.25,
-            avoid_cap: 0.85,
+            avoid_cap: 0.95,
             cold_heat: 1.0,
             species_credit: 1.0,
             dry_beds: 1.0,

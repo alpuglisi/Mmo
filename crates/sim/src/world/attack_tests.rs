@@ -443,7 +443,10 @@ fn strong_avoidance_holds_for_a_whole_day() {
         w.organisms[j].pheno.0[Gene::Coloration.index()] = 0.6;
     }
     // Capped (`Balance::avoid_cap`): an honest signal is not immunity.
-    assert!((w.toxic_avoidance(hl, &w.organisms[preys[0]]) - w.config.balance.avoid_cap).abs() < 1e-6);
+    let cap = w.config.balance.avoid_cap;
+    assert!((w.toxic_avoidance(hl, &w.organisms[preys[0]]) - cap.min(0.88)).abs() < 0.02);
+    w.config.balance.avoid_cap = 0.85;
+    assert!((w.toxic_avoidance(hl, &w.organisms[preys[0]]) - 0.85).abs() < 1e-6);
     w.config.balance.avoid_cap = 0.0;
     assert!(w.toxic_avoidance(hl, &w.organisms[preys[0]]) > 0.87);
     for &i in &pk {

@@ -5357,7 +5357,7 @@ impl Game {
             self.history.back().and_then(|r| r.lineages.iter().find(|e| e.lineage == lineage).map(|e| (r, e)))
         {
             let lost: u64 = e.eggs_lost.values().sum();
-            if lost >= EGG_WARN_MIN && lost > e.born as u64 {
+            if lost >= EGG_WARN_MIN && lost > e.born {
                 let (cause, n) =
                     e.eggs_lost.iter().max_by_key(|(_, &n)| n).map(|(c, &n)| (c.as_str(), n)).unwrap_or(("", 0));
                 let season = season_of(w, r.day);
