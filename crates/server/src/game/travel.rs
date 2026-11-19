@@ -33,7 +33,10 @@ const LASTING_WATER: f32 = 1.0;
 pub(super) const SLEEP_LOOKAHEAD_DAYS: u32 = 7;
 /// Share of a group asleep or bedding down within the lookahead at which
 /// an order warns.
-pub(super) const SLEEPY_WARN_SHARE: f32 = 0.5;
+pub(super) const SLEEPY_WARN_SHARE: f32 = 0.4;
+/// The longest lookahead (days): a trip's own length up to this (playtest
+/// 9: a 13.6-day trip ordered a day before winter, warned of nothing).
+pub(super) const SLEEP_LOOKAHEAD_MAX: u32 = 30;
 /// Dryness at the destination past which only lasting water counts: the
 /// drought line (0.5 is normal).
 pub(super) const DRY_DESTINATION: f32 = ESTIVATION_DRYNESS;
@@ -50,6 +53,23 @@ pub(super) struct JourneyFood {
     /// Other plant eaters along the way.
     pub others: usize,
 }
+
+/// The water along a trip (`Game::route_water`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct RouteWater {
+    /// The longest stretch of the way (tiles) with no drinking spot within
+    /// [`WATER_REACH`]; past the drought line only water that lasts counts.
+    pub dry_tiles: f32,
+    /// Whether some of the way is past the drought line.
+    pub drought: bool,
+    /// Share of the group already thirsty (thirst at [`THIRSTY`] or more).
+    pub thirsty: f32,
+}
+
+/// Thirst (0–100) at which a member counts as already thirsty before a trip.
+pub(super) const THIRSTY: f32 = 50.0;
+/// Days of a dry stretch at which a trip warns (a thirsty group: half that).
+pub(super) const DRY_STRETCH_DAYS: f32 = 2.0;
 
 impl JourneyFood {
     /// The share the trip is rated by: the worse of the way and the arrival.
@@ -184,10 +204,78 @@ impl Game {
             })
             .count();
         let per_animal = need / members.max(1) as f32;
-        let eaten = (need + others as f32 * per_animal) * days.max(1.0);
+        // The group sets out hungry as it is: what it needs to fill up again
+        // comes off the way's plants first (playtest 9: 153% promised to a
+        // herd already 16% parched; 65% too hungry or thirsty to go on).
+        let bal = &self.world.config.balance;
+        let refill: f32 = self
+            .world
+            .organisms
+            .iter()
+            .filter(|o| o.alive && o.owner == player && o.group == group)
+            .map(|o| o.needs.hunger.max(0.0) * o.food_per_hunger() / o.traits.plant_efficiency(bal).max(0.05))
+            .sum();
+        let eaten = (need + others as f32 * per_animal) * days.max(1.0) + refill;
         let route_share = if eaten > 0.0 { (standing / eaten).min(10.0) } else { 1.0 };
         let destination = supports.map(|s| (s as f32 / members.max(1) as f32).min(10.0));
         Some(JourneyFood { route: route_share, destination, others })
+    }
+
+    /// The water along `route`: its longest dry stretch, and how thirsty
+    /// the group already is (playtest 9: a 92%-dry route, no warning).
+    pub(super) fn route_water(&self, player: PlayerId, group: u8, route: &[Vec2]) -> RouteWater {
+        let map = &self.world.map;
+        let ground = map.ground();
+        let (w, h) = (map.width as i32, map.height as i32);
+        let r = WATER_REACH.ceil() as i32;
+        let mut drought = false;
+        let water_near = |p: Vec2, lasting_only: bool| {
+            let (cx, cy) = map.tile_coords(p);
+            (-r..=r).any(|dy| {
+                (-r..=r).any(|dx| {
+                    let (x, y) = (cx as i32 + dx, cy as i32 + dy);
+                    if x < 0 || y < 0 || x >= w || y >= h {
+                        return false;
+                    }
+                    let c = Map::tile_center(x as usize, y as usize);
+                    c.dist(p) <= WATER_REACH
+                        && map.can_drink_at(c)
+                        && (!lasting_only
+                            || (y - 1..=y + 1).any(|ny| {
+                                (x - 1..=x + 1).any(|nx| {
+                                    nx >= 0 && ny >= 0 && nx < w && ny < h && {
+                                        let i = map.idx(nx as usize, ny as usize);
+                                        map.tiles[i].has_drinkable_water() && ground[i].base_water >= LASTING_WATER
+                                    }
+                                })
+                            }))
+                })
+            })
+        };
+        let (mut run, mut longest) = (0.0f32, 0.0f32);
+        for pair in route.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let steps = a.dist(b).ceil().max(1.0) as usize;
+            let step = a.dist(b) / steps as f32;
+            for k in 1..=steps {
+                let p = a + (b - a) * (k as f32 / steps as f32);
+                let dry = map.dryness_at(p) > ESTIVATION_DRYNESS;
+                drought |= dry;
+                if water_near(p, dry) {
+                    run = 0.0;
+                } else {
+                    run += step;
+                    longest = longest.max(run);
+                }
+            }
+        }
+        let (n, thirsty) = self
+            .world
+            .organisms
+            .iter()
+            .filter(|o| o.alive && o.owner == player && o.group == group)
+            .fold((0usize, 0usize), |(n, t), o| (n + 1, t + usize::from(o.needs.thirst >= THIRSTY)));
+        RouteWater { dry_tiles: longest, drought, thirsty: if n == 0 { 0.0 } else { thirsty as f32 / n as f32 } }
     }
 
     /// Rival territories the player can see (within [`OUTLINES_NEAR_GROUP`]

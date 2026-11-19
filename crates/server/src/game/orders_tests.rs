@@ -953,18 +953,37 @@ fn the_daily_check_covers_homes_outgrown_ground_and_says_less_than_a_day() {
     );
 }
 
+/// Kill about a sixth of `player`'s animals (a catastrophe's hit, past
+/// `SURVIVAL_EXPOSED`) and record the low.
+fn hit(g: &mut Game, player: PlayerId) {
+    let n = g.world.organisms.iter().filter(|o| o.alive && o.owner == player).count();
+    for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == player).take(n.div_ceil(6)) {
+        o.alive = false;
+    }
+    g.note_catastrophe_lows();
+}
+
 /// A catastrophe that ends as its season ends counts for that season, not
 /// the next (playtest 5: the severe winter of days 210-240).
 #[test]
 fn survival_counts_in_the_season_the_catastrophe_fell_in() {
     let (mut g, _) = game();
+    // Bob is alive through it too, but never hit: no survival, not in the public list.
+    g.set_name(2, "bob");
+    g.found(2, &design("B")).unwrap();
     g.season = crate::league::SeasonTracker::new(1, 0, 4);
     g.cfg.season_days = 4;
     g.world.schedule_catastrophe(evo_sim::chronicle::CatastropheKind::SevereWinter, 1, Some(3));
-    run_days(&mut g, 6);
+    run_days(&mut g, 2);
+    hit(&mut g, 1);
+    assert!(g.chronicle().catastrophes.active.expect("under way").survivors.is_empty(), "judged when it ends");
+    run_days(&mut g, 4);
     let last = g.last_season_record.clone().expect("season 1 finished");
     let survived: Vec<PlayerId> = last.standings[4].rows.iter().map(|r| r.player).collect();
     assert_eq!(survived, vec![1], "{:?}", last.standings[4]);
+    let ch = g.chronicle();
+    assert_eq!(ch.catastrophes.history[0].survivors, vec![1], "public list: bob wasn't hit");
+    assert!(ch.achievements.players.iter().all(|t| t.player != 2 || t.catastrophes_survived == 0));
     let now = g.season.standings(|p| p.to_string());
     assert!(now[4].rows.is_empty(), "not credited again in season 2: {:?}", now[4]);
 }
@@ -984,6 +1003,9 @@ fn survivors_keep_half_the_lineage_they_started_with() {
     let (l, start) = *g.survival_starts.get(&c).and_then(|m| m.get(&1)).expect("player 1's size at the start");
     assert_eq!(Some(l), g.lineage_of(1));
     assert!(start > 4, "{start}");
+    // Untouched by it: no survival (playtest 9: a benign year made everyone a survivor).
+    assert!(!g.survived(1, c), "not hit");
+    hit(&mut g, 1);
     assert!(g.survived(1, c));
     // Down to under half: not a survivor.
     let keep = (start as f64 * crate::game::SURVIVAL_KEEP).ceil() as usize - 1;
@@ -1409,4 +1431,81 @@ fn migrate_warns_of_sleep_rival_ground_and_drying_water() {
     assert!(shared.others > 0 && shared.route < alone.route, "{alone:?} {shared:?}");
     // And a crowded destination rates the trip.
     assert!(shared.share() <= shared.destination.unwrap() + 1e-6, "{shared:?}");
+}
+
+/// Playtest 9 (M15): a satellite group dwindling or dying says so; a claim
+/// for a starving group says the hold loosens (and the sim's alert just
+/// after doesn't repeat it).
+#[test]
+fn a_dwindling_group_and_a_starving_claim_say_so() {
+    let (mut g, _) = game_with(GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let d = run(&mut g, ClientMsg::SplitGroup { group: 0, organisms: None }).unwrap();
+    let b = d["group"].as_u64().unwrap() as u8;
+    let record = g.daily_record();
+    let mut out = Outbox::new();
+    g.daily_group_checks(&record, &mut out); // the baseline
+    let members: Vec<usize> = (0..g.world.organisms.len())
+        .filter(|&i| g.world.organisms[i].alive && g.world.organisms[i].group == b)
+        .collect();
+    for &i in &members[..members.len().div_ceil(2)] {
+        g.world.organisms[i].alive = false;
+    }
+    g.daily_group_checks(&record, &mut out);
+    let fell = |g: &Game| alerts(g, AlertKind::Group).into_iter().filter(|t| t.contains("has fallen from")).count();
+    assert_eq!(fell(&g), 1, "{:?}", alerts(&g, AlertKind::Group));
+    g.daily_group_checks(&record, &mut out);
+    assert_eq!(fell(&g), 1, "said once");
+    for &i in &members {
+        g.world.organisms[i].alive = false;
+    }
+    g.daily_group_checks(&record, &mut out);
+    assert!(
+        alerts(&g, AlertKind::Group).iter().any(|t| t.contains("has died out")),
+        "{:?}",
+        alerts(&g, AlertKind::Group)
+    );
+    // A claim for the main group while a fifth of it is starving.
+    let n = g.world.organisms.iter().filter(|o| o.alive && o.owner == 1 && o.group == 0).count();
+    for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1 && o.group == 0).take(n.div_ceil(5)) {
+        o.needs.hunger = 95.0;
+    }
+    let home = g.world.group_middle(1, 0).unwrap();
+    let d = run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 6.0 }).unwrap();
+    assert!(d["warning"].as_str().unwrap_or_default().contains("starving or parched now"), "{d}");
+    let before = alerts(&g, AlertKind::Group).len();
+    for _ in 0..g.world.config.ticks_per_day / 4 {
+        for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1 && o.group == 0).take(n.div_ceil(5)) {
+            o.needs.hunger = 95.0;
+        }
+        tick(&mut g);
+    }
+    let after = alerts(&g, AlertKind::Group);
+    assert!(!after[before..].iter().any(|t| t.contains("no longer feeds it")), "not again: {:?}", &after[before..]);
+}
+
+/// Playtest 9 (M11): the journey counts the hunger the group sets out with,
+/// and a dry way warns.
+#[test]
+fn the_journey_counts_hunger_and_dry_ways() {
+    let (mut g, _) = game();
+    let home = g.world.group_middle(1, 0).unwrap();
+    let far = land_away(&g, home, 25.0);
+    let way = [home, far];
+    let fed = g.journey_food(1, 0, &way, 3.0, None).expect("plant eaters").route;
+    for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+        o.needs.hunger = 90.0;
+    }
+    let hungry = g.journey_food(1, 0, &way, 3.0, None).expect("plant eaters").route;
+    assert!(hungry < fed || fed >= 10.0, "{fed} {hungry}");
+    // No water anywhere: the whole way is dry, and thirsty walkers are told.
+    for t in &mut g.world.map.tiles {
+        (t.water_depth, t.snow) = (0.0, 0.0);
+    }
+    for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+        o.needs.thirst = 60.0;
+    }
+    let w = g.route_water(1, 0, &way);
+    assert!(w.dry_tiles >= home.dist(far) - 1.0 && w.thirsty > 0.9, "{w:?}");
+    let d = run(&mut g, ClientMsg::Migrate { x: far.x, y: far.y, group: None }).unwrap();
+    assert!(d["warning"].as_str().unwrap_or_default().contains("with no drinking water"), "{d}");
 }
