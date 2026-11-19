@@ -9538,6 +9538,62 @@ and 8 of 8 (8 and 8 off; viable 7 and 8 either way).
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.77 (± 0.16; 11.82 with the five tunables off). Every lineage survives 12 of 12. |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
 
+### Playtest 12: server Lows
+
+Server-side Lows from `docs/playtest-12.md`:
+
+- **Grace wording.** The founding reply's grace line no longer says yours
+  can't attack theirs. With `Balance::graced_hunting` it says your animals
+  may hunt rivals' unprotected animals, and that your lineage's first
+  attack on a rival's animal ends your grace, even an attack your animals
+  start on their own. The protocol comments (`StateView::grace`,
+  `protected`, `grace_days_left`) say the same.
+- **Claim cooldown.**
+  - While the group has been told its territory is dry or grazed bare and
+    hasn't recovered, the server waives the cooldown
+    (`World::waive_claim_cooldown`). The sim's own check can disagree a day
+    later, once the plants regrow a little.
+  - A new claim clears the old circle's alerts.
+  - The cooldown error says the wait is waived for a failing territory and
+    that a split group carries its parent's wait.
+- **Fresh claims.** A territory claimed within `BARE_DAYS` (3) isn't called
+  grazed bare. The claim's reply has already rated it.
+- **Route lengths.** The journey warning gives the route's length ("its
+  route is 25 tiles long"). The hunter warning gives the straight line
+  ("the straight way there (19 tiles as the crow flies)").
+- **Day stamps.** `AlertView::day` counts from 0, like every API day; texts
+  and the client count from 1. So a summary stamped 119 reads "Day 120",
+  and a landing alert stamped 17 is the Lineage tab's day 18. This is
+  documented, not changed.
+- **Species roots.** A player's founding that the tracker saw as a split
+  of another player's species (a shared starter) has `parent` null, as well
+  as origin "founding".
+- **Offer ages.** Open offers carry `mine_age` and `partner_age` (`age_days`,
+  `lifespan_days`, and `aging` past 90%). The client's offer line shows them.
+- **Winter sleepers.** When most of a group is in winter sleep before
+  winter, the dormancy warning in a migrate or rally reply says why
+  (winter sleepers bed down early as the days cool and food thins) and when
+  they wake (spring, in N days).
+- **Possession.** A possession ends a grace minute after the socket that
+  took it closes, even while another of the player's connections stays
+  open. Reconnecting with no other connection open keeps it.
+- **Prey notes.** The short-prey note re-arms only once prey feeds a
+  quarter more than the pack, and is said at most every 15 days
+  (`PREY_NOTE_DAYS`).
+- **Decline lines.**
+  - The daily summary says "attrition (illness or accidents)".
+  - Decline lines tell net from gross: "(6% fewer, births included); 25
+    died in that time (…): 21% of the 121, before births".
+  - "Still crashing" lists the causes, toxins included.
+- **Compatibility.** `limiting` is `none` when the closest pair's body plans
+  match, so it no longer reads `body_plan` at fertility 1.0. The client
+  then says "body plans match; genome distance sets the rest".
+- **Rounding.** Reinforce `at` is in hundredths, as f64. The f32 was widened
+  to f64 inside `json!`, which brought the noise back.
+- **Auctions.** The reply always carries `days`, the game days the auction
+  runs (62.5 for `days: 20` at the 5-minute floor). The lengthening note
+  gives the same figure.
+
 ### Playtest 11: server Lows
 
 Server-side Lows from `docs/playtest-11.md`:

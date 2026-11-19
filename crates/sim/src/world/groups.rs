@@ -1223,6 +1223,14 @@ impl World {
         Ok(t)
     }
 
+    /// Forget a group's last claim, so its claim cooldown no longer applies:
+    /// for the server, when it has told the owner the group's territory is
+    /// dry or grazed bare (its own daily check, which can disagree with
+    /// [`World::territory_failing`] a day later as plants regrow a little).
+    pub fn waive_claim_cooldown(&mut self, player: PlayerId, group: u8) {
+        self.territory_claims.remove(&(player, group));
+    }
+
     /// What a territory claim must pass, before its circle is checked for
     /// water: a positive radius, the claim cooldown (waived while the
     /// group's current territory is dry or grazed bare,

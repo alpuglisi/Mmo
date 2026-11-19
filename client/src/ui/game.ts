@@ -1949,7 +1949,14 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const apart = e.offer.apart !== undefined
         ? `About ${e.offer.apart} tiles apart: they meet three quarters of the way to your animal, which walks the last quarter.`
         : apartText(e.offer, s?.organisms ?? [], s?.nearby ?? []);
-      setText(row.querySelector('.offer-time')!, [offerTime(e.offer), meetText(e.offer, model.player), apart].filter(Boolean).join(' '));
+      // Ages against lifespans (playtest 12: an offered animal died of old age 30 s later, no age shown).
+      const age = (who: string, a: typeof e.offer.mine_age) => a
+        ? `${who} is ${Math.round(a.age_days)} of about ${Math.round(a.lifespan_days)} days old${a.aging ? ' (old: it may die before they meet)' : ''}.`
+        : '';
+      const mineIsOurs = e.offer.from_player === model.player;
+      const ages = [age(mineIsOurs ? `Your #${e.offer.mine}` : `Their #${e.offer.mine}`, e.offer.mine_age),
+        e.offer.partner ? age(mineIsOurs ? `Their #${e.offer.partner}` : `Your #${e.offer.partner}`, e.offer.partner_age) : ''].filter(Boolean).join(' ');
+      setText(row.querySelector('.offer-time')!, [offerTime(e.offer), meetText(e.offer, model.player), apart, ages].filter(Boolean).join(' '));
       const pick = row.querySelector<HTMLSelectElement>('.pick-own');
       if (pick) {
         const lineageOffer = e.offer.partner === 0 && e.offer.lineage !== undefined;
