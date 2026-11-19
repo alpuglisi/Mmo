@@ -241,7 +241,7 @@ describe('pasture restoration', () => {
     expect(first.label).toBe('Restore pasture: 240 renown');
     expect(first.can).toBe(true);
     expect(first.note).toContain('within 12 tiles of the group');
-    expect(first.note).toContain('1 renown per living animal of the largest lineage grazing there (at least 200)');
+    expect(first.note).toContain('1 renown per animal of your lineage plus each other player\'s animal you can see grazing the circle (at least 200)');
     expect(first.note).toContain('The next one costs twice as much');
     const third = restoreText({ balance: 100, restore_price: 960, restores_bought: 2 })!;
     expect(third.can).toBe(false);

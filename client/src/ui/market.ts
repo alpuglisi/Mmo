@@ -455,7 +455,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     const p = await deps.send({ type: 'restore_pasture', group, preview: true });
     if (!p.ok) return;
     const v = p.data as { restored: number; unit: string; price: number; feeds_others?: boolean; hint?: string };
-    if (v.restored < 1) return model.toast('error', 'Nothing would regrow there now (midwinter, a drought, or already grown).');
+    if (v.restored < 1) return model.toast('error', 'Nothing would regrow there now (winter, a drought, or already grown).');
     const body = [
       `About ${Math.round(v.restored)} ${v.unit} of plants regrow within ${RESTORE_RADIUS} tiles of ${groupName(group)}, as high as the season allows.`,
       v.feeds_others ? 'Other players\' animals graze there too and eat from it (they count toward the price).' : '',

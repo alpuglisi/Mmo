@@ -117,7 +117,11 @@ async function showDesign(r: Running, refound = false): Promise<void> {
       void showGame(r);
       // Where the founders landed, said in the game itself, not only in the feed behind the tour (playtest 10).
       const said = [res?.landing, res?.watered].filter((t): t is string => !!t);
-      if (said.length) setTimeout(() => { if (running === r) r.model.toast('info', said.join(' ')); }, 1500);
+      // The server also sends each as an alert: toast only what no toast already says (playtest 11: shown 2–3 times).
+      if (said.length) setTimeout(() => {
+        if (running !== r) return;
+        for (const text of said) if (!r.model.toasts.some((t) => t.text === text)) r.model.toast('info', text);
+      }, 1500);
     },
     onUnauthorized: sessionExpired,
     onLogout: logout,

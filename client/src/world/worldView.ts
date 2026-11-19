@@ -588,9 +588,14 @@ export class WorldView {
     this.terrainLayer.update({ x0: tl.x, y0: tl.y, x1: br.x, y1: br.y }, this.cam.zoom * (this.app.renderer.resolution || 1), this.hour, dtMs);
     this.drawOverlay();
     this.markerLayer.sortableChildren = true;
-    const sc = markerScaleFor(this.cam.zoom);
+    const base = markerScaleFor(this.cam.zoom);
+    const far = base < NEAR_SCALE;
+    // Zoomed out with the Food layer on, the animals draw smaller and see-through:
+    // a big herd's sprites hid the layer where it matters (playtest 11, phones).
+    const thin = far && this.foodSprite.visible;
+    const sc = thin ? base * 0.55 : base;
     this.markerScale = sc;
-    const far = sc < NEAR_SCALE;
+    this.markerLayer.alpha = thin ? 0.6 : 1;
     if (far !== this.far) {
       // Detail level changed: every marker's body texture changes.
       this.far = far;

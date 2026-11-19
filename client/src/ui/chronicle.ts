@@ -99,6 +99,8 @@ export function speciesTree(list: SpeciesView[]): SpeciesRow[] {
 
 function speciesStatus(s: SpeciesView, byId: Map<number, SpeciesView>): string {
   if (s.merged_into !== undefined) return `merged into ${byId.get(s.merged_into)?.name ?? s.merged_into_name ?? 'another species'}`;
+  // A retired lineage's species: the retire day, not "extinct" from its last detection (playtest 11).
+  if (s.retired_day !== undefined) return `retired day ${s.retired_day + 1}`;
   if (s.extinct_day !== undefined) return `extinct day ${s.extinct_day + 1}`;
   return `~${Math.round(s.adults)} adults`;
 }

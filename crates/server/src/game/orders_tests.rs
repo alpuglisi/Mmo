@@ -1066,6 +1066,9 @@ fn founding_says_whether_grace_applies_and_why() {
         tick(&mut g);
     }
     let lineage = g.lineage_of(2).unwrap();
+    // While it lives, the preview calls it the living lineage, not an earlier one (playtest 11).
+    let alive = g.grace_preview(2, 20).unwrap();
+    assert!(alive.contains("the grace of your living lineage"), "{alive}");
     g.command(20, 2, Some(1), ClientMsg::RetireLineage { lineage });
     // The designer says so before founding (playtest 7: it promised the winter rule).
     let preview = g.grace_preview(2, 20).unwrap();

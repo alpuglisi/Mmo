@@ -74,6 +74,25 @@ export function loginScreen(onLogin: (s: Session) => void, notice?: string): HTM
     if (normalizeOrigin(server.value) !== null && applyServer()) void loadWorlds();
   });
   if (!native || apiBase()) void loadWorlds();
+  // The day and season go on while the page sits (playtest 11: "day 269 (spring)" stayed): re-read them.
+  let shownOnce = false;
+  const worldTimer = setInterval(async () => {
+    if (!worldBox.isConnected) {
+      if (shownOnce) clearInterval(worldTimer);
+      return;
+    }
+    shownOnce = true;
+    if (worldBox.hidden || listFor !== apiBase()) return;
+    const origin = listFor;
+    try {
+      const list = await api.worlds();
+      if (apiBase() !== origin || !worlds) return;
+      worlds = list;
+      showInfo();
+    } catch {
+      // Keep the last line.
+    }
+  }, 15000);
 
   /** Apply the Server field; false (with a message) when it isn't a usable address. */
   function applyServer(): boolean {

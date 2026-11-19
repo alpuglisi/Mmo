@@ -2339,6 +2339,7 @@ impl Game {
         let before: BTreeMap<PlayerId, usize> = homes.keys().map(|&p| (p, self.world.owner_count(p))).collect();
         let (n, moved) = self.world.retire_player_sparing(player, &homes, RETIRE_TRANSFER_SHARE);
         self.economy.retired_day.insert(player, self.world.day());
+        self.economy.retired_lineages.insert(lineage, self.world.day());
         self.economy.died_out.remove(&player);
         self.unpin_views(player);
         for (&p, &b) in &before {
@@ -6992,6 +6993,13 @@ impl Game {
         let waived = w.grace_waived().get(&player).is_some_and(|&t| t >= start);
         let left = end.saturating_sub(now);
         let from_day = start / w.config.ticks_per_day.max(1) as u64 + 1;
+        // A preview while a lineage lives treats it as ending now: it is the
+        // living one, not an "earlier" one (playtest 11).
+        let whose = if preview && self.lineage_of(player).is_some() && !self.is_extinct(player) {
+            "your living lineage"
+        } else {
+            "your earlier lineage"
+        };
         let text = if start == 0 && !preview {
             return None;
         } else if waived {
@@ -7007,14 +7015,14 @@ impl Game {
             )
         } else if left > 0 {
             format!(
-                "Newcomer grace: {:.1} days left ({}). It continues the grace of your earlier lineage (from day {from_day}): \
+                "Newcomer grace: {:.1} days left ({}). It continues the grace of {whose} (from day {from_day}): \
                  founding again within {soon:.0} days of your last lineage's end carries its grace on instead of starting a new one.",
                 days(left),
                 real(left),
             )
         } else {
             format!(
-                "No newcomer grace: it continues the grace of your earlier lineage (from day {from_day}), which has run out. \
+                "No newcomer grace: it continues the grace of {whose} (from day {from_day}), which has run out. \
                  Founding again within {soon:.0} days of your last lineage's end carries its grace on rather than starting \
                  a fresh one; other players' animals can attack yours then."
             )
@@ -8309,6 +8317,10 @@ impl Game {
                 parent: s.parent,
                 founded_day: s.founded_day,
                 extinct_day: s.extinct_day,
+                retired_day: s
+                    .extinct_day
+                    .and(s.main_lineage())
+                    .and_then(|l| self.economy.retired_lineages.get(&l).copied()),
                 merged_into: s.merged_into,
                 merged_into_name: s.merged_into.and_then(|m| ch.species.get(m)).map(|m| m.name.clone()),
                 founder: s.founder,
