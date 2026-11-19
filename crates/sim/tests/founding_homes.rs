@@ -53,6 +53,11 @@ fn homes_hash() -> u64 {
         // watered founders and no winter clutches change the days the world
         // grows first.
         config.balance.founding_drought = 0.0;
+        // Playtest 6 balance (version 62): toxin upkeep, hungry hunters,
+        // toxin lessons by source and clutch cover change the days the world
+        // grows first.
+        (config.balance.toxin_upkeep, config.balance.hungry_hunters) = (0.0, 0.0);
+        (config.balance.toxin_source, config.balance.clutch_cover) = (0.0, 0.0);
         // Founded empty: the wild ecosystem, then the sample players.
         let mut w = presets::standard_world(config, 1);
         for o in &w.organisms {
