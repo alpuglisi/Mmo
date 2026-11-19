@@ -833,6 +833,10 @@ export interface FoundResponse {
   reduced?: string;
   /** Renown the re-founding cost (absent or 0 outside the window). */
   refound_fee?: number;
+  /** Whether the lineage has a newcomer grace, and why (or why not). */
+  grace?: string;
+  /** The drought provision, when it applied (founders start watered); also sent as an alert. */
+  watered?: string;
 }
 
 export interface GeneInfo {

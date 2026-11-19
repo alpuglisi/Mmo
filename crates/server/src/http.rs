@@ -503,6 +503,10 @@ pub struct FoundResponse {
     /// Whether the lineage has a newcomer grace, and why (or why not).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grace: Option<String>,
+    /// The drought provision, when it applied: founders start watered and
+    /// lose water more slowly for their first days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watered: Option<String>,
 }
 
 async fn found_lineage(
@@ -544,6 +548,7 @@ async fn found_lineage(
             reduced: ok.reduced,
             refound_fee: ok.refound_fee,
             grace: ok.grace,
+            watered: ok.watered,
         }),
     ))
 }

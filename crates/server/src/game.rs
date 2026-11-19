@@ -582,6 +582,8 @@ pub struct FoundOk {
     pub refound_fee: u64,
     /// Whether the new lineage has a newcomer grace, and why (or why not).
     pub grace: Option<String>,
+    /// The drought provision, when it applied (playtest 7: no word of it).
+    pub watered: Option<String>,
 }
 
 /// A re-founding soon after the player's last lineage ended
@@ -819,7 +821,7 @@ pub struct Game {
     joined: Vec<PlayerId>,
     /// Alerts for players who just founded (their grace explained), sent
     /// with the next tick's alerts. Not saved.
-    founding_notes: Vec<(PlayerId, String)>,
+    founding_notes: Vec<(PlayerId, AlertKind, String)>,
     /// Players whose last session closed, and the tick it did: their
     /// possession ends after [`POSSESSION_GRACE_MINUTES`]. Not saved (a
     /// restart drops every session; the release then follows the grace).
@@ -1841,9 +1843,22 @@ impl Game {
         let requested = design.founders;
         let grace = self.grace_at_founding(player, lineage);
         if let Some(text) = &grace {
-            self.founding_notes.push((player, text.clone()));
+            self.founding_notes.push((player, AlertKind::Attack, text.clone()));
         }
-        Ok(FoundOk { lineage, founders, cost: design.point_cost(), requested, reduced: None, refound_fee: 0, grace })
+        let watered = watered_text(&self.world);
+        if let Some(text) = &watered {
+            self.founding_notes.push((player, AlertKind::World, text.clone()));
+        }
+        Ok(FoundOk {
+            lineage,
+            founders,
+            cost: design.point_cost(),
+            requested,
+            reduced: None,
+            refound_fee: 0,
+            grace,
+            watered,
+        })
     }
 
     /// The partner organism of an open offer (0 for an offer to a lineage
@@ -5186,10 +5201,17 @@ impl Game {
         };
         let max = evo_sim::world::commands::GRACE_WINTER_FOUNDERS;
         let founders = w.lineages.get(lineage as usize).map_or(0, |l| l.founders);
+        // Through the spring after it too with `Balance::founding_drought`
+        // (`World::grace_end`).
+        let until = if w.config.balance.founding_drought > 0.0 {
+            "until the spring after that winter ends, while its first young grow up"
+        } else {
+            "until that winter ends"
+        };
         let winter = if w.grace_end(lineage, start) > start + w.grace_length() {
-            format!(" It lasts through your first winter: a founding of {max} or fewer whose grace would end in late autumn or winter keeps it until that winter ends.")
+            format!(" It lasts through your first winter: a founding of {max} or fewer whose grace would end in late autumn or winter keeps it {until}.")
         } else if founders <= max {
-            format!(" (A founding of {max} or fewer whose grace would end in late autumn or winter keeps it until that winter ends; this one ends before then.)")
+            format!(" (A founding of {max} or fewer whose grace would end in late autumn or winter keeps it {until}; this one ends before then.)")
         } else {
             format!(" (Only a founding of {max} or fewer keeps its grace through its first winter; this one has {founders}.)")
         };
@@ -5234,8 +5256,8 @@ impl Game {
             self.world.chronicle.active_catastrophe().map(|c| {
                 format!("Catastrophe under way: {} (through about day {}).", catastrophe_text(c.kind), c.end_day)
             });
-        for (p, text) in std::mem::take(&mut self.founding_notes) {
-            self.alert(p, AlertKind::Attack, text, None, out);
+        for (p, kind, text) in std::mem::take(&mut self.founding_notes) {
+            self.alert(p, kind, text, None, out);
         }
         for p in std::mem::take(&mut self.joined) {
             for text in drought.iter().chain(catastrophe.iter()) {
@@ -6760,6 +6782,26 @@ fn with_hunters(text: String, deaths: &[(OrgId, Watch, Why)], killers: &BTreeMap
     count.sort_by_key(|&(b, n)| (std::cmp::Reverse(n), b.clone()));
     let who: Vec<String> = count.iter().map(|(b, n)| format!("{b} ({n})")).collect();
     format!("{text} Eaten by: {}.", who.join(", "))
+}
+
+/// What a founding now is told of the drought provision
+/// (`Balance::founding_drought`), when it applies: founders start watered
+/// and lose water more slowly for their first days; in a deeper drought
+/// the home search took a home by water that lasts it.
+pub fn watered_text(w: &evo_sim::World) -> Option<String> {
+    let relief = w.founding_water_relief()?;
+    let place = if w.map.drought >= evo_sim::world::FOUNDING_DROUGHT {
+        " The search placed them within reach of water that lasts a drought where it could: keep them near it."
+    } else {
+        ""
+    };
+    Some(format!(
+        "Drought provision: {:.0}% of the land is dry, so your founders start fully watered and lose water at \
+         {:.0}% of the usual rate for their first {:.0} days.{place}",
+        w.map.drought * 100.0,
+        relief * 100.0,
+        evo_sim::world::FOUNDER_WATER_DAYS
+    ))
 }
 
 /// The drought warning's text.
@@ -9260,7 +9302,12 @@ mod tests {
         g.world.map.drought = 0.45;
         let w = g.design_compatibility(9, &plain).drought_warning.expect("warned");
         assert!(w.contains("45%") && w.contains("estivation"), "{w}");
-        let ready = plain.clone().with(Gene::Estivation, 0.4);
+        assert!(w.contains("estivation (0.6 or more)"), "{w}");
+        // Below the gene's strategy threshold estivation does nothing
+        // (playtest 7: 0.4 never slept): still warned.
+        let weak = plain.clone().with(Gene::Estivation, 0.4);
+        assert!(g.design_compatibility(9, &weak).drought_warning.is_some());
+        let ready = plain.clone().with(Gene::Estivation, 0.6);
         assert_eq!(g.design_compatibility(9, &ready).drought_warning, None);
         let hunter =
             FounderDesign::new("H", Thermo::Warm, BirthType::IncubatedEggs, 3).with(Gene::Carnivory, 0.8).founders(6);

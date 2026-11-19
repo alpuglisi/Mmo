@@ -96,6 +96,19 @@ const LASTING_WATER: f32 = 1.0;
 /// Drought (share of land) from which a founding home must have water in
 /// reach that lasts a drought (`Balance::founding_drought`).
 pub const FOUNDING_DROUGHT: f32 = 0.3;
+/// Radius (tiles) within which other players' animals count against a
+/// founding home (`Balance::founding_rivals`).
+const RIVAL_RANGE: f32 = 35.0;
+/// Most a crowd of rivals marks a home down, and the distance-weighted
+/// count of rival animals that gives about 63% of it.
+const RIVAL_WEIGHT: f32 = 3.0;
+const RIVAL_SCALE: f32 = 15.0;
+/// How much a home at another player's territory edge is marked down,
+/// falling to nothing `RIVAL_RANGE` tiles out.
+const RIVAL_LAND_WEIGHT: f32 = 1.5;
+/// No founding home within this many tiles outside another player's
+/// territory (`Balance::founding_rivals`).
+const RIVAL_TERRITORY_MARGIN: f32 = 4.0;
 /// Days a new founding's founders lose water more slowly in a drought
 /// (`Balance::founding_drought`).
 pub const FOUNDER_WATER_DAYS: f32 = 6.0;
@@ -333,6 +346,11 @@ struct HomeSearch {
     /// running world): walkable dry land with no lake bed or river channel
     /// under it, away from water. `None`: the region map decides.
     settle: Option<Vec<bool>>,
+    /// Other players' living animals (`Balance::founding_rivals`, in a
+    /// running world; empty otherwise).
+    rivals: PointGrid<()>,
+    /// Other players' territories (same rule).
+    rival_lands: Vec<groups::Territory>,
 }
 
 impl HomeSearch {
@@ -422,7 +440,33 @@ impl HomeSearch {
                 })
                 .collect()
         });
-        HomeSearch { region, threats, threat_grid, prey, prey_grid, crowd, avoid, founders, settle }
+        // Other players' animals and territories (`Balance::founding_rivals`):
+        // playtest 7's late joiner landed inside a rival's territory with
+        // four rivals within 35 tiles. Only for a player's founding in a
+        // running world, so a new world's founding is unchanged.
+        let mut rivals = PointGrid::new(&w.map);
+        let mut rival_lands = Vec::new();
+        if w.config.balance.founding_rivals > 0.0 && w.tick > 0 && probe.owner != crate::WILD {
+            for o in &w.organisms {
+                if o.alive && o.owner != crate::WILD && o.owner != probe.owner {
+                    rivals.insert(o.pos, ());
+                }
+            }
+            rival_lands = w.territories.iter().filter(|(&(p, _), _)| p != probe.owner).map(|(_, &t)| t).collect();
+        }
+        HomeSearch {
+            region,
+            threats,
+            threat_grid,
+            prey,
+            prey_grid,
+            crowd,
+            avoid,
+            founders,
+            settle,
+            rivals,
+            rival_lands,
+        }
     }
 }
 
@@ -867,8 +911,19 @@ impl World {
         if self.tick.saturating_sub(founded) as f32 >= FOUNDER_WATER_DAYS * tpd {
             return 1.0;
         }
+        self.founding_water_relief().unwrap_or(1.0)
+    }
+
+    /// The factor on a new founding's founders' thirst for their first
+    /// [`FOUNDER_WATER_DAYS`] if one were founded now
+    /// ([`World::founder_water_relief`]), when it is below 1: the drought
+    /// provision applies. For the server's founding reply.
+    pub fn founding_water_relief(&self) -> Option<f32> {
+        if self.config.balance.founding_drought <= 0.0 {
+            return None;
+        }
         let dry = ((self.map.drought - 0.5 * FOUNDING_DROUGHT) / FOUNDING_DROUGHT).clamp(0.0, 1.0);
-        1.0 - 0.5 * dry
+        (dry > 0.0).then_some(1.0 - 0.5 * dry)
     }
 
     pub fn is_daytime(&self) -> bool {
@@ -1218,7 +1273,7 @@ impl World {
                         search.as_ref().is_some_and(|s| s.region[i] != u32::MAX)
                             && (!dry_sites || self.dry_ground(cand))
                     }
-                };
+                } && search.as_ref().is_none_or(|s| s.rival_lands.iter().all(|t| !t.contains(cand)));
                 if ok {
                     pos = cand;
                     break;
@@ -1358,7 +1413,19 @@ impl World {
     /// add the rest in organism order.
     fn pick_home(&self, probe: &Organism, search: &HomeSearch, rng: &mut impl Rng) -> Vec2 {
         let buffer = self.config.balance.home_buffer.max(0.0);
-        let HomeSearch { region, threats, threat_grid, prey, prey_grid, crowd, avoid, founders, settle } = search;
+        let HomeSearch {
+            region,
+            threats,
+            threat_grid,
+            prey,
+            prey_grid,
+            crowd,
+            avoid,
+            founders,
+            settle,
+            rivals,
+            rival_lands,
+        } = search;
         // Judge the spot as it is now (`Balance::founding_conditions`): only
         // in a running world, so a new world's founding is unchanged.
         let now = self.config.balance.founding_conditions > 0.0 && self.tick > 0;
@@ -1393,6 +1460,11 @@ impl World {
             let p = Vec2::new(rng.gen_range(0.0..self.map.width as f32), rng.gen_range(0.0..self.map.height as f32));
             // Passable (`passable_for`): the region map marks every tile.
             if region_at(p) == u32::MAX {
+                continue;
+            }
+            // Never inside (or at the edge of) another player's territory
+            // (`Balance::founding_rivals`), in any round.
+            if rival_lands.iter().any(|t| t.center.dist(p) < t.radius + RIVAL_TERRITORY_MARGIN) {
                 continue;
             }
             // With `founding_safety`: dry land, with room for the founders.
@@ -1533,7 +1605,18 @@ impl World {
                 safety -= 1.5 * (1.0 - dx.min(dy) / EDGE_MARGIN).max(0.0);
                 safety -= 1.5 * (1.0 - dx.max(dy) / CORNER_MARGIN).max(0.0);
             }
+            // Other players' animals within `RIVAL_RANGE` (nearer counts
+            // more) and their territories' edges: uncontested ground first
+            // (`Balance::founding_rivals`).
+            let mut rival_near = 0.0f32;
+            rivals.near(p, RIVAL_RANGE, |q, _| rival_near += (1.0 - q.dist(p) / RIVAL_RANGE).max(0.0));
+            let mut rivalry = RIVAL_WEIGHT * (1.0 - (-rival_near / RIVAL_SCALE).exp());
+            for t in rival_lands.iter() {
+                let gap = (t.center.dist(p) - t.radius).max(0.0);
+                rivalry += RIVAL_LAND_WEIGHT * (1.0 - gap / RIVAL_RANGE).max(0.0);
+            }
             let score = water + food + comfort + safety
+                - rivalry
                 - 0.05 * crowd_n
                 - (0.3 * danger).min(4.0)
                 - (0.1 * carn * on_top).min(2.0)
@@ -2193,6 +2276,48 @@ mod winter_tests {
         w.map.drought = 0.5;
         w.tick += (FOUNDER_WATER_DAYS * w.config.ticks_per_day as f32) as u64;
         assert_eq!(w.founder_water_relief(&probe), 1.0);
+    }
+
+    /// Playtest 7 (M10): a late joiner landed inside a rival's territory
+    /// with four rivals within 35 tiles. With `Balance::founding_rivals` no
+    /// founder lands in another player's territory and homes have fewer
+    /// rival animals around them.
+    #[test]
+    fn foundings_keep_out_of_rival_territories_and_crowds() {
+        let mut w = small_world(3);
+        w.run_days(1);
+        let land = groups::Territory { center: Vec2::new(32.0, 32.0), radius: 18.0, claimed_tick: w.tick };
+        w.territories.insert((2, 0), land);
+        let design =
+            crate::design::FounderDesign::new("late", crate::design::Thermo::Warm, crate::design::BirthType::Live, 2)
+                .founders(20);
+        let rivals_near = |w: &World, owner: PlayerId, p: Vec2| {
+            w.organisms
+                .iter()
+                .filter(|o| o.alive && o.owner != crate::WILD && o.owner != owner && o.pos.dist(p) < 35.0)
+                .count()
+        };
+        let (mut on, mut off) = (0, 0);
+        for owner in 60..68 {
+            for rule in [1.0, 0.0] {
+                let mut c = w.clone();
+                c.config.balance.founding_rivals = rule;
+                let ids = c.found_lineage_unchecked(owner, &design);
+                let home = c.lineage_homes[c.lineages.len() - 1].unwrap();
+                let n = rivals_near(&c, owner, home);
+                if rule > 0.0 {
+                    on += n;
+                    for &id in &ids {
+                        let p = c.organism(id).unwrap().pos;
+                        assert!(!land.contains(p), "owner {owner}: founder at {p:?} inside the rival's territory");
+                    }
+                    assert!(land.center.dist(home) >= land.radius + RIVAL_TERRITORY_MARGIN, "home {home:?}");
+                } else {
+                    off += n;
+                }
+            }
+        }
+        assert!(on < off, "rival animals within 35 tiles of the homes: {on} with the rule, {off} without");
     }
 
     #[test]
