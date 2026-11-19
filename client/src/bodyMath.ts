@@ -29,6 +29,14 @@ export function geneValue(d: Traits, gene: string): number {
   return d.traits[gene] ?? GENE_DEFAULTS[gene] ?? 0;
 }
 
+/** The one size scale (inspector, designer, sprites): the server's weight classes, tiny < 1 kg, small < 8 kg, medium < 40 kg, large. */
+export const SIZE_WORDS = ['tiny', 'small', 'medium', 'large'] as const;
+
+/** The size word for an adult of `kg` (`SIZE_WORDS`; the server's `appearance.rs` buckets). */
+export function sizeWord(kg: number): (typeof SIZE_WORDS)[number] {
+  return SIZE_WORDS[kg < 1 ? 0 : kg < 8 ? 1 : kg < 40 ? 2 : 3];
+}
+
 /** Adult mass in kg. */
 export function adultMass(d: Traits): number {
   const v = (g: string) => geneValue(d, g);

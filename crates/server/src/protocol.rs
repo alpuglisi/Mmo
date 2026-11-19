@@ -1319,6 +1319,13 @@ pub struct GroupView {
     /// reconnect; `game::offline`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protection_left_min: Option<u32>,
+    /// On the home range: the most protection in real minutes at this game
+    /// speed, and the rolling window it counts over (playtest 7: the tab
+    /// said "12 hours" though the playtest clock gave 75 minutes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protection_budget_min: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protection_window_min: Option<u32>,
 }
 
 impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
@@ -1339,6 +1346,8 @@ impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
             obedience: g.obedience,
             home_range: false,
             protection_left_min: None,
+            protection_budget_min: None,
+            protection_window_min: None,
         }
     }
 }
@@ -1997,6 +2006,10 @@ pub struct DesignCompatView {
     /// player's), so the designer can warn before Found; absent when fine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name_warning: Option<String>,
+    /// The newcomer grace a founding of this design would get now: fresh
+    /// (with the first-winter rule) or continued from the last founding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_note: Option<String>,
 }
 
 /// `DesignCompatView::refound`.

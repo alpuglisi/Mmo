@@ -626,8 +626,15 @@ impl World {
     /// (playtest 5), or with `Balance::founding_drought` at the end of the
     /// spring after it, when its first young are grown (playtest 6).
     pub fn grace_end(&self, l: u32, start: u64) -> u64 {
+        let founders = self.lineages.get(l as usize).map_or(u32::MAX, |x| x.founders);
+        self.grace_end_for(founders, start)
+    }
+
+    /// [`World::grace_end`] for a founding of `founders` whose grace starts
+    /// at `start` (a founding not made yet: the designer's preview).
+    pub fn grace_end_for(&self, founders: u32, start: u64) -> u64 {
         let end = start + self.grace_length();
-        let small = self.lineages.get(l as usize).is_some_and(|x| x.founders <= GRACE_WINTER_FOUNDERS);
+        let small = founders <= GRACE_WINTER_FOUNDERS;
         if !small {
             return end;
         }
@@ -704,6 +711,23 @@ impl World {
             start = t;
         }
         Some(start)
+    }
+
+    /// The grace start a founding by `owner` at tick `at` would get: `at`,
+    /// or an earlier founding's whose grace it would continue
+    /// ([`World::grace_start`]).
+    pub fn grace_start_for(&self, owner: PlayerId, at: u64) -> u64 {
+        let cooldown = self.grace_cooldown();
+        let mut start = at;
+        while let Some(t) = (0..self.lineages.len())
+            .filter(|&k| self.lineages[k].owner == owner)
+            .filter_map(|k| self.lineage_founded.get(k).copied())
+            .filter(|&t| t < start && start - t <= cooldown)
+            .min()
+        {
+            start = t;
+        }
+        start
     }
 
     /// How soon after one founding the owner's next still continues its
