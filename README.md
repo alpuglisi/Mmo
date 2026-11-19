@@ -8937,7 +8937,7 @@ renumbered at merge after versions 58–61), off at 0 for older saves
 
 | Tunable (default) | Rule |
 | --- | --- |
-| `clutch_cover` (1.25) | A sitting parent fully covers 3 eggs. A bigger clutch's brooded temperature is `site + (brooded − site) × (3 / eggs)^1.25`: a clutch of 6 sits about 40% of the way to the nest's air, so it chills on cool nights. This is the lever that moved playtest 6's herd. |
+| `clutch_cover` (2.1) | A sitting parent fully covers 4 eggs. A bigger clutch's brooded temperature is `site + (brooded − site) × (4 / eggs)^2.1`: a clutch of 6 is warmed only 42% of the way, so it chills on cool nights. This is the lever that moved playtest 6's herd. The wild burrowing omnivores' four-egg clutches are spared: with 3 eggs covered they suffered, and two wild prey species died out on single `predlong` seeds. |
 | `toxin_upkeep` (0.5) | Toxins cost food: hunger × `1 + 0.4 × 0.5 × toxins` (+12% at toxins 0.6), whatever the body's metabolism. |
 | `hungry_hunters` (1) | A hunter's learned avoidance of a toxic prey lineage falls by up to 60% as its hunger rises from 60 to 100: a starving predator takes the risk. |
 | `toxin_source` (1) | A poisoning teaches a hunter's lineage about the prey's lineage only when the prey's toxin is that lineage's own (one of its two toxin alleles carries the lineage owner's origin). A wild antelope carrying a player's toxin through a hybrid no longer marks the wild species as poisonous. |
@@ -8954,28 +8954,29 @@ merged build. The playtest 6 arm has the five new tunables off.
 
 | Player | Playtest 6 rules: final share, titles*, capped | New rules: final share, titles*, capped |
 | --- | --- | --- |
-| Steady | 3.6%, 0, 2 | 2.7%, 0, 1 |
-| Big (warm hibernator) | 6.3%, 3, 1 | 7.9%, 9, 1 |
-| Broker (warm live herd) | 4.8%, 1, 0 | 5.7%, 8, 3 |
-| Eggs (playtest 2's egg layer) | 11.2%, 1, 3 | 7.1%, 0, 1 |
-| Flier (PocketNomad5) | 19.5%, 10, 3 | 19.7%, 10, 3 |
-| Cold (LateComer5/6) | 8.4%, 0, 3 | 5.8%, 0, 1 |
-| Loophole (Rulebender5) | 6.2%, 0, 0 | 10.6%, 0, 1 |
-| Herd (Herdmaster6) | 12.7%, 25, 4 | 8.9%, 13, 2 |
-| **Warm egg layers (Eggs + Herd)** | **26 of 40** | **13 of 40** |
-| **Cold fliers** | **10 of 40** | **10 of 40** |
+| Steady | 3.6%, 0, 2 | 2.9%, 0, 1 |
+| Big (warm hibernator) | 6.3%, 3, 1 | 9.3%, 12, 1 |
+| Broker (warm live herd) | 4.8%, 1, 0 | 6.2%, 7, 1 |
+| Eggs (playtest 2's egg layer) | 11.2%, 1, 3 | 8.9%, 0, 2 |
+| Flier (PocketNomad5) | 19.5%, 10, 3 | 20.9%, 11, 3 |
+| Cold (LateComer5/6) | 8.4%, 0, 3 | 11.5%, 1, 2 |
+| Loophole (Rulebender5) | 6.2%, 0, 0 | 3.6%, 0, 0 |
+| Herd (Herdmaster6) | 12.7%, 25, 4 | 8.1%, 9, 2 |
+| **Warm egg layers (Eggs + Herd)** | **26 of 40** | **9 of 40** |
+| **Cold fliers** | **10 of 40** | **12 of 40** |
 
 (* Titles are the legacy titles of the 40 whole seasons after day 210.
 "Capped" counts the seeds on which the lineage touched 95% of the 2,100
 hard cap at least once; no lineage ends at it.) The herd falls from 25
-titles to 13 and from the cap on every seed to two. Its mean share falls
-from 17% to 9%. The warm herds gain, and every design survives every seed.
-The toxic flier's 10 titles come from 10 founders.
+titles to 9 and from the cap on every seed to two. Its mean share falls
+from 17% to 8%. No design takes more than 12 titles, the warm herds gain,
+and every design survives every seed. The toxic flier's 11 titles come
+from 10 founders.
 
 How the defaults were found:
 - **Toxin levers alone don't touch the herd.** With `toxin_upkeep` at 1 or 2 the herd still took 29–30 titles; the toxic fliers and the playtest 2 egg layer took the losses.
 - **Clutch size does.** `clutch_cover` at 1 gave the herd 14 titles before the last merge and 23 after; at 2 it died out on every seed.
-- **Settled at** 1.25 with toxin upkeep 0.5.
+- **Settled at** 1.25 with toxin upkeep 0.5 (with 3 eggs covered), then moved to 4 eggs covered at 2.1. That keeps the same cover for a clutch of 6 and spares the wild four-egg layers; the table above is that final setting.
 
 ### Playtest 5: balance
 
