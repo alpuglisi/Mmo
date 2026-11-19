@@ -32,6 +32,7 @@ mod orders_tests;
 mod shop;
 mod spectate;
 mod states;
+mod travel;
 
 pub use offline::{
     home_group, HomeClaim, OfflineTracker, Spell, DEFAULT_HOME_RANGE_FADE_TICKS, DEFAULT_HOME_RANGE_HOURS,
@@ -286,6 +287,9 @@ pub const SURVIVAL_HELD: f64 = 0.25;
 /// A migration given while at least this share of the group is dormant
 /// draws a warning.
 pub const DORMANT_WARN_SHARE: f32 = 0.3;
+/// A journey's food share below which its warning says "heavy losses"
+/// (above, "some hunger": playtest 8 read "heavy losses" at 94%).
+pub const JOURNEY_HEAVY_SHARE: f32 = 0.75;
 
 /// Whether a "species founded" achievement of `player` for `species` on
 /// `day` earns its renown bonus (and a season count), recording it if so.
@@ -617,6 +621,9 @@ pub struct FoundOk {
     pub grace: Option<String>,
     /// The drought provision, when it applied (playtest 7: no word of it).
     pub watered: Option<String>,
+    /// Where the founders landed and how far the nearest rival is
+    /// (playtest 8: nothing told a late joiner).
+    pub landing: Option<String>,
 }
 
 /// A re-founding soon after the player's last lineage ended
@@ -947,6 +954,10 @@ pub struct Game {
     territory_alerted: BTreeSet<(PlayerId, u8, u8)>,
     /// Groups already told they drifted from their home; not saved.
     drift_alerted: BTreeSet<(PlayerId, u8)>,
+    /// The home each group was sent away from by a migration order: no
+    /// "drifted from its home" for it until the group has a new one
+    /// (playtest 8: said mid-migration, of the home it left); not saved.
+    left_home: BTreeMap<(PlayerId, u8), Vec2>,
     /// The day a grazed-bare ground was last said again while animals kept
     /// starving (playtest 7: one alert, then nothing for weeks). Not saved.
     bare_repeated: BTreeMap<(PlayerId, u8), u64>,
@@ -1248,6 +1259,7 @@ impl Game {
             founded_day: BTreeMap::new(),
             territory_alerted: BTreeSet::new(),
             drift_alerted: BTreeSet::new(),
+            left_home: BTreeMap::new(),
             bare_repeated: BTreeMap::new(),
             poison_known: None,
             old_age_told: BTreeSet::new(),
@@ -1964,6 +1976,11 @@ impl Game {
         if let Some(text) = &watered {
             self.founding_notes.push((player, AlertKind::World, text.clone()));
         }
+        // Where they landed, and how far the nearest rival is (playtest 8).
+        let landing = self.landing_text(player, &founders);
+        if let Some(text) = &landing {
+            self.founding_notes.push((player, AlertKind::World, text.clone()));
+        }
         Ok(FoundOk {
             lineage,
             founders,
@@ -1973,6 +1990,7 @@ impl Game {
             refound_fee: 0,
             grace,
             watered,
+            landing,
         })
     }
 
@@ -2230,7 +2248,12 @@ impl Game {
                 let group = group.unwrap_or(0);
                 let asked = Vec2::new(x, y);
                 let before = self.orders_of(player, group);
+                let home =
+                    self.world.groups(player).iter().find(|g| g.id == group).and_then(|g| g.settle).map(|s| s.center);
                 let to = self.world.command_migrate_group(player, group, asked).map_err(e)?;
+                if let Some(h) = home {
+                    self.left_home.insert((player, group), h);
+                }
                 self.order_given(player, group);
                 self.plan_route(player, group);
                 let mut data =
@@ -2246,18 +2269,75 @@ impl Game {
                 // then "grazed bare" for the home circle four days in).
                 let members = self.world.groups(player).iter().find(|g| g.id == group).map_or(0, |g| g.members);
                 let mut dest = serde_json::json!({});
-                let there = self.circle_report_at(player, group, to, home_forage_radius(members), &mut dest, false);
-                warnings.extend(there.into_iter().map(|w| format!("At the destination: {w}")));
+                let forage = home_forage_radius(members);
+                // Rival ground first: a destination on a visible rival
+                // territory (playtest 8: sent inside one, no word of it).
+                let mut there = Vec::new();
+                if let Some(&(owner, c, r, inside)) = self.rival_ground_at(player, to, forage).first() {
+                    there.push(if inside {
+                        format!(
+                            "it is inside {}'s territory at ({:.0}, {:.0}) (radius {r:.0}): its holders defend it, \
+                             and your group may be fought or driven off.",
+                            self.name(owner),
+                            c.x,
+                            c.y
+                        )
+                    } else {
+                        format!(
+                            "the ground the group forages there reaches into {}'s territory at ({:.0}, {:.0}) \
+                             (radius {r:.0}).",
+                            self.name(owner),
+                            c.x,
+                            c.y
+                        )
+                    });
+                }
+                there.extend(self.circle_report_at(player, group, to, forage, &mut dest, false));
+                // In a drought only a lake's deep water lasts (playtest 8:
+                // 256 drinking spots at 96% dryness, no warning, then none
+                // left and ~40 thirst deaths).
+                let dryness = self.world.map.dryness_at(to);
+                let drinkable = dest["drinkable_tiles"].as_u64().unwrap_or(0) as usize;
+                let wanted = (members / 8).max(LOW_WATER_TILES);
+                if dryness > travel::DRY_DESTINATION && drinkable >= wanted {
+                    let lasting = self.lasting_water(to, forage);
+                    dest["lasting_water_tiles"] = lasting.into();
+                    if lasting < wanted {
+                        there.push(format!(
+                            "it is {:.0}% dry, and {} of its {drinkable} drinking spots are streams or shallows that \
+                             dry up in a drought ({lasting} beside a lake that lasts): expect thirst.",
+                            dryness * 100.0,
+                            drinkable - lasting
+                        ));
+                    }
+                }
+                // One "At the destination:" for all it says (playtest 8: repeated per warning).
+                if !there.is_empty() {
+                    warnings.push(format!("At the destination: {}", capitalize_join(&there)));
+                }
                 dest.as_object_mut().map(|o| o.remove("distance"));
+                let supports = dest["food_supports"].as_u64().map(|v| v as usize);
                 data["destination"] = dest;
                 if let Some((_, way)) = self.routes.get(&(player, group)) {
                     let way: Vec<Vec2> = way.iter().map(|p| Vec2::new(p[0], p[1])).collect();
                     if let Some(j) = self.world.journey_check(player, group, &way) {
+                        // Shared with the plant eaters along the way, and
+                        // the worse of the way and the arrival (playtest 8:
+                        // 2.02 promised, a third lost).
+                        let food = self.journey_food(player, group, &way, j.days, supports);
+                        let r2 = |x: f32| (x * 100.0).round() / 100.0;
                         data["journey"] = serde_json::json!({
                             "tiles": (j.tiles * 10.0).round() / 10.0,
                             "days": (j.days * 10.0).round() / 10.0,
-                            "food_share": (j.food_share * 100.0).round() / 100.0,
+                            "food_share": r2(food.map_or(j.food_share, |f| f.share())),
                         });
+                        if let Some(f) = food {
+                            data["journey"]["route_food_share"] = r2(f.route).into();
+                            if let Some(d) = f.destination {
+                                data["journey"]["destination_food_share"] = r2(d).into();
+                            }
+                            data["journey"]["others_on_the_way"] = f.others.into();
+                        }
                     }
                 }
                 put_warnings(&mut data, warnings);
@@ -6107,16 +6187,20 @@ impl Game {
                 // crawled 2-3 tiles a day and starved on the way).
                 if let Some(j) = self.world.journey_check(player, group, &way) {
                     let pace = World::group_pace(j.members);
-                    let starve = j.food_share < 1.0;
+                    // Shared with the other plant eaters along the way (playtest 8).
+                    let share = self.journey_food(player, group, &way, j.days, None).map_or(j.food_share, |f| f.route);
+                    let starve = share < 1.0;
                     // A short trip over bare land warns too (playtest 7: 6.2
                     // days at 18% of the food the group needs, no warning).
                     let long = j.days >= JOURNEY_WARN_DAYS && (starve || j.days >= 2.0 * JOURNEY_WARN_DAYS);
-                    if long || j.food_share < JOURNEY_BARE_SHARE {
+                    if long || share < JOURNEY_BARE_SHARE {
                         let food = if starve {
+                            // "Heavy losses" for a real shortfall, not at 94% (playtest 8).
                             format!(
-                                "The land along the way holds about {:.0}% of the food the group needs for it; expect \
-                                 heavy losses. ",
-                                j.food_share * 100.0
+                                "The land along the way holds about {:.0}% of the food the group needs for it, shared \
+                                 with the other grazers there; expect {}. ",
+                                share * 100.0,
+                                if share < JOURNEY_HEAVY_SHARE { "heavy losses" } else { "some hunger" }
                             )
                         } else {
                             String::new()
@@ -6137,6 +6221,18 @@ impl Game {
                 dormant * 100.0,
                 sleep_words(&self.world, player, group)
             ));
+        } else {
+            // Awake now but about to bed down (playtest 8: ordered with no
+            // warning, ended "94% dormant" five days later).
+            let sleepy = self.sleepy_share(player, group, travel::SLEEP_LOOKAHEAD_DAYS);
+            if sleepy >= travel::SLEEPY_WARN_SHARE {
+                warnings.push(format!(
+                    "{:.0}% of the group will bed down within about {} days (the season or the drought puts it to \
+                     sleep) and won't walk while asleep; the order may end before it wakes.",
+                    sleepy * 100.0,
+                    travel::SLEEP_LOOKAHEAD_DAYS
+                ));
+            }
         }
         warnings
     }
@@ -6339,7 +6435,17 @@ impl Game {
                     .filter(|o| o.alive && o.owner == p && o.group == g.id)
                     .fold((0usize, 0.0f32), |(n, c), o| (n + 1, c + o.traits.carnivory));
                 let roams = pack.0 > 0 && pack.1 / pack.0 as f32 > 0.6;
-                let home = g.settle.filter(|_| g.territory.is_none() && g.rally.is_none() && g.migration.is_none());
+                // Not the home a migration order left, until there is a new one.
+                let left = self.left_home.get(&key).copied();
+                if left.is_some_and(|l| g.settle.is_none_or(|s| s.center.dist(l) > 0.5)) {
+                    self.left_home.remove(&key);
+                }
+                let home = g.settle.filter(|s| {
+                    g.territory.is_none()
+                        && g.rally.is_none()
+                        && g.migration.is_none()
+                        && self.left_home.get(&key).is_none_or(|l| s.center.dist(*l) > 0.5)
+                });
                 let dist = home.and_then(|s| self.world.group_median_dist(p, g.id, s.center).map(|m| (s, m)));
                 match dist {
                     Some((s, m)) if m > DRIFT_FACTOR * s.radius && !roams => {
@@ -7783,6 +7889,23 @@ fn capitalized(text: &str) -> String {
 /// How a group's sleepers sleep, in words (playtest 7: "hibernating or
 /// estivating" for brumators): "hibernating", "brumating", "estivating", or
 /// those found, joined.
+/// Sentences joined, each after the first capitalized: "it is dry. Only ...".
+fn capitalize_join(parts: &[String]) -> String {
+    parts
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            if i == 0 {
+                p.clone()
+            } else {
+                let mut c = p.chars();
+                c.next().map_or_else(String::new, |f| f.to_uppercase().collect::<String>() + c.as_str())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn sleep_words(w: &World, player: PlayerId, group: u8) -> String {
     let (mut hib, mut brum, mut est) = (false, false, false);
     for o in w.organisms.iter().filter(|o| o.alive && o.owner == player && o.group == group) {
@@ -8019,7 +8142,7 @@ mod tests {
         assert_eq!(g.shop_view(1).restore_price, 2 * economy::RESTORE_MIN);
         assert_eq!(g.shop_view(1).restores_bought, 1);
         g.economy.balances.insert(1, 100);
-        assert_eq!(result(&g.command(10, 1, None, ClientMsg::RestorePasture)).0, false);
+        assert!(!result(&g.command(10, 1, None, ClientMsg::RestorePasture)).0);
     }
 
     /// Playtest 7: egg layers lost more eggs than hatched with no warning
