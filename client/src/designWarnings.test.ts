@@ -31,6 +31,8 @@ describe('design warnings', () => {
     // Over (or the summary not caught up yet): no warning.
     expect(designWarnings(design(), world(0, { kind: 'severe_winter', active: true, end_day: 10 }))).toEqual([]);
     expect(designWarnings(design(), world(0, { kind: 'severe_winter', active: false, end_day: 14 }))).toEqual([]);
+    // Not before its first day.
+    expect(designWarnings(design(), world(0, { kind: 'severe_winter', active: true, start_day: 12, end_day: 20 }))).toEqual([]);
   });
 
   it('says how many eggs a parent warms and when eggs chill', () => {

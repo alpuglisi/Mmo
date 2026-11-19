@@ -828,6 +828,10 @@ struct Offer {
 struct Conn {
     player: PlayerId,
     view: Option<ViewWindow>,
+    /// The radius `set_view` asked for: a pinned view narrowed as the
+    /// animals walked off widens again up to it when they come back
+    /// (playtest 10: it never widened again).
+    view_asked: f32,
 }
 
 /// Per-player progress for milestone alerts.
@@ -2204,7 +2208,9 @@ impl Game {
         for (id, player, v) in pinned {
             let reach = self.view_reach(player, Vec2::new(v.x, v.y));
             if let Some(c) = self.conns.get_mut(&id) {
-                c.view = (reach >= 1.0).then(|| ViewWindow { radius: v.radius.min(reach), ..v });
+                // Up to the radius asked for, as far as they see now: narrower when they leave, wider when they return.
+                let asked = if c.view_asked > 0.0 { c.view_asked } else { v.radius };
+                c.view = (reach >= 1.0).then(|| ViewWindow { radius: asked.min(reach), ..v });
             }
         }
     }
@@ -2335,7 +2341,7 @@ impl Game {
     pub fn connect(&mut self, conn: ConnId, player: PlayerId, name: &str) -> Outbox {
         self.set_name(player, name);
         let first = !self.conns.values().any(|c| c.player == player);
-        self.conns.insert(conn, Conn { player, view: None });
+        self.conns.insert(conn, Conn { player, view: None, view_asked: 0.0 });
         let gone_since = self.left.remove(&player);
         let mut out = vec![(
             Target::Conn(conn),
@@ -2752,10 +2758,12 @@ impl Game {
                 if reach < 1.0 {
                     return Err(ErrorInfo::new("out_of_sight", "you can only look where your organisms are"));
                 }
-                let radius = radius.clamp(1.0, self.cfg.max_view_radius.min(reach));
+                let asked = radius.clamp(1.0, self.cfg.max_view_radius);
+                let radius = asked.min(reach);
                 let view = ViewWindow { x: p.x, y: p.y, radius, pinned: true };
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.view = Some(view);
+                    c.view_asked = asked;
                 }
                 Ok(Some(serde_json::to_value(view).unwrap()))
             }
@@ -3777,6 +3785,7 @@ impl Game {
             organism: l.organism,
             animal_name: self.economy.animal_names.get(&l.organism).cloned(),
             aging: o.age_days(tpd) >= 0.9 * o.traits.lifespan_days,
+            lifespan_days: Some(o.traits.lifespan_days.round()),
             dormant: matches!(o.dormancy, Dormancy::Winter | Dormancy::Summer),
             role: role_name(o.sex).into(),
             sex: sex_name(o.sex).into(),
@@ -12951,6 +12960,43 @@ mod tests {
         let view = g.state_for(10).unwrap().view;
         assert!(!view.pinned, "dropped once out of sight: {view:?}");
         assert!((Vec2::new(view.x, view.y) - far).len() < 2.0, "back on the largest group: {view:?}");
+    }
+
+    /// A pinned view narrows as the animals walk off and widens again, up
+    /// to the radius asked for, when they come back (playtest 10).
+    #[test]
+    fn a_pinned_view_widens_again_when_the_animals_return() {
+        let (mut g, a, _) = game();
+        let mine: Vec<usize> = (0..g.world.organisms.len())
+            .filter(|&i| g.world.organisms[i].alive && g.world.organisms[i].owner == 1)
+            .collect();
+        // All of them at the map's middle, the view pinned there.
+        let mid = Vec2::new(g.world.map.width as f32 / 2.0, g.world.map.height as f32 / 2.0);
+        for &i in &mine {
+            g.world.organisms[i].pos = mid;
+        }
+        let _ = a;
+        let pin = g.command(10, 1, Some(1), ClientMsg::SetView { x: mid.x, y: mid.y, radius: 8.0 });
+        assert!(result(&pin).0, "{pin:?}");
+        let _ = g.after_tick();
+        let full = g.state_for(10).unwrap().view.radius;
+        let r0 = g.view_reach(1, mid);
+        assert!(full >= 3.0 && r0 >= full, "a wide pin to start: radius {full}, reach {r0}");
+        // They walk off until the reach there is half the radius: the view narrows, still pinned.
+        let off = Vec2::new(mid.x + (r0 - full / 2.0), mid.y);
+        for &i in &mine {
+            g.world.organisms[i].pos = off;
+        }
+        let _ = g.after_tick();
+        let narrowed = g.state_for(10).unwrap().view;
+        assert!(narrowed.pinned && narrowed.radius < full - 0.5, "narrowed: {narrowed:?} (was {full})");
+        // Back: it widens again to what was asked.
+        for &i in &mine {
+            g.world.organisms[i].pos = mid;
+        }
+        let _ = g.after_tick();
+        let back = g.state_for(10).unwrap().view;
+        assert!(back.pinned && (back.radius - full).abs() < 1e-3, "widened again: {back:?} (asked {full})");
     }
 
     /// Info leaks: the map image shows a player only what they may see,
