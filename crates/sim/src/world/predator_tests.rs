@@ -331,6 +331,7 @@ fn a_kill_is_eaten_once() {
 #[test]
 fn player_hunters_spare_a_scarce_wild_species() {
     let mut w = niche(1);
+    w.config.balance.refuge_ramp = 0.0; // from day 0 (the ramp is tested below)
     let wild = (0..w.lineages.len() as u32).find(|&l| w.lineages[l as usize].owner == crate::WILD).unwrap();
     let (alive, cap) = w.cap_usage(wild);
     assert!((alive as f32) < 0.3 * cap as f32, "{alive} of {cap}");
@@ -359,4 +360,76 @@ fn player_hunters_spare_a_scarce_wild_species() {
     assert_eq!(days(&mut w, &feral), 0);
     w.config.balance.wild_refuge = 0.0;
     assert_eq!(days(&mut w, &mine), 0);
+}
+
+/// Playtest 10: a fresh world's wild starts far below its caps, so the
+/// refuge left an early pack little prey. It comes in over
+/// `Balance::refuge_ramp` years: none on day 0, half after half a year.
+#[test]
+fn the_refuge_comes_in_over_the_first_year() {
+    let mut w = niche(1);
+    let wild = (0..w.lineages.len() as u32).find(|&l| w.lineages[l as usize].owner == crate::WILD).unwrap();
+    let year = 4 * w.config.days_per_season() as u64;
+    let tpd = w.config.ticks_per_day as u64;
+    assert_eq!(w.wild_refuge_skip(wild), 0.0);
+    let full = {
+        w.tick = year * tpd;
+        w.wild_refuge_skip(wild)
+    };
+    w.tick = year / 2 * tpd;
+    let half = w.wild_refuge_skip(wild);
+    let (alive, cap) = w.cap_usage(wild);
+    let r = (alive as f32 / (0.15 * cap as f32)).min(1.0);
+    assert!((half - (1.0 - r.powi(4))).abs() < 1e-4, "{half}");
+    assert!(full > half && full > 0.5, "{full} {half}");
+    w.tick = 5 * year * tpd;
+    assert_eq!(w.wild_refuge_skip(wild), full);
+}
+
+/// Playtest 10: a pack starved beside a toxic egg herd. A hungry hunter
+/// with nothing in sight goes for a rival clutch it smells
+/// (`Balance::nest_raids`), not its own lineage's; off, it doesn't.
+#[test]
+fn hungry_hunters_go_for_a_rival_clutch() {
+    let mut w = niche(4);
+    let h = adults(&mut w, Sex::Male, 1, &[])[0];
+    clear_area(&mut w, &[h]);
+    let at = Vec2::new(20.5, 20.5);
+    w.organisms[h].pos = at;
+    w.organisms[h].needs.hunger = 70.0;
+    w.grid.rebuild(&w.organisms);
+    let nest = at + Vec2::new(4.0, 1.0);
+    let g = w.organisms[h].genome.clone();
+    let clutch = |owner, lineage| Clutch {
+        pos: nest,
+        owner,
+        mother: 0,
+        father: 0,
+        generation: 1,
+        lineage,
+        eggs: vec![(*g).clone(), (*g).clone(), (*g).clone()],
+        hatch_tick: 1_000_000,
+        guardian: None,
+        warm_blooded: true,
+        chill: 0.0,
+        overheat: 0.0,
+        newborn_growth: 0.1,
+        egg_mass: 0.05,
+    };
+    let own = w.organisms[h].owner;
+    let rival = (0..w.lineages.len() as u32).find(|&l| w.lineages[l as usize].owner != own).unwrap();
+    let rival_owner = w.lineages[rival as usize].owner;
+    w.clutch_at.insert(w.map.tile_coords(nest), 0);
+    w.clutches.push(clutch(rival_owner, rival));
+    assert_eq!(w.scent_clutch(&w.organisms[h]), Some(nest));
+    // Not its own lineage's.
+    w.clutches[0] = clutch(own, PACK);
+    assert_eq!(w.scent_clutch(&w.organisms[h]), None);
+    w.clutches[0] = clutch(rival_owner, rival);
+    // Not when fed, nor with the rule off.
+    w.organisms[h].needs.hunger = 10.0;
+    assert_eq!(w.scent_clutch(&w.organisms[h]), None);
+    w.organisms[h].needs.hunger = 70.0;
+    w.config.balance.nest_raids = 0.0;
+    assert_eq!(w.scent_clutch(&w.organisms[h]), None);
 }
