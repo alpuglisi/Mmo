@@ -1410,3 +1410,40 @@ fn migrate_warns_of_sleep_rival_ground_and_drying_water() {
     // And a crowded destination rates the trip.
     assert!(shared.share() <= shared.destination.unwrap() + 1e-6, "{shared:?}");
 }
+
+/// Playtest 9: no warning before a newcomer's grace ended with a pack next
+/// door. Once, a few days before it ends, the owner is told, with the rival
+/// hunters near its animals.
+#[test]
+fn a_newcomer_is_warned_before_its_grace_ends_with_the_hunters_near() {
+    let (mut g, a) = game();
+    tick(&mut g);
+    g.set_name(2, "bo");
+    // Big enough that its grace isn't stretched to the winter's end.
+    let b = g.found(2, &design("B").founders(50)).unwrap().founders;
+    g.connect(20, 2, "bo");
+    // ann's animals are hunters, beside bo's.
+    hunters(&mut g, 1);
+    let at = g.world.organism(b[0]).unwrap().pos;
+    for id in &a {
+        let i = g.world.organisms.iter().position(|o| o.id == *id).unwrap();
+        g.world.organisms[i].pos = at + Vec2::new(2.0, 0.0);
+    }
+    let told = |g: &Game| -> Vec<String> {
+        g.alerts.get(&2).map_or(Vec::new(), |v| {
+            v.iter().filter(|x| x.text.contains("grace ends")).map(|x| x.text.clone()).collect()
+        })
+    };
+    // Plenty of grace left: nothing yet.
+    g.world.config.balance.attack_grace = 1e6;
+    tick(&mut g);
+    assert!(told(&g).is_empty());
+    // Two days left: told once, with ann's hunters.
+    g.world.config.balance.attack_grace = 2.0;
+    g.world.set_attack_grace_min_ticks(0);
+    tick(&mut g);
+    tick(&mut g);
+    let t = told(&g);
+    assert_eq!(t.len(), 1, "{t:?}");
+    assert!(t[0].contains("of ann's hunters") && t[0].contains("within 30 tiles"), "{}", t[0]);
+}

@@ -406,6 +406,12 @@ fn egg_loss_why(cause: &str, abandoned: bool, asleep: bool, clutch: Option<u32>)
 /// Most mating requests one player may send another within
 /// `GameConfig::request_window_ticks` (refused with `too_many_requests`).
 pub const REQUESTS_PER_TARGET: usize = 3;
+/// Game days before a lineage's newcomer grace ends at which its owner is
+/// warned (`Game::warn_grace_ending`).
+pub const GRACE_WARN_DAYS: f32 = 3.0;
+/// Tiles from the player's animals within which rival hunters are named in
+/// that warning.
+pub const GRACE_PACK_RANGE: f32 = 30.0;
 /// Most players one player may block.
 pub const MAX_BLOCKED: usize = 200;
 
@@ -997,6 +1003,9 @@ pub struct Game {
     /// was told "46 starved", the whole lineage's). `None` until a day has
     /// been counted (after a restart). Not saved.
     group_deaths: Option<BTreeMap<(PlayerId, u8), (u64, u64)>>,
+    /// Lineages told their grace is about to end (`warn_grace_ending`).
+    /// Not saved: after a restart one may be told again.
+    grace_warned: BTreeSet<u32>,
     /// How each group's last order ended on its own (arrived, stalled,
     /// claimed on arrival), shown on its card until its next order: alerts
     /// scroll away (playtest 4: a migration "silently did nothing"). Not
@@ -1298,6 +1307,7 @@ impl Game {
             hardship_told: BTreeSet::new(),
             hardship_note: BTreeSet::new(),
             group_deaths: None,
+            grace_warned: BTreeSet::new(),
             outcomes: BTreeMap::new(),
             hosts,
             pending_out,
@@ -1370,12 +1380,65 @@ impl Game {
 
     /// Tell each player whose grace just ended (ran out, or they ended it).
     fn announce_grace_end(&mut self, out: &mut Outbox) {
+        self.warn_grace_ending(out);
         let now = self.graced_players();
         let ended: Vec<PlayerId> = self.graced.difference(&now).copied().collect();
         self.graced = now;
         for p in ended {
             let text = "Your newcomer grace has ended: other players' animals can now attack yours, and yours theirs."
                 .to_string();
+            self.alert(p, AlertKind::Attack, text, None, out);
+        }
+    }
+
+    /// Once per lineage, [`GRACE_WARN_DAYS`] before its newcomer grace ends:
+    /// say so, with the real time left and the rival hunters within
+    /// [`GRACE_PACK_RANGE`] tiles of its animals (playtest 9: no warning
+    /// before a pack next door could attack).
+    fn warn_grace_ending(&mut self, out: &mut Outbox) {
+        let due: Vec<(PlayerId, u32, f32)> = self
+            .lineage_of
+            .iter()
+            .filter(|(_, l)| !self.grace_warned.contains(l))
+            .filter_map(|(&p, &l)| self.world.lineage_grace_left(l).map(|d| (p, l, d)))
+            .filter(|&(_, _, d)| d <= GRACE_WARN_DAYS)
+            .collect();
+        for (p, l, days) in due {
+            self.grace_warned.insert(l);
+            let mine: Vec<evo_sim::math::Vec2> =
+                self.world.organisms.iter().filter(|o| o.alive && o.owner == p).map(|o| o.pos).collect();
+            let step = (mine.len() / 200).max(1);
+            let mut by_owner: BTreeMap<PlayerId, usize> = BTreeMap::new();
+            for o in self
+                .world
+                .organisms
+                .iter()
+                .filter(|o| o.alive && o.owner != p && o.owner != WILD && o.traits.carnivory > 0.6)
+            {
+                if mine.iter().step_by(step).any(|m| m.dist(o.pos) < GRACE_PACK_RANGE) {
+                    *by_owner.entry(o.owner).or_default() += 1;
+                }
+            }
+            let ticks = (days * self.world.config.ticks_per_day as f32).round() as u64;
+            let minutes = self.real_seconds(ticks).div_ceil(60).max(1);
+            let when = if days < 1.0 {
+                format!("in under a day (about {minutes} real minute{})", if minutes == 1 { "" } else { "s" })
+            } else {
+                format!("in about {days:.0} days (about {minutes} real minutes)")
+            };
+            let near = if by_owner.is_empty() {
+                String::new()
+            } else {
+                let named: Vec<String> =
+                    by_owner.iter().map(|(&o, &n)| format!("{n} of {}'s hunters", self.name(o))).collect();
+                format!(
+                    " {} {} within {GRACE_PACK_RANGE:.0} tiles of your animals: keep them together, move them away from \
+                     the hunters, or claim ground far from them before then.",
+                    named.join(" and "),
+                    if by_owner.values().sum::<usize>() == 1 { "is" } else { "are" }
+                )
+            };
+            let text = format!("Your newcomer grace ends {when}: then other players' animals can attack yours.{near}");
             self.alert(p, AlertKind::Attack, text, None, out);
         }
     }

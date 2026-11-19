@@ -1128,11 +1128,13 @@ impl World {
             return;
         }
         let cell = |p: Vec2| ((p.x / PACK_CELL).floor() as i32, (p.y / PACK_CELL).floor() as i32);
-        let mut cells: BTreeMap<(PlayerId, u8), BTreeMap<(i32, i32), (u32, Vec2)>> = BTreeMap::new();
+        // Per (player, group): hunters and the sum of their positions by cell.
+        type Cells = BTreeMap<(i32, i32), (u32, Vec2)>;
+        let mut cells: BTreeMap<(PlayerId, u8), Cells> = BTreeMap::new();
         for o in self.organisms.iter().filter(|o| o.alive && decide::player_pack(bal, o)) {
             let e = cells.entry((o.owner, o.group)).or_default().entry(cell(o.pos)).or_default();
             e.0 += 1;
-            e.1 = e.1 + o.pos;
+            e.1 += o.pos;
         }
         for (key, grid) in cells {
             let around = |(cx, cy): (i32, i32)| {
@@ -1141,7 +1143,7 @@ impl World {
                     for dy in -1..=1 {
                         if let Some(&(k, s)) = grid.get(&(cx + dx, cy + dy)) {
                             n += k;
-                            sum = sum + s;
+                            sum += s;
                         }
                     }
                 }
