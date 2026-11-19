@@ -2130,5 +2130,5 @@ fn version_83_snapshots_restore_without_rival_clear() {
     assert!(r.snapshot() == w.snapshot());
     let w = fixture_world();
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
-    assert_eq!((r.config.balance.rival_clear, r.config.balance.pack_cohesion), (1.0, 1.0));
+    assert_eq!((r.config.balance.rival_clear, r.config.balance.pack_cohesion), (1.0, 0.0));
 }

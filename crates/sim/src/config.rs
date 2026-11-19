@@ -1452,7 +1452,9 @@ pub struct Balance {
     /// pack-mates is drawn back to them (`decide`): at 1, one more than
     /// `world::PACK_STRAY` tiles from the nearest pack-mates heads back
     /// before it wanders or forages further (playtest 9: 36 founders with
-    /// pack instinct 1.0 spread over 63 tiles in 8 days). 0: off.
+    /// pack instinct 1.0 spread over 63 tiles in 8 days). 0: off, the
+    /// default: kept together, the six-player study's pack ended half the
+    /// size (peak 59 against 117 over 360 days), so it ships off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v85"))]
     pub pack_cohesion: f32,
 }
@@ -1767,7 +1769,7 @@ impl Default for Balance {
             world_crowding: 0.2,
             wild_refuge: 0.3,
             rival_clear: 1.0,
-            pack_cohesion: 1.0,
+            pack_cohesion: 0.0,
         }
     }
 }

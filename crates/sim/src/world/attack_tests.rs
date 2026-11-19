@@ -812,6 +812,8 @@ fn hungry_hunters_take_bright_prey_and_aversions_fade() {
 #[test]
 fn a_packs_home_is_its_thickest_cluster() {
     let mut w = world();
+    // Off by default (it halved the study's pack); on for this test.
+    w.config.balance.pack_cohesion = 1.0;
     for k in 0..5 {
         place(&mut w, HUNTER, &hunter(), Vec2::new(10.5 + k as f32 * 0.5, 10.5));
     }
