@@ -99,6 +99,8 @@ const COLD_SLOW: f32 = 32.0;
 /// `Balance::cold_heat` (harm past 8 more: 34 + 8 = 42 °C; 38 + 8 = 46
 /// without it).
 const COLD_HEAT_LIMIT: f32 = 34.0;
+/// Extra hunger per unit of toxins (`Balance::toxin_upkeep`).
+const TOXIN_UPKEEP: f32 = 0.4;
 /// Extra hunger of a flier on the move, a share of `Balance::hunger_rate`
 /// per unit of wings at 4 kg (`Balance::flight_upkeep`).
 const FLIGHT_HUNGER: f32 = 0.45;
@@ -846,6 +848,13 @@ impl World {
         let prey_power = b.power().max(guard_power);
         let prey_fights = super::decide::fight_back(b, self.config.balance.generalist_tax);
         let prey_bright = b.pheno[Gene::Coloration] > 0.6;
+        // Whether the prey's toxin is its lineage's own (`Balance::toxin_source`):
+        // one of its toxin alleles carries the lineage owner's origin.
+        let own_toxin = self.config.balance.toxin_source <= 0.0 || {
+            let owner = self.lineages.get(b.lineage as usize).map(|l| l.owner);
+            let t = b.genome.locus(Gene::Toxins);
+            owner.is_some_and(|w| t.a.origin == w || t.b.origin == w)
+        };
         let (prey_lineage_of_b, prey_coloration) = (b.lineage, b.pheno[Gene::Coloration]);
         let prey_pos = b.pos;
         let prey_mass = b.mass();
@@ -861,7 +870,9 @@ impl World {
                 a.bright_aversion = true;
             }
             let (pred, prey_lineage, coloration) = (a.lineage, prey_lineage_of_b, prey_coloration);
-            self.learn_toxic(pred, prey_lineage, coloration);
+            if own_toxin {
+                self.learn_toxic(pred, prey_lineage, coloration);
+            }
             let a = &mut self.organisms[i];
             if a.health <= 0.0 {
                 self.kill(i, DeathCause::Toxin);
@@ -1231,7 +1242,10 @@ impl World {
         let crowd = crowd * self.lineage_crowding(o.lineage)[1];
         // Small bodies burn through food and water faster (`Balance::size_burn`).
         let size_burn = if bal.size_burn == 0.0 { 1.0 } else { o.traits.body.mass.powf(-bal.size_burn) };
+        // Making toxins costs food (`Balance::toxin_upkeep`).
+        let toxin_cost = 1.0 + TOXIN_UPKEEP * o.pheno[Gene::Toxins] * bal.toxin_upkeep;
         let mut hunger = bal.hunger_rate
+            * toxin_cost
             * st.metabolism
             * diet
             * crowd
@@ -1260,6 +1274,11 @@ impl World {
             hunger += bal.hunger_rate * FLIGHT_HUNGER * wings * (o.traits.body.mass / 4.0).powf(0.3) * size_burn * dt;
             thirst += bal.thirst_rate * FLIGHT_THIRST * wings * (1.0 + 0.05 * heat) * size_burn * dt;
         }
+        // A new founding's founders lose water more slowly in a drought, for
+        // their first `FOUNDER_WATER_DAYS` (`Balance::founding_drought`):
+        // time to find the water. Playtest 6's founders at 52% drought
+        // died of thirst within days.
+        thirst *= self.founder_water_relief(o);
         if o.dormancy != Dormancy::Awake {
             hunger *= dormant_rate;
             if deep {
@@ -2233,6 +2252,8 @@ mod tests {
     fn brooders_shade_their_eggs_at_a_cost() {
         for sitting in [true, false] {
             let (mut w, i) = layer(7, BirthType::IncubatedEggs);
+            // The brooding itself: a big clutch's cover is tested apart.
+            w.config.balance.clutch_cover = 0.0;
             let mut rng = crate::rng::rng_for(1, 0, 0, 0);
             w.give_birth(i, &mut rng);
             let id = w.organisms[i].id;
@@ -2256,6 +2277,32 @@ mod tests {
                 None => assert!(!sitting && thirst == 0.0),
             }
         }
+    }
+
+    /// Clutch cover (`Balance::clutch_cover`): a sitting parent keeps a
+    /// clutch of 3 warm on a cool nest, while a bigger clutch chills under
+    /// her; with the rule off both stay warm.
+    #[test]
+    fn a_big_clutch_chills_under_its_parent() {
+        let chill = |eggs: usize, cover: f32| {
+            let (mut w, i) = layer(7, BirthType::IncubatedEggs);
+            w.config.balance.clutch_cover = cover;
+            let mut rng = crate::rng::rng_for(1, 0, 0, 0);
+            w.give_birth(i, &mut rng);
+            let id = w.organisms[i].id;
+            let k = w.clutches.iter().position(|c| c.guardian == Some(id)).expect("a guarded clutch");
+            let pos = w.clutches[k].pos;
+            w.clutches[k].hatch_tick = u64::MAX;
+            let egg = w.clutches[k].eggs[0].clone();
+            w.clutches[k].eggs = vec![egg; eggs];
+            set_climate(&mut w, pos, 10.0);
+            w.organisms[i].pos = pos;
+            w.update_clutches(&mut rng);
+            w.clutches.iter().find(|c| c.guardian == Some(id)).map_or(f32::MAX, |c| c.chill)
+        };
+        assert_eq!(chill(3, 1.0), 0.0);
+        assert!(chill(6, 1.0) > 0.0);
+        assert_eq!(chill(6, 0.0), 0.0);
     }
 
     /// Attended eggs (`Balance::egg_attendance`): a clutch whose brooding
@@ -2291,6 +2338,7 @@ mod tests {
         for (warmth, temp) in [(24.0, -10.0), (100.0, -10.0), (24.0, 20.0)] {
             let (mut w, i) = layer(7, BirthType::IncubatedEggs);
             w.config.balance.brood_warmth = warmth;
+            w.config.balance.clutch_cover = 0.0;
             let mut rng = crate::rng::rng_for(1, 0, 0, 0);
             w.give_birth(i, &mut rng);
             let id = w.organisms[i].id;

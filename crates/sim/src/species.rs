@@ -553,7 +553,18 @@ pub struct DetectParams {
     /// samples are clustered apart, and a species continues only as a
     /// cluster of its main lineage's owner.
     pub owner_species: bool,
+    /// Species credit only for a genuine speciation
+    /// (`Balance::speciation_credit`): a split is credited when its parent
+    /// species was the same player's, at least `speciation_days` old, and
+    /// the split holds at least [`SPECIATION_ADULTS`] adults; a species
+    /// whose main lineage wasn't sampled keeps its dominant owner for
+    /// continuing.
+    pub speciation_credit: bool,
+    pub speciation_days: u64,
 }
+
+/// Fewest adults a split needs for credit (`DetectParams::speciation_credit`).
+pub const SPECIATION_ADULTS: f64 = 100.0;
 
 impl DetectParams {
     pub fn from_config(cfg: &crate::WorldConfig) -> Self {
@@ -568,6 +579,8 @@ impl DetectParams {
             revive_days: cfg.scoring.species_revive_days as u64,
             player_species: cfg.balance.player_species > 0.0,
             owner_species: cfg.balance.species_credit > 0.0,
+            speciation_credit: cfg.balance.speciation_credit > 0.0,
+            speciation_days: cfg.days_per_year as u64,
         }
     }
 }
@@ -634,15 +647,29 @@ impl SpeciesTracker {
         // initial wild species never as a player-led cluster; with
         // `owner_species`, only as a cluster of its main lineage's owner
         // (when that lineage was sampled).
-        let owner_of: BTreeMap<u32, PlayerId> =
-            if p.owner_species { samples.iter().map(|s| (s.lineage, s.owner)).collect() } else { BTreeMap::new() };
+        let owner_of: BTreeMap<u32, PlayerId> = if p.owner_species || p.speciation_credit {
+            samples.iter().map(|s| (s.lineage, s.owner)).collect()
+        } else {
+            BTreeMap::new()
+        };
+        // A species' owner: its main lineage's, or (with `speciation_credit`)
+        // its dominant player's when that lineage wasn't sampled, so a dead
+        // lineage's species never continues as another owner's cluster.
+        let species_owner = |sp: &Species| -> Option<PlayerId> {
+            let sampled = sp.main_lineage().and_then(|l| owner_of.get(&l).copied());
+            if p.speciation_credit {
+                sampled.or(Some(sp.dominant))
+            } else {
+                sampled
+            }
+        };
         let cluster_owner: Vec<Option<PlayerId>> =
             clusters.iter().map(|m| m.first().map(|&i| samples[i].owner)).collect();
         let successor: Vec<Option<usize>> = (0..live.len())
             .map(|k| {
                 let sp = &self.species[live[k]];
                 let wild_initial = sp.origin == SpeciesOrigin::Initial && sp.founder.is_none() && sp.dominant == WILD;
-                let owner = sp.main_lineage().and_then(|l| owner_of.get(&l).copied());
+                let owner = if p.owner_species { species_owner(sp) } else { None };
                 let (c, n) = (0..clusters.len()).fold((0, 0), |b, c| {
                     let foreign = owner.is_some_and(|o| cluster_owner[c] != Some(o));
                     if overlap[c][k] > b.1 && !(wild_initial && player_led[c]) && !foreign {
@@ -803,7 +830,20 @@ impl SpeciesTracker {
                 promoted.push(k);
                 origin = SpeciesOrigin::Split;
             }
-            let founder = (origin == SpeciesOrigin::Split && sum.dominant != WILD).then_some(sum.dominant);
+            let mut founder = (origin == SpeciesOrigin::Split && sum.dominant != WILD).then_some(sum.dominant);
+            // A genuine speciation only (`DetectParams::speciation_credit`):
+            // from the player's own, year-old species, and not a small group.
+            if p.speciation_credit {
+                let genuine = founder.is_some_and(|f| {
+                    parent
+                        .and_then(|q| self.species.get(q as usize))
+                        .is_some_and(|ps| species_owner(ps) == Some(f) && ps.founded_day + p.speciation_days <= day)
+                        && sum.adults >= SPECIATION_ADULTS
+                });
+                if !genuine {
+                    founder = None;
+                }
+            }
             if let Some(f) = founder {
                 *self.founded.entry(f).or_default() += 1;
             }
@@ -907,8 +947,10 @@ mod tests {
         cfg.scoring.species_confirm = 0;
         cfg.scoring.species_merge_confirm = 0;
         cfg.scoring.species_revive_days = 0;
-        // Before species credit by owner (tested on its own).
+        // Before species credit by owner and genuine speciation (tested on
+        // their own).
         cfg.balance.species_credit = 0.0;
+        cfg.balance.speciation_credit = 0.0;
         DetectParams::from_config(&cfg)
     }
 
@@ -921,6 +963,7 @@ mod tests {
         cfg.scoring.species_merge_confirm = 3;
         cfg.scoring.species_revive_days = 100;
         cfg.balance.species_credit = 0.0;
+        cfg.balance.speciation_credit = 0.0;
         DetectParams::from_config(&cfg)
     }
 
@@ -1094,6 +1137,62 @@ mod tests {
         let t = run(true, &wild2, &day1);
         let wilds: Vec<_> = t.alive().filter(|s| s.lineages.iter().all(|&(l, _)| l == 0 || l == 5)).collect();
         assert_eq!(wilds.len(), 2, "{:?}", names(&t));
+    }
+
+    /// Genuine speciation only (`DetectParams::speciation_credit`): a copy
+    /// of a rival's design and a small or young split of one's own are
+    /// species without credit; a large split of a year-old species of the
+    /// player's own is credited; and a rival's species whose lineage died
+    /// doesn't continue as the copier's cluster.
+    #[test]
+    fn only_a_genuine_speciation_is_credited() {
+        let mut p = params();
+        (p.owner_species, p.speciation_credit, p.speciation_days) = (true, true, 100);
+        let founders = |t: &SpeciesTracker| t.alive().map(|s| (s.lineages[0].0, s.founder)).collect::<Vec<_>>();
+        // Player 1's species (lineage 1), then player 2's copy (lineage 2).
+        let mut t = SpeciesTracker::default();
+        let wild = group(&base().with(Gene::Carnivory, 0.9), 20, 9, WILD, 1);
+        t.detect(0, &wild, &p, |l| format!("L{l}"));
+        let mut day1 = wild.clone();
+        day1.extend(group(&base(), 150, 1, 1, 2));
+        t.detect(1, &day1, &p, |l| format!("L{l}"));
+        let mut day2 = day1.clone();
+        day2.extend(group(&base(), 150, 2, 2, 3));
+        t.detect(2, &day2, &p, |l| format!("L{l}"));
+        let copy = t.alive().find(|s| s.lineages[0].0 == 2).expect("the copy is a species");
+        assert_eq!(copy.founder, None, "{:?}", founders(&t));
+        let original = t.alive().find(|s| s.lineages[0].0 == 1).unwrap().id;
+        // The original's lineage dies: its species doesn't continue as the copy.
+        let mut day3 = wild.clone();
+        day3.extend(group(&base(), 150, 2, 2, 4));
+        t.detect(3, &day3, &p, |l| format!("L{l}"));
+        assert!(!t.species[original as usize].lineages.iter().any(|&(l, _)| l == 2), "{:?}", founders(&t));
+        // Player 1's own split: too young, then too small, then genuine.
+        let split = |t: &mut SpeciesTracker, day: u64, n: usize, seed: u64| {
+            let mut v = wild.clone();
+            v.extend(group(&base(), 150, 5, 3, seed));
+            v.extend(group(&base().with(Gene::BodySize, 0.7), n, 5, 3, seed + 1));
+            t.detect(day, &v, &p, |l| format!("L{l}"))
+        };
+        let credited =
+            |ev: &[SpeciesEvent]| ev.iter().any(|e| matches!(e, SpeciesEvent::Appeared { founder: Some(3), .. }));
+        let mut t = SpeciesTracker::default();
+        t.detect(0, &wild, &p, |l| format!("L{l}"));
+        let mut own = wild.clone();
+        own.extend(group(&base(), 150, 5, 3, 10));
+        t.detect(1, &own, &p, |l| format!("L{l}"));
+        let ev = split(&mut t, 50, 150, 20);
+        assert!(!appeared(&ev).is_empty() && !credited(&ev), "a young species' split: {ev:?}");
+        let mut t = SpeciesTracker::default();
+        t.detect(0, &wild, &p, |l| format!("L{l}"));
+        t.detect(1, &own, &p, |l| format!("L{l}"));
+        let ev = split(&mut t, 200, 40, 30);
+        assert!(!appeared(&ev).is_empty() && !credited(&ev), "a small group: {ev:?}");
+        let mut t = SpeciesTracker::default();
+        t.detect(0, &wild, &p, |l| format!("L{l}"));
+        t.detect(1, &own, &p, |l| format!("L{l}"));
+        let ev = split(&mut t, 200, 150, 40);
+        assert!(credited(&ev), "a genuine speciation: {ev:?}");
     }
 
     fn base() -> FounderDesign {

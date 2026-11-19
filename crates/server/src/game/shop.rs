@@ -29,6 +29,19 @@ use crate::protocol::{
     ListingView, ScoreBreakdown, ShopView,
 };
 
+/// Another player's lineage in a compatibility check: tenths and no
+/// limiting gene. Varying one gene at a time against exact gaps solved a
+/// rival's body plan (playtest 4).
+fn coarsen_rivals(rows: &mut [CompatibilityRow], player: PlayerId) {
+    for r in rows.iter_mut().filter(|r| r.owner != player && r.owner != WILD) {
+        let tenth = |x: f32| (x * 10.0).round() / 10.0;
+        (r.fertility, r.fertility_low, r.fertility_high) =
+            (tenth(r.fertility), tenth(r.fertility_low), tenth(r.fertility_high));
+        (r.best_fertility, r.fertile_share, r.gap) = (tenth(r.best_fertility), tenth(r.fertile_share), tenth(r.gap));
+        r.limiting = "body_plan".into();
+    }
+}
+
 /// Adults of each lineage compared in a compatibility check.
 const SAMPLE: usize = 16;
 
@@ -81,8 +94,29 @@ pub struct Spread {
 /// [`DesignCompatView::egg_warning`]'s text: warm-blooded eggs left alone
 /// need 24 °C or more (`world::environment::egg_range`).
 pub const EGG_WARNING: &str = "Warm-blooded eggs need a parent's heat: left alone they chill whenever the air is \
-     below 24 °C, so abandoned eggs almost never hatch (playtest 5: 252 chilled, none hatched). Choose incubated eggs \
+     below 24 °C, so abandoned eggs almost never hatch. Choose incubated eggs \
      (a parent broods them) or live birth, or make the design cold-blooded.";
+
+/// Drought share of the land from which the design check warns a design
+/// with no drought trait (`DesignCompatView::drought_warning`).
+pub const DROUGHT_DESIGN_WARN: f32 = 0.4;
+/// Estivation from which a design counts as drought-ready.
+pub const DROUGHT_TRAIT: f32 = 0.3;
+
+/// [`DesignCompatView::drought_warning`]'s text.
+pub fn drought_design_text(drought: f32) -> String {
+    format!(
+        "Drought: {:.0}% of the land is dry. Founders without a drought trait die of thirst within days, even \
+         inside their grace. Add estivation (0.3 or more) so they sleep \
+         through the dry spell, or wait for the drought to ease.",
+        drought * 100.0
+    )
+}
+
+/// [`DesignCompatView::carnivore_egg_warning`]'s text.
+pub const CARNIVORE_EGG_WARNING: &str = "An egg-laying hunter leaves its clutch to hunt, and unattended eggs chill or \
+     are raided: expect several eggs lost for each one that hatches. Live birth suits a roaming carnivore; an egg layer \
+     does better with a smaller range and a partner left at the nest.";
 
 /// [`Spread`] over the pairs of `a` × `b` (None when either is empty).
 pub fn spread(a: &[&Genome], b: &[&Genome], relief: Relief) -> Option<Spread> {
@@ -168,6 +202,7 @@ impl Game {
             provisions_bought: self.recent_count(self.economy.provision_days.get(&player)),
             provisions_max: economy::MAX_PROVISIONS_PER_SEASON,
             provision_blocked: self.provision_terms(player).err().map(|e| e.message),
+            survey_price: economy::survey_price(self.owner_population(player)),
             reinforce_next_day: self.reinforce_next(player).map(|x| x.0),
             reinforce_next_minutes: self.reinforce_next(player).map(|x| x.1),
         }
@@ -256,6 +291,50 @@ impl Game {
         Ok((needy.len(), self.shop_view(player)))
     }
 
+    /// `survey`: rivals' groups and territories near the player's main
+    /// group, coarsely, for renown scaled by their lineage's size.
+    pub(super) fn survey(&mut self, player: PlayerId) -> Result<crate::protocol::SurveyView, ErrorInfo> {
+        if self.lineage_of(player).is_none() || self.is_extinct(player) {
+            return Err(ErrorInfo::new("no_lineage", "you have no living lineage to survey from"));
+        }
+        let Some(from) = self.world.group_middle(player, 0) else {
+            return Err(ErrorInfo::new("no_lineage", "your main group has no animals to survey from"));
+        };
+        let price = economy::survey_price(self.owner_population(player));
+        let coarse = |v: f32| (v / 8.0).floor() * 8.0 + 4.0;
+        let mut groups = Vec::new();
+        let rivals: Vec<PlayerId> = self.names.keys().copied().filter(|&p| p != player && p != WILD).collect();
+        for p in rivals {
+            for g in self.world.groups(p) {
+                let Some(mid) = self.world.group_middle(p, g.id) else { continue };
+                if mid.dist(from) > economy::SURVEY_RADIUS || g.members == 0 {
+                    continue;
+                }
+                groups.push(crate::protocol::SurveyGroup {
+                    player: p,
+                    name: self.name(p),
+                    x: coarse(mid.x),
+                    y: coarse(mid.y),
+                    members: g.members.div_ceil(10) * 10,
+                    territory: g.territory.map(|t| [t.center.x.round(), t.center.y.round(), t.radius.round()]),
+                });
+            }
+        }
+        self.spend(
+            player,
+            price,
+            format!("Survey: {} rival groups within {} tiles", groups.len(), economy::SURVEY_RADIUS),
+        )?;
+        Ok(crate::protocol::SurveyView {
+            price,
+            x: coarse(from.x),
+            y: coarse(from.y),
+            radius: economy::SURVEY_RADIUS,
+            groups,
+            shop: self.shop_view(player),
+        })
+    }
+
     /// `set_nameplate`.
     pub(super) fn set_nameplate(
         &mut self,
@@ -273,6 +352,9 @@ impl Game {
             .map_err(|why| ErrorInfo::new("bad_title", format!("that title can't be used: {why}")))?;
         // Nor another player's name, or one inside it (it shows beside the
         // owner's: "Herdmaster4 (alt)").
+        if self.wild_name(&title) {
+            return Err(ErrorInfo::new("bad_title", "that title can't be used: it is a wild species' name"));
+        }
         if self.impersonates(player, &title, names::Kind::Title) {
             return Err(ErrorInfo::new("bad_title", "that title can't be used: it looks like another player's name"));
         }
@@ -291,6 +373,9 @@ impl Game {
     pub(super) fn name_species(&mut self, player: PlayerId, species: u32, name: &str) -> Result<String, ErrorInfo> {
         let name = names::check(name, crate::design::MAX_NAME_LEN, names::Kind::Species)
             .map_err(|why| ErrorInfo::new("bad_name", format!("that species name can't be used: {why}")))?;
+        if self.wild_name(&name) {
+            return Err(ErrorInfo::new("bad_name", "that species name can't be used: it is a wild species' name"));
+        }
         if self.impersonates(player, &name, names::Kind::Species) {
             return Err(ErrorInfo::new("bad_name", "a species name can't look like another player's name"));
         }
@@ -331,6 +416,22 @@ impl Game {
         names::impersonates(text, self.names.iter().filter(|(&p, _)| p != player).map(|(_, n)| n.as_str()), kind)
     }
 
+    /// Whether `text` is a wild species' name (a wild lineage's, or a species
+    /// the wild dominates), folded, a plural `s` either way: a player's
+    /// lineage "Meadow vole" would found a second species of that name
+    /// (playtest 6).
+    pub(crate) fn wild_name(&self, text: &str) -> bool {
+        let key = |s: &str| {
+            let f = names::fold(s);
+            f.strip_suffix('s').map(str::to_string).unwrap_or(f)
+        };
+        let k = key(text);
+        let wild_lineages = self.world.lineages.iter().filter(|l| l.owner == WILD).map(|l| l.name.as_str());
+        let wild_species =
+            (self.world.chronicle.species.species.iter()).filter(|s| s.dominant == WILD).map(|s| s.name.as_str());
+        wild_lineages.chain(wild_species).any(|n| key(n) == k)
+    }
+
     /// Who may name species `s`: the player credited with a split, or for a
     /// species a founding started (`founding`, or `initial` when players'
     /// lineages were there at the first detection) the owner of its main
@@ -347,7 +448,9 @@ impl Game {
         if s.founder.is_some() {
             return s.founder;
         }
-        if s.origin == evo_sim::species::SpeciesOrigin::Split {
+        // An uncredited split (`Balance::speciation_credit`: a copy, a young
+        // or small split) is still its own lineage's to name, once.
+        if s.origin == evo_sim::species::SpeciesOrigin::Split && self.world.config.balance.speciation_credit <= 0.0 {
             return None;
         }
         // An initial species that holds a wild lineage is the wild one's:
@@ -464,19 +567,20 @@ impl Game {
             ids.iter().filter_map(|&id| self.world.organism(id)).map(|o| o.pos).collect();
         let n_landed = landed.len().max(1) as f32;
         let at = landed.iter().fold(evo_sim::math::Vec2::ZERO, |a, &p| a + p) * (1.0 / n_landed);
-        let group = self
+        let nearby = self
             .world
             .organisms
             .iter()
             .filter(|o| o.alive && o.lineage == lineage && !ids.contains(&o.id))
             .filter(|o| o.pos.dist(at) < evo_sim::World::REINFORCE_CLUSTER)
             .count();
-        let site = ReinforceSite { at: [at.x, at.y], group };
+        let group = ids.first().and_then(|&id| self.world.organism(id)).map_or(0, |o| o.group);
+        let site = ReinforceSite { at: [at.x, at.y], nearby_count: nearby, group };
         self.spend(
             player,
             price,
             format!(
-                "Reinforcements: {} adults joined your lineage at ({:.0}, {:.0}), beside {group} of its animals",
+                "Reinforcements: {} adults joined your lineage at ({:.0}, {:.0}), beside {nearby} of its animals",
                 ids.len(),
                 at.x,
                 at.y
@@ -534,7 +638,11 @@ impl Game {
         if own.is_empty() {
             return CompatibilityView { lineage: None, rows: Vec::new() };
         }
-        CompatibilityView { lineage: Some(mine), rows: self.compat_rows(&own, Some(mine)) }
+        let mut rows = self.compat_rows(&own, Some(mine));
+        // Like the design check: the `compatibility` command gave rivals'
+        // numbers exactly, with the limiting gene (playtest 6).
+        coarsen_rivals(&mut rows, player);
+        CompatibilityView { lineage: Some(mine), rows }
     }
 
     /// The design-time check (`POST /api/design/compatibility`): founders
@@ -546,16 +654,7 @@ impl Game {
         let founders: Vec<Genome> = (0..SAMPLE).map(|_| design.founder_genome(player, &mut rng)).collect();
         let own: Vec<&Genome> = founders.iter().collect();
         let mut rows = self.compat_rows(&own, None);
-        // Another player's lineage: tenths and no limiting gene. Varying
-        // one gene at a time against exact gaps solved a rival's body plan.
-        for r in rows.iter_mut().filter(|r| r.owner != player && r.owner != WILD) {
-            let tenth = |x: f32| (x * 10.0).round() / 10.0;
-            (r.fertility, r.fertility_low, r.fertility_high) =
-                (tenth(r.fertility), tenth(r.fertility_low), tenth(r.fertility_high));
-            (r.best_fertility, r.fertile_share, r.gap) =
-                (tenth(r.best_fertility), tenth(r.fertile_share), tenth(r.gap));
-            r.limiting = "body_plan".into();
-        }
+        coarsen_rivals(&mut rows, player);
         let fertile_with = rows.iter().filter(|r| r.fertile_share > 0.0).count();
         let at_risk = rows.iter().filter(|r| r.fertile_share <= 0.0 && r.drift_risk != "none").count();
         // Shores the founders can drink from (steep banks stop non-climbers).
@@ -576,6 +675,13 @@ impl Game {
                 s * 100.0
             )
         });
+        let drought = self.world.map.drought;
+        let drought_warning = (drought >= DROUGHT_DESIGN_WARN
+            && design.values()[evo_sim::Gene::Estivation.index()] < DROUGHT_TRAIT)
+            .then(|| drought_design_text(drought));
+        let carnivore_egg_warning = (design.birth == evo_sim::BirthType::IncubatedEggs
+            && design.values()[evo_sim::Gene::Carnivory.index()] >= 0.5)
+            .then(|| CARNIVORE_EGG_WARNING.to_string());
         let egg_warning = (design.thermo == evo_sim::Thermo::Warm && design.birth == evo_sim::BirthType::AbandonedEggs)
             .then(|| EGG_WARNING.to_string());
         DesignCompatView {
@@ -587,6 +693,8 @@ impl Game {
             shore_access,
             water_warning,
             egg_warning,
+            drought_warning,
+            carnivore_egg_warning,
             refound: self.refound_terms(player).map(|t| {
                 let n = t.founders(design);
                 crate::protocol::RefoundView {
@@ -595,12 +703,17 @@ impl Game {
                     cost: crate::game::RefoundTerms::cost(design, n),
                     until_day: t.until_day,
                     minutes_left: t.minutes_left,
+                    fee: t.fee.min(self.balance(player)),
                     reason: t.reason,
                 }
             }),
-            name_warning: self
-                .impersonates(player, &design.name, names::Kind::Lineage)
-                .then(|| "that lineage name looks like another player's name: founding would refuse it".to_string()),
+            name_warning: if self.impersonates(player, &design.name, names::Kind::Lineage) {
+                Some("that lineage name looks like another player's name: founding would refuse it".to_string())
+            } else if self.wild_name(&design.name) {
+                Some("that lineage name is a wild species' name: founding would refuse it".to_string())
+            } else {
+                None
+            },
         }
     }
 
@@ -746,10 +859,12 @@ impl Game {
     }
 }
 
-/// Where a purchase's reinforcements landed: their centre, and how many of
-/// the lineage's animals stand within `World::REINFORCE_CLUSTER` tiles of it.
+/// Where a purchase's reinforcements landed: their centre, how many of the
+/// lineage's animals stand within `World::REINFORCE_CLUSTER` tiles of it,
+/// and the group they joined (playtest 6: the reply's `group` was the count).
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub(super) struct ReinforceSite {
     pub at: [f32; 2],
-    pub group: usize,
+    pub nearby_count: usize,
+    pub group: u8,
 }

@@ -126,6 +126,9 @@ pub const MIGRATE_PROGRESS_SHARE: f32 = 0.03;
 /// Share of the cooldown left after abandoning a territory: a regretted
 /// claim can be replaced after a short wait, not the whole cooldown.
 pub const ABANDON_COOLDOWN_SHARE: f32 = 0.25;
+/// Tiles either side of a route counted as food on the way
+/// ([`World::journey_check`]).
+pub const JOURNEY_CORRIDOR: usize = 3;
 /// Largest arrival radius whatever the group's size: a few tiles, so a
 /// big herd has really come (playtest 3: with the rally radius, up to 24
 /// tiles, a 486-strong group "arrived" with its median 24–29 tiles out).
@@ -341,6 +344,21 @@ pub struct FoodCheck {
     pub members: usize,
     /// Days the plants standing in it now would feed the whole group.
     pub standing_days: f32,
+    /// The plants the circle grows back in a day now (its yield).
+    pub regrowth: f32,
+}
+
+/// How far a group's walk takes it and what the land along the way holds
+/// ([`World::journey_check`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JourneyCheck {
+    pub tiles: f32,
+    /// About how many days it takes ([`World::group_pace`]).
+    pub days: f32,
+    /// The plants standing along the way against what the group eats in
+    /// those days (1: just enough; below, hunger on the way).
+    pub food_share: f32,
+    pub members: usize,
 }
 
 /// Water in and around a territory or rally circle ([`World::water_check`]).
@@ -348,8 +366,9 @@ pub struct FoodCheck {
 pub struct WaterCheck {
     /// Share of the circle's tiles in water the group can't stand in.
     pub water_share: f32,
-    /// Tiles with drinking water in the circle or within [`WATER_REACH`]
-    /// of its edge.
+    /// Drinking spots in the circle or within [`WATER_REACH`] of its edge:
+    /// tiles the group can stand on beside water or snow
+    /// (`Map::can_drink_at`).
     pub drinkable: usize,
 }
 
@@ -598,7 +617,7 @@ impl World {
                     if o.dormancy.is_deep() {
                         *dormant.entry(key).or_default() += 1;
                     }
-                    if matches!(o.action, crate::organism::Action::Bask | crate::organism::Action::Rest) {
+                    if o.action == crate::organism::Action::Bask {
                         *basking.entry(key).or_default() += 1;
                     }
                     if o.needs.thirst / 100.0 >= need_limit(o) || o.needs.hunger / 100.0 >= stray_hunger(o) {
@@ -685,7 +704,8 @@ impl World {
                 let share =
                     |m: &BTreeMap<(PlayerId, u8), usize>| m.get(&key).copied().unwrap_or(0) as f32 / n.max(1) as f32;
                 let start = self.group_plans.pending.start_median.remove(&key).unwrap_or(plan.best_median);
-                let never_moved = plan.best_median > start - 2.0 * MIGRATE_PROGRESS_TILES;
+                let gained = (start - plan.best_median).max(0.0);
+                let never_moved = gained < MIGRATE_PROGRESS_TILES;
                 let pending_claim = self.group_plans.pending.claims.remove(&key).is_some();
                 self.push_group_event(GroupEvent::TimedOut {
                     player,
@@ -696,6 +716,7 @@ impl World {
                     basking_share: share(&basking),
                     needy_share: share(&needy),
                     never_moved,
+                    gained,
                     pending_claim,
                 });
             }
@@ -759,12 +780,17 @@ impl World {
                     continue;
                 }
                 let k = self.map.idx(x as usize, y as usize);
-                if self.map.tiles[k].water_source() {
+                let stands = self.standable_tile(&bodies, k);
+                // A drinking spot: ground the group stands on beside water
+                // (or snow). Water behind a cliff or deep in the sea doesn't
+                // count (playtest 6: 758 "drinkable" coastal tiles, and the
+                // herd walked 15-20 tiles to a river).
+                if stands && self.map.can_drink_at(crate::terrain::Map::tile_center(x as usize, y as usize)) {
                     drinkable += 1;
                 }
                 if d <= radius.max(0.5) {
                     tiles += 1;
-                    wet += usize::from(!self.standable_tile(&bodies, k));
+                    wet += usize::from(!stands);
                 }
             }
         }
@@ -779,18 +805,7 @@ impl World {
     /// that lives mostly on meat (its food walks in and out).
     pub fn food_check(&self, player: PlayerId, group: u8, center: Vec2, radius: f32) -> Option<FoodCheck> {
         let bal = &self.config.balance;
-        let (mut members, mut need, mut carnivory) = (0usize, 0.0f32, 0.0f32);
-        for o in self.organisms.iter().filter(|o| o.alive && o.owner == player && o.group == group) {
-            members += 1;
-            carnivory += o.traits.carnivory;
-            let eff = o.traits.plant_efficiency(bal).max(0.05);
-            let burn = if bal.size_burn == 0.0 { 1.0 } else { o.traits.body.mass.powf(-bal.size_burn) };
-            need += bal.hunger_rate * o.traits.stats.metabolism * burn * o.food_per_hunger() / eff;
-        }
-        if members == 0 || carnivory / members as f32 > 0.6 || need <= 0.0 {
-            return None;
-        }
-        let need = need * FOOD_NEED_MARGIN;
+        let (members, need) = self.plant_need(player, group)?;
         let (w, h) = (self.map.width as i32, self.map.height as i32);
         let (cx, cy) = (center.x.floor() as i32, center.y.floor() as i32);
         let span = radius.ceil() as i32 + 1;
@@ -821,7 +836,76 @@ impl World {
             supports: ((yield_day + standing / FOOD_HORIZON_DAYS) / per_animal).floor() as usize,
             members,
             standing_days: standing / need,
+            regrowth: yield_day,
         })
+    }
+
+    /// A group's walk along `route`: about how many days it takes at the
+    /// pace a group of its size keeps ([`World::group_pace`]), and how much
+    /// of its plant food on the way the land along it holds (standing plants
+    /// within [`JOURNEY_CORRIDOR`] tiles of the route, against the group's
+    /// need for those days). `None` without members or a route.
+    pub fn journey_check(&self, player: PlayerId, group: u8, route: &[Vec2]) -> Option<JourneyCheck> {
+        if route.len() < 2 {
+            return None;
+        }
+        let members = self.group_counts(player, group).0;
+        if members == 0 {
+            return None;
+        }
+        let tiles: f32 = route.windows(2).map(|p| p[0].dist(p[1])).sum();
+        let days = tiles / Self::group_pace(members);
+        // Standing plants along the way (each tile once).
+        let mut seen = std::collections::BTreeSet::new();
+        let r = JOURNEY_CORRIDOR as i32;
+        for pair in route.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let steps = (a.dist(b) / 1.0).ceil().max(1.0) as usize;
+            for k in 0..=steps {
+                let p = a + (b - a) * (k as f32 / steps as f32);
+                let (x, y) = self.map.tile_coords(p);
+                for dy in -r..=r {
+                    for dx in -r..=r {
+                        let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                        if nx >= 0 && ny >= 0 && (nx as usize) < self.map.width && (ny as usize) < self.map.height {
+                            seen.insert(self.map.idx(nx as usize, ny as usize));
+                        }
+                    }
+                }
+            }
+        }
+        let standing: f32 = seen.iter().map(|&k| self.map.tiles[k].veg).sum();
+        let food_share = match self.plant_need(player, group) {
+            Some((_, need)) => (standing / (need * days.max(1.0))).min(10.0),
+            None => 1.0,
+        };
+        Some(JourneyCheck { tiles, days, food_share, members })
+    }
+
+    /// A plant-eating group's members and their daily plant need (with
+    /// [`FOOD_NEED_MARGIN`]); `None` without members or for a group that
+    /// lives mostly on meat.
+    pub fn plant_need(&self, player: PlayerId, group: u8) -> Option<(usize, f32)> {
+        let bal = &self.config.balance;
+        let (mut members, mut need, mut carnivory) = (0usize, 0.0f32, 0.0f32);
+        for o in self.organisms.iter().filter(|o| o.alive && o.owner == player && o.group == group) {
+            members += 1;
+            carnivory += o.traits.carnivory;
+            let eff = o.traits.plant_efficiency(bal).max(0.05);
+            let burn = if bal.size_burn == 0.0 { 1.0 } else { o.traits.body.mass.powf(-bal.size_burn) };
+            need += bal.hunger_rate * o.traits.stats.metabolism * burn * o.food_per_hunger() / eff;
+        }
+        if members == 0 || carnivory / members as f32 > 0.6 || need <= 0.0 {
+            return None;
+        }
+        Some((members, need * FOOD_NEED_MARGIN))
+    }
+
+    /// Tiles a day a migrating group of `members` covers, fitted to what
+    /// players saw: about 10 for a few dozen, 6 for 300, 3 for 1,000 (big
+    /// herds stop to eat, drink and wait on each other).
+    pub fn group_pace(members: usize) -> f32 {
+        12.0 / (1.0 + members as f32 / 150.0).powf(0.7)
     }
 
     /// Tiles along `route` (each counted once) the group can't stand on:
@@ -924,6 +1008,12 @@ impl World {
         self.groups_of(player, &self.organisms)
     }
 
+    /// Every territory held, by (player, group): public ground, shown on
+    /// everyone's map.
+    pub fn all_territories(&self) -> impl Iterator<Item = (PlayerId, u8, &Territory)> {
+        self.territories.iter().map(|(&(p, g), t)| (p, g, t))
+    }
+
     /// The territory a group holds.
     pub fn territory(&self, player: PlayerId, group: u8) -> Option<Territory> {
         self.territories.get(&(player, group)).copied()
@@ -982,19 +1072,25 @@ impl World {
             }
         }
         let center = self.on_map(center)?;
-        let r = radius.max(TERRITORY_MIN_RADIUS);
+        // The radius the claim would get, not the one typed: a radius of 300
+        // used to find any rival territory on the map.
+        let adults = self.group_counts(player, group).1;
+        let r = radius.clamp(TERRITORY_MIN_RADIUS, Self::territory_radius_limit(adults));
         if self.territories.iter().any(|(&(p, _), t)| p != player && t.center.dist(center) < t.radius + r) {
             return Err(CommandError::Overlaps);
         }
         Ok(center)
     }
 
-    /// Whether a territory has no drinking water left or is grazed bare
-    /// (standing plants for under [`TERRITORY_BARE_DAYS`]): the group may
-    /// then move it at once.
+    /// Whether a territory has no drinking water left, is grazed bare
+    /// (standing plants for under [`TERRITORY_BARE_DAYS`]) or has been
+    /// outgrown (it feeds fewer animals than the group has): the group may
+    /// then move or enlarge it at once.
     pub fn territory_failing(&self, player: PlayerId, group: u8, t: &Territory) -> bool {
         self.water_check(player, group, t.center, t.radius).drinkable == 0
-            || self.food_check(player, group, t.center, t.radius).is_some_and(|f| f.standing_days < TERRITORY_BARE_DAYS)
+            || self
+                .food_check(player, group, t.center, t.radius)
+                .is_some_and(|f| f.standing_days < TERRITORY_BARE_DAYS || f.supports < f.members)
     }
 
     /// Group command: claim a territory, or, when its centre is more than
@@ -1014,9 +1110,14 @@ impl World {
         let at = match self.check_claim(player, group, center, radius) {
             Ok(at) => at,
             Err(CommandError::Overlaps) => {
-                // A refused claim over a rival's ground starts the wait too,
-                // so claims can't probe the map for others' territories.
-                self.territory_claims.insert((player, group), self.tick);
+                // A refused claim over a rival's ground costs a short wait
+                // (a quarter of the cooldown), not the whole one: territories
+                // are shown on the map, so the refusal tells little.
+                let key = (player, group);
+                let cd = self.claim_cooldown_ticks();
+                let short = (ABANDON_COOLDOWN_SHARE * cd as f32).round() as u64;
+                let ready = self.territory_claims.get(&key).map_or(0, |&at| at + cd).max(self.tick + short);
+                self.territory_claims.insert(key, ready.saturating_sub(cd));
                 return Err(CommandError::Overlaps);
             }
             Err(e) => return Err(e),
@@ -1163,8 +1264,14 @@ impl World {
         let moving: Vec<usize> = match members {
             Some(ids) => {
                 let mut idx = Vec::with_capacity(ids.len());
+                let mut missing = None;
                 for &id in ids {
-                    let i = self.live_index(id)?;
+                    // An animal that died since the list was made is skipped
+                    // (only a list with nobody alive in it is refused).
+                    let Ok(i) = self.live_index(id) else {
+                        missing.get_or_insert(id);
+                        continue;
+                    };
                     let o = &self.organisms[i];
                     if o.owner != player {
                         return Err(CommandError::NotOwned(id));
@@ -1173,6 +1280,9 @@ impl World {
                         return Err(CommandError::NotInGroup(id));
                     }
                     idx.push(i);
+                }
+                if let (true, Some(id)) = (idx.is_empty(), missing) {
+                    return Err(CommandError::NotFound(id));
                 }
                 idx.sort_unstable();
                 idx.dedup();

@@ -29,11 +29,29 @@ const RESERVED_ANYWHERE: &[&str] = &[
     "official",
     "developer",
     "anthropic",
+    // Misspellings that read the same (playtest 6).
+    "moderater",
+    "gamemastr",
+    "rootuser",
 ];
 
 /// Words a name may not use as a whole word (folded): too short or too
 /// common to match inside other words ("model", "modest", "owners'…").
-const RESERVED_WORDS: &[&str] = &["gm", "mod", "mods", "dev", "devs", "owner", "support", "helpdesk", "claude"];
+const RESERVED_WORDS: &[&str] = &[
+    "gm",
+    "gms",
+    "mod",
+    "mods",
+    "dev",
+    "devs",
+    "owner",
+    "owners",
+    "support",
+    "helpdesk",
+    "claude",
+    "operator",
+    "operators",
+];
 
 /// What a whole name may not come down to, once folded with its spaces and
 /// punctuation dropped, a leading "the", a trailing team word and trailing
@@ -45,6 +63,10 @@ const RESERVED_WHOLE: &[&str] =
 
 /// Words a staff name may end in ("SupportTeam", "DevCrew", "Mods").
 const TEAM_SUFFIXES: &[&str] = &["team", "crew", "squad", "s"];
+
+/// Whole forms that are also plain words whose plural is just a plural
+/// ("Roots", "Helps"): no `s` suffix for them (playtest 6: "Roots" refused).
+const PLAIN_PLURALS: &[&str] = &["root", "help"];
 
 /// What a name is for: a nameplate title shows beside its owner's name, so
 /// it can't claim to be the wild either.
@@ -94,10 +116,74 @@ pub fn reserved(text: &str, kind: Kind) -> bool {
     if reserved_whole(text) {
         return true;
     }
-    let words: Vec<String> =
-        text.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).map(fold).collect();
+    let words = words(text);
     let word = |w: &str| words.iter().any(|x| *x == fold(w));
-    RESERVED_WORDS.iter().any(|w| word(w)) || (kind == Kind::Title && word("wild"))
+    if RESERVED_WORDS.iter().any(|w| word(w)) {
+        return true;
+    }
+    // The wild: no title may name it; a lineage or species may not start
+    // with it (it would read as a wild species: "Wild herd", playtest 6),
+    // though the word may sit inside another ("Wildebeest").
+    let wild = fold("wild");
+    match kind {
+        Kind::Title => word("wild") || word("wilds"),
+        Kind::Lineage | Kind::Species => words.first().is_some_and(|w| *w == wild || *w == fold("wilds")),
+        Kind::Account => false,
+    }
+}
+
+/// The words of a name, folded, for the reserved-word check: split at
+/// spaces and punctuation, with a run of single letters joined into one
+/// word ("Head G.M." reads "head", "gm"; "M.o.d.s" reads "mods"), and each
+/// CamelCase word also split into its parts ("GMBob": "gmbob", "gm",
+/// "bob"; "ClaudeBot": "claudebot", "claude", "bot").
+fn words(text: &str) -> Vec<String> {
+    let parts: Vec<&str> = text.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let mut raw: Vec<String> = Vec::new();
+    let mut run = String::new();
+    for p in parts {
+        if p.chars().count() == 1 {
+            run.push_str(p);
+            continue;
+        }
+        if !run.is_empty() {
+            raw.push(std::mem::take(&mut run));
+        }
+        raw.push(p.to_string());
+    }
+    if !run.is_empty() {
+        raw.push(run);
+    }
+    let mut out = Vec::new();
+    for w in raw {
+        out.push(fold(&w));
+        let camel = camel_parts(&w);
+        if camel.len() > 1 {
+            out.extend(camel.iter().map(|c| fold(c)));
+        }
+    }
+    out
+}
+
+/// The CamelCase parts of a word: a break before an upper-case letter that
+/// follows a lower-case one or a digit, and before the last of a run of
+/// capitals followed by a lower-case letter ("GMBob": "GM", "Bob").
+fn camel_parts(w: &str) -> Vec<String> {
+    let c: Vec<char> = w.chars().collect();
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for i in 1..c.len() {
+        let lower_to_upper = (c[i - 1].is_ascii_lowercase() || c[i - 1].is_ascii_digit()) && c[i].is_ascii_uppercase();
+        let acronym_end = c[i - 1].is_ascii_uppercase()
+            && c[i].is_ascii_uppercase()
+            && c.get(i + 1).is_some_and(|n| n.is_ascii_lowercase());
+        if lower_to_upper || acronym_end {
+            parts.push(c[start..i].iter().collect());
+            start = i;
+        }
+    }
+    parts.push(c[start..].iter().collect());
+    parts
 }
 
 /// Whether the whole name, run together (spaces and punctuation dropped,
@@ -113,8 +199,13 @@ fn reserved_whole(text: &str) -> bool {
     if forms.contains(&base) {
         return true;
     }
+    let plain: Vec<String> = PLAIN_PLURALS.iter().map(|w| fold(w)).collect();
     TEAM_SUFFIXES.iter().map(|s| fold(s)).any(|s| {
-        base.len() > s.len() && base.ends_with(&s) && forms.contains(&base[..base.len() - s.len()].to_string())
+        if !(base.len() > s.len() && base.ends_with(&s)) {
+            return false;
+        }
+        let stem = base[..base.len() - s.len()].to_string();
+        forms.contains(&stem) && !(s == fold("s") && plain.contains(&stem))
     })
 }
 
@@ -232,8 +323,37 @@ mod tests {
             }
         }
         // Ordinary names, and words merely containing a short reserved one.
+        // Playtest 6: a staff word next to another word, dotted or run
+        // together; misspellings; a lineage or species starting "Wild".
+        for kind in [Kind::Lineage, Kind::Species, Kind::Title, Kind::Account] {
+            for bad in [
+                "Head G.M.",
+                "herd G.M.",
+                "G.M. herd",
+                "Real G.M.",
+                "M.o.d.s crew",
+                "GMBob",
+                "GMRulebender",
+                "ClaudeBot",
+                "ClaudeAI",
+                "OwnerBob",
+                "Operator",
+                "Moderater",
+                "Gamemastr",
+                "Root user",
+            ] {
+                assert!(check(bad, 40, kind).is_err(), "{bad:?} as {kind:?}");
+            }
+        }
+        for kind in [Kind::Lineage, Kind::Species] {
+            assert!(check("Wild herd", 40, kind).is_err());
+            assert!(check("Wilds of the north", 40, kind).is_err());
+        }
+        assert!(check("Herd of the wild", 40, Kind::Title).is_err());
         for ok in [
-            "Wild horses",
+            "Wildebeest",
+            "Rewilded grazers",
+            "Roots",
             "Model herd",
             "Queen's grazers",
             "Steppe runners (2)",

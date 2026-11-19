@@ -28,12 +28,13 @@ fn busy_world() -> World {
     // would hold no cohorts (`staggered_busy_world_continues_exactly`
     // covers staggering).
     config.balance.decide_interval = 1.0;
-    // The world this test needs (harmful recessives, …) was found without
-    // the prey-scaled pack larder (version 58), which moves it.
-    config.balance.prey_larder = 0.0;
     config.scoring.catastrophes = true;
     config.scoring.catastrophe_first_year = 0;
     config.scoring.species_interval_days = 1;
+    // In 16-day years every clutch's incubation reaches into a winter, so
+    // the playtest 6 winter-clutch rule would leave no egg layer pregnant
+    // in winter, which the snapshot is meant to hold.
+    config.balance.founding_drought = 0.0;
     let mut w = presets::standard_world(config, 1);
     w.set_focus(1, vec![Vec2::new(30.0, 30.0)]);
     w.schedule_catastrophe(CatastropheKind::Epidemic, 1, Some(4));
@@ -518,12 +519,47 @@ fn balance56_off(b: &mut crate::Balance) {
 fn playtest5_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v57::OLD_VALUE;
     (b.dry_beds, b.drink_reach) = (old, old);
+    founding_drought_off(b);
+}
+
+/// The playtest 6 founding tunable as snapshots before version 61 read it.
+fn founding_drought_off(b: &mut crate::Balance) {
+    b.founding_drought = crate::serde_util::before_v61::OLD_VALUE;
+    balance62_off(b);
+}
+
+/// The playtest 6 balance tunables as snapshots before version 62 read
+/// them.
+fn balance62_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v62::OLD_VALUE;
+    (b.toxin_upkeep, b.hungry_hunters, b.toxin_source, b.speciation_credit, b.clutch_cover) = (old, old, old, old, old);
     playtest6_off(b);
 }
 
-/// The playtest 6 predator tunable as snapshots before version 58 read it.
+/// The playtest 6 predator tunable as snapshots before version 63 read it.
 fn playtest6_off(b: &mut crate::Balance) {
-    b.prey_larder = crate::serde_util::before_v58::OLD_VALUE;
+    b.prey_larder = crate::serde_util::before_v63::OLD_VALUE;
+}
+
+/// Version 61 snapshots (before the playtest 6 balance rules) restore with
+/// those tunables off, and are otherwise the same world.
+#[test]
+fn version_61_snapshots_restore_without_playtest6_balance() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v61();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 61);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.toxin_upkeep, crate::serde_util::before_v62::OLD_VALUE);
+    assert!(r.snapshot_v61() == old);
+    balance62_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    // This version keeps them.
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.toxin_source, r.config.balance.speciation_credit), (1.0, 1.0));
 }
 
 /// Version 55 snapshots (before the playtest 5 balance rules) restore with
@@ -612,6 +648,9 @@ fn fixture_world() -> World {
     for _ in 0..7 {
         w.step();
     }
+    // Snapshots before version 58 hold no niche tallies: start with none so
+    // the older layouts restore to the same world.
+    w.chronicle.niche_tally = Default::default();
     w
 }
 
@@ -1784,18 +1823,59 @@ fn version_56_snapshots_restore_without_playtest5_survival() {
     assert_eq!((r.config.balance.dry_beds, r.config.balance.drink_reach), (1.0, 1.0));
 }
 
-/// Version 57 snapshots (before the playtest 6 predator rule) restore
-/// with it off, and are otherwise the same world.
+/// Version 57 snapshots (before the era's niche tallies) restore with none,
+/// and are otherwise the same world; this version keeps them.
 #[test]
-fn version_57_snapshots_restore_without_prey_larder() {
+fn version_57_snapshots_restore_without_niche_tallies() {
     let mut w = fixture_world();
+    w.run_days(2);
+    assert!(w.chronicle.niche_tally.days > 0);
     let old = w.snapshot_v57();
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!(h.version, 57);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.chronicle.niche_tally, Default::default());
+    assert!(r.snapshot_v57() == old);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.chronicle.niche_tally, w.chronicle.niche_tally);
+    w.chronicle.niche_tally = Default::default();
+    founding_drought_off(&mut w.config.balance);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert!(r.snapshot() == w.snapshot());
+}
+
+/// Version 58 snapshots (before the playtest 6 founding rules) restore
+/// with that tunable off, and are otherwise the same world.
+#[test]
+fn version_58_snapshots_restore_without_founding_drought() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v58();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 58);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.founding_drought, crate::serde_util::before_v61::OLD_VALUE);
+    assert!(r.snapshot_v58() == old);
+    founding_drought_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.founding_drought, 1.0);
+}
+
+/// Version 62 snapshots (before the playtest 6 predator rule) restore
+/// with it off, and are otherwise the same world.
+#[test]
+fn version_62_snapshots_restore_without_prey_larder() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v62();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 62);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.prey_larder, 0.0);
-    assert!(r.snapshot_v57() == old);
+    assert!(r.snapshot_v62() == old);
     playtest6_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());

@@ -48,7 +48,7 @@
 //! The meta JSON holds the other [`StateView`] fields that changed, under
 //! their own names (`clock`, `weather`, `player`, `lineage`, `slots_left`,
 //! `population`, `migration`, `groups` (the whole list when any of it
-//! changed), `view`, `balance`, `escrow`, `grace`, `poisonous`), `leaderboard`
+//! changed), `view`, `balance`, `escrow`, `grace`, `poisonous`, `territories`), `leaderboard`
 //! as `{day, breeding_adults}` with its rows keyed by player (`lb_set`:
 //! new or changed rows, `lb_del`: players gone), offers keyed by id
 //! (`offers_set`, `offers_del`) and the palette additions (`looks`,
@@ -377,6 +377,7 @@ struct Sent {
     escrow: Option<u64>,
     grace: Option<Option<GraceView>>,
     poisonous: Option<Vec<u32>>,
+    territories: Option<Vec<crate::protocol::TerritoryOutline>>,
     lb_head: Option<(Option<u64>, usize)>,
 }
 
@@ -715,6 +716,7 @@ impl DeltaEncoder {
         scalar!(escrow);
         scalar!(grace);
         scalar!(poisonous);
+        scalar!(territories);
         let lb = &s.leaderboard;
         let head = (lb.day, lb.breeding_adults);
         if sent.lb_head != Some(head) {
@@ -899,6 +901,8 @@ struct MetaIn {
     grace: Option<Option<GraceView>>,
     #[serde(default)]
     poisonous: Option<Vec<u32>>,
+    #[serde(default)]
+    territories: Option<Vec<crate::protocol::TerritoryOutline>>,
     leaderboard: Option<LbHead>,
     lb_set: Vec<LeaderRow>,
     lb_del: Vec<PlayerId>,
@@ -930,6 +934,7 @@ struct Head {
     escrow: u64,
     grace: Option<GraceView>,
     poisonous: Vec<u32>,
+    territories: Vec<crate::protocol::TerritoryOutline>,
     lb: LbHead,
 }
 
@@ -1034,6 +1039,9 @@ impl DeltaDecoder {
                 if let Some(v) = m.poisonous {
                     h.poisonous = v;
                 }
+                if let Some(v) = m.territories {
+                    h.territories = v;
+                }
                 if let Some(v) = m.leaderboard {
                     h.lb = v;
                 }
@@ -1056,6 +1064,7 @@ impl DeltaDecoder {
                     // Optional: older servers don't send it.
                     grace: m.grace.flatten(),
                     poisonous: m.poisonous.unwrap_or_default(),
+                    territories: m.territories.unwrap_or_default(),
                     lb: m.leaderboard.ok_or_else(missing)?,
                 }
             }
@@ -1165,6 +1174,7 @@ impl DeltaDecoder {
             escrow: h.escrow,
             grace: h.grace,
             poisonous: h.poisonous.clone(),
+            territories: h.territories.clone(),
         })
     }
 }
@@ -1344,6 +1354,10 @@ mod tests {
     fn game() -> Game {
         let world = build_world(&WorldSettings { seed: 5, width: 96, height: 96, wild: true, ..Default::default() });
         let mut g = Game::new(world, GameConfig::default());
+        // The client fixture's world as recorded: watered founders
+        // (playtest 6, `Balance::founding_drought`) act differently from
+        // the first tick, which changes every frame, not the format.
+        g.world.config.balance.founding_drought = 0.0;
         for p in 1..=6u32 {
             g.set_name(p, &format!("p{p}"));
             let mut d = FounderDesign::new(format!("L{p}"), Thermo::Warm, BirthType::Live, 2).founders(6);

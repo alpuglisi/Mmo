@@ -122,6 +122,8 @@ async function main() {
     const pageErrors = [];
     pages.push(page);
     page.on('pageerror', (e) => pageErrors.push(e.message));
+    // The app has its own dialogs: a browser alert/confirm/prompt is a bug (playtest 6).
+    page.on('dialog', (d) => { pageErrors.push(`native ${d.type()} dialog: ${d.message()}`); void d.dismiss(); });
     await page.goto(`${base}/?tour=off`);
 
     // Register.

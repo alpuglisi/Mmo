@@ -93,6 +93,12 @@ const WATER_STEPS: usize = 5;
 /// `Ground::base_water` from which a lake's water lasts a drought
 /// (`World::water_access`): the shallows below it dry out in droughts.
 const LASTING_WATER: f32 = 1.0;
+/// Drought (share of land) from which a founding home must have water in
+/// reach that lasts a drought (`Balance::founding_drought`).
+pub const FOUNDING_DROUGHT: f32 = 0.3;
+/// Days a new founding's founders lose water more slowly in a drought
+/// (`Balance::founding_drought`).
+pub const FOUNDER_WATER_DAYS: f32 = 6.0;
 /// Within this many tiles of a map edge, a cold-season founding home is
 /// marked down (`Balance::founding_conditions`).
 const COLD_EDGE: f32 = 12.0;
@@ -848,6 +854,23 @@ impl World {
         }
     }
 
+    /// Factor on a player's founder's thirst for the first
+    /// [`FOUNDER_WATER_DAYS`] after its lineage's founding
+    /// (`Balance::founding_drought`): from 1 at half [`FOUNDING_DROUGHT`]
+    /// down to a half from 1.5 × it. 1 for everyone else.
+    pub(crate) fn founder_water_relief(&self, o: &Organism) -> f32 {
+        if self.config.balance.founding_drought <= 0.0 || o.generation != 0 || o.owner == crate::WILD {
+            return 1.0;
+        }
+        let founded = self.lineage_founded.get(o.lineage as usize).copied().unwrap_or(0);
+        let tpd = self.config.ticks_per_day as f32;
+        if self.tick.saturating_sub(founded) as f32 >= FOUNDER_WATER_DAYS * tpd {
+            return 1.0;
+        }
+        let dry = ((self.map.drought - 0.5 * FOUNDING_DROUGHT) / FOUNDING_DROUGHT).clamp(0.0, 1.0);
+        1.0 - 0.5 * dry
+    }
+
     pub fn is_daytime(&self) -> bool {
         (6..19).contains(&self.hour())
     }
@@ -1209,6 +1232,10 @@ impl World {
             o.age_ticks = ((o.traits.maturity_days + rng.gen_range(0.0..o.traits.lifespan_days * 0.3))
                 * self.config.ticks_per_day as f32) as u32;
             o.needs.breeding = rng.gen_range(0.0..40.0);
+            // Players' founders start watered (`Balance::founding_drought`).
+            if owner != crate::WILD && self.config.balance.founding_drought > 0.0 {
+                o.needs.thirst = 0.0;
+            }
             if let Some(s) = search.as_mut() {
                 s.crowd.insert(o.pos, o.traits.carnivory);
             }
@@ -1336,6 +1363,7 @@ impl World {
         // in a running world, so a new world's founding is unchanged.
         let now = self.config.balance.founding_conditions > 0.0 && self.tick > 0;
         let cold_season = matches!(self.season(), crate::terrain::Season::Winter) || self.days_until_winter() <= 10;
+        let dry_founding = now && self.config.balance.founding_drought > 0.0 && self.map.drought >= FOUNDING_DROUGHT;
 
         let region_at = |p: Vec2| {
             let (x, y) = self.map.tile_coords(p);
@@ -1389,8 +1417,15 @@ impl World {
             // A short walk to drinking water that avoids the threats; with
             // `now`, water that lasts a drought (a lake's deep water) is
             // worth more than shallows that may dry up within days.
-            let water = if now {
-                match self.water_access(region, p, threat_grid) {
+            let access = now.then(|| self.water_access(region, p, threat_grid));
+            // In a drought (`Balance::founding_drought`), the strict rounds
+            // take only homes with water in reach that lasts it: playtest 6's
+            // founders at 52% drought had shallows that dried, and all died.
+            if settle.is_some() && dry_founding && !access.is_some_and(|a| a.1) {
+                continue;
+            }
+            let water = if let Some(access) = access {
+                match access {
                     (_, true) => 1.0,
                     (true, false) => 0.6 - 0.6 * self.map.drought.clamp(0.0, 1.0),
                     _ => -2.0,
@@ -2121,6 +2156,43 @@ mod winter_tests {
             }
         }
         assert!(kinds.iter().all(|&n| n > 0), "spots with no water, shallows only, lasting water: {kinds:?}");
+    }
+
+    /// Playtest 6 (H4): 20 founders at 52% drought all died within 10
+    /// days, 16 of thirst. In a drought (`Balance::founding_drought`) every
+    /// home has water in reach that lasts it, and the founders start
+    /// watered and lose water at half the rate for their first days.
+    #[test]
+    fn drought_foundings_land_by_lasting_water_and_start_watered() {
+        let mut w = small_world(2);
+        w.run_days(1);
+        w.map.drought = 0.5;
+        let design = crate::design::FounderDesign::new(
+            "dry",
+            crate::design::Thermo::Warm,
+            crate::design::BirthType::IncubatedEggs,
+            3,
+        )
+        .with(crate::Gene::BodySize, 0.25)
+        .founders(20);
+        for owner in 50..56 {
+            let ids = w.found_lineage_unchecked(owner, &design);
+            let l = w.lineages.len() - 1;
+            let home = w.lineage_homes[l].expect("a home");
+            let probe = w.organism(ids[0]).unwrap().clone();
+            let region = w.passable_map(&probe, false);
+            let (reach, lasting) = w.water_access(&region, home, &PointGrid::new(&w.map));
+            assert!(reach && lasting, "owner {owner}: home {home:?} without lasting water");
+            assert_eq!(probe.needs.thirst, 0.0);
+            assert_eq!(w.founder_water_relief(&probe), 0.5);
+        }
+        // Past the first days, or out of the drought, no relief.
+        let probe = w.organisms.iter().rev().find(|o| o.owner == 55).unwrap().clone();
+        w.map.drought = 0.1;
+        assert_eq!(w.founder_water_relief(&probe), 1.0);
+        w.map.drought = 0.5;
+        w.tick += (FOUNDER_WATER_DAYS * w.config.ticks_per_day as f32) as u64;
+        assert_eq!(w.founder_water_relief(&probe), 1.0);
     }
 
     #[test]

@@ -1247,16 +1247,64 @@ pub struct Balance {
     /// 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v57"))]
     pub drink_reach: f32,
-    // Playtest 6 predators (version 58; *Playtest 6: predators and
-    // warnings* in the README). Off at 0, what snapshots before version 58
-    // read (`serde_util::before_v58`).
+    /// Playtest 6 founding and newcomers (version 61; *Playtest 6: drought
+    /// foundings and newcomers* in the README; off at 0, what snapshots
+    /// before version 61 read, `serde_util::before_v61`). Playtest 6: a
+    /// small warm design founded at 52% drought lost all 20 founders in
+    /// 10 days. In a drought founders settle only where water that lasts it
+    /// is in reach, and start watered with a few days' thirst resistance;
+    /// warm egg layers that sleep in winter lay no clutch that would be
+    /// incubated in winter; a small founding's grace lasts until its first
+    /// young are grown.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v61"))]
+    pub founding_drought: f32,
+    // Playtest 6 balance (version 62; off at 0, what snapshots before
+    // version 62 read, `serde_util::before_v62`). Playtest 6: a warm,
+    // egg-incubating, hibernating, toxic, bright herd took every crown and
+    // a late cold flier still reached first place; toxic + bright was in
+    // every leading lineage.
+    /// Toxins cost food to make: hunger × `1 + 0.4 × toxins × toxin_upkeep`
+    /// (+24% at toxins 0.6), whatever the body's metabolism. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v62"))]
+    pub toxin_upkeep: f32,
+    /// A hungry hunter heeds a warning less: its learned avoidance of a
+    /// toxic prey lineage falls by up to `hungry_hunters` × 60% as its
+    /// hunger rises from 60 to 100 (`World::toxic_avoidance`). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v62"))]
+    pub hungry_hunters: f32,
+    /// A poisoning teaches a hunter's lineage about the prey's lineage only
+    /// when the prey's toxin comes from that lineage (one of its two toxin
+    /// alleles carries the lineage owner's origin): a wild animal carrying
+    /// a player's toxin genes through a hybrid no longer marks its whole
+    /// wild species as poisonous (playtest 6: the Steppe antelope). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v62"))]
+    pub toxin_source: f32,
+    /// Species credit only for a genuine speciation
+    /// (`DetectParams::speciation_credit`): a player is credited with a
+    /// split (the "Species founded" achievement and its namer) only when
+    /// the species it split from was that player's own, at least a year
+    /// old, and the split holds at least 100 adults. A copy of a rival's
+    /// design, or a small group of one's own, is a species without credit;
+    /// a species whose lineage died never continues as another owner's
+    /// cluster. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v62"))]
+    pub speciation_credit: f32,
+    /// A sitting parent covers 3 eggs fully: a bigger clutch's brooded
+    /// temperature is `site + (brooded − site) × (3 / eggs)^clutch_cover`
+    /// (a clutch of 6 at 1: halfway to the nest's own temperature), so a
+    /// big incubated clutch chills on cool nights. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v62"))]
+    pub clutch_cover: f32,
+    // Playtest 6 predators (version 63; *Playtest 6: predators and
+    // warnings* in the README). Off at 0, what snapshots before version 63
+    // read (`serde_util::before_v63`).
     /// The pack larder (`Balance::player_packs`) scales with the prey
     /// there is: full from 40 plant eaters (not the player's) per pack
     /// hunter of the player's, gone at 20 (`World::refresh_pack_room`),
     /// instead of fading between 60 and 100 animals of the player's
     /// (playtest 6: a well-played pack plateaued near 100 while herds held
     /// the cap). 0: the band rule.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v58"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v63"))]
     pub prey_larder: f32,
 }
 
@@ -1549,13 +1597,19 @@ impl Default for Balance {
             species_credit: 1.0,
             dry_beds: 1.0,
             drink_reach: 1.0,
+            founding_drought: 1.0,
+            toxin_upkeep: 1.0,
+            hungry_hunters: 1.0,
+            toxin_source: 1.0,
+            speciation_credit: 1.0,
+            clutch_cover: 1.0,
             prey_larder: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 162;
+    pub const FIELD_COUNT: usize = 168;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1726,6 +1780,12 @@ impl Balance {
             ("species_credit", &mut self.species_credit),
             ("dry_beds", &mut self.dry_beds),
             ("drink_reach", &mut self.drink_reach),
+            ("founding_drought", &mut self.founding_drought),
+            ("toxin_upkeep", &mut self.toxin_upkeep),
+            ("hungry_hunters", &mut self.hungry_hunters),
+            ("toxin_source", &mut self.toxin_source),
+            ("speciation_credit", &mut self.speciation_credit),
+            ("clutch_cover", &mut self.clutch_cover),
             ("prey_larder", &mut self.prey_larder),
         ]
     }

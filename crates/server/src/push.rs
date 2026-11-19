@@ -158,7 +158,7 @@ mod tests {
             population: 0,
             migration: None,
             groups: Vec::new(),
-            view: ViewWindow { x: 0.0, y: 0.0, radius: 1.0 },
+            view: ViewWindow { x: 0.0, y: 0.0, radius: 1.0, pinned: false },
             organisms: Vec::new(),
             nearby: Vec::new(),
             leaderboard: Default::default(),
@@ -167,6 +167,7 @@ mod tests {
             escrow: 0,
             grace: None,
             poisonous: Vec::new(),
+            territories: Vec::new(),
         }))
     }
 

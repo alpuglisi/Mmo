@@ -240,7 +240,7 @@ export interface HintDef {
 export const HINTS: Record<HintId, HintDef> = {
   pregnancy: {
     title: 'A pregnancy',
-    body: 'One of your organisms is pregnant (green ring). Keep it fed and safe: possess it to walk it to food or away from predators. The Lineage tab counts pregnancies.',
+    body: 'One of your organisms is carrying young (green ring: pregnant, or gravid with eggs in an egg layer). Keep it fed and safe: possess it to walk it to food or away from predators. The Lineage tab counts them.',
     tab: 'lineage',
   },
   death: {

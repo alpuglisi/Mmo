@@ -78,6 +78,7 @@ export type ClientMsg =
   /** Reinforcements for a small lineage (adults copied from its own); data: `{ added: OrgId[], shop: ShopView }`. */
   | { type: 'reinforce' }
   | { type: 'provision' }
+  | { type: 'survey' }
   | { type: 'substitute_mating'; request: number; mine: OrgId }
   /** Which lineages yours can breed with; data: `CompatibilityView`. */
   | { type: 'compatibility' }
@@ -201,6 +202,8 @@ export interface OfferView {
   };
   /** The requester's animal died after acceptance (how): they may send another (`substitute_mating`) before `expires_tick`. */
   lost?: string;
+  /** While `lost`: the sex a substitute must be. */
+  substitute_sex?: Sex;
 }
 
 export interface WeatherView {
@@ -232,6 +235,8 @@ export interface ViewWindow {
   y: number;
   /** Half the side of the square window, in tiles. */
   radius: number;
+  /** Pinned with `set_view` (stays there until `clear_view`); absent when it follows the lineage. */
+  pinned?: boolean;
 }
 
 export interface NeedsView {
@@ -471,6 +476,8 @@ export interface StateView {
   grace?: GraceView | null;
   /** Lineages your animals have learned are poisonous: theirs "look poisonous to you". */
   poisonous?: number[];
+  /** Other players' territories reaching into your view (public ground: a claim over one is refused). */
+  territories?: { x: number; y: number; radius: number }[];
 }
 
 /** The newcomer grace left: game days, and at least some real minutes, whichever is longer. */
@@ -824,6 +831,8 @@ export interface FoundResponse {
   requested?: number;
   /** Why fewer were founded. */
   reduced?: string;
+  /** Renown the re-founding cost (absent or 0 outside the window). */
+  refound_fee?: number;
 }
 
 export interface GeneInfo {
@@ -1088,12 +1097,24 @@ export interface ShopView {
   provision_price?: number;
   /** Adults a provision would feed now (the price is per adult). */
   provision_size?: number;
+  /** The price of a survey now (rival groups near your main group). */
+  survey_price?: number;
   provisions_bought?: number;
   provisions_max?: number;
   provision_blocked?: string;
   /** When the next reinforcement is possible if the window is full: the day and about how many real minutes from now. */
   reinforce_next_day?: number;
   reinforce_next_minutes?: number;
+}
+
+/** A survey's findings (`survey`): rival groups within `radius` of (x, y), in 8-tile cells. */
+export interface SurveyView {
+  price: number;
+  x: number;
+  y: number;
+  radius: number;
+  groups: { player: PlayerId; name: string; x: number; y: number; members: number; territory?: [number, number, number] }[];
+  shop: ShopView;
 }
 
 /** One lineage in a compatibility check (`compatibility`, `POST /api/design/compatibility`). */
@@ -1140,9 +1161,13 @@ export interface DesignCompatView {
   water_warning?: string;
   /** Set for a warm-blooded design that abandons its eggs (they chill below 24 °C and almost never hatch): what to do instead. */
   egg_warning?: string;
+  /** Incubated eggs on a meat eater (carnivory ≥ 0.5): a roaming hunter leaves its clutch (shown verbatim). */
+  carnivore_egg_warning?: string;
+  /** Balance's drought-founding warning, when the server sends one (shown verbatim). */
+  drought_warning?: string;
   /** Founding now is a re-founding soon after your last lineage ended: `founders` of `requested` (founders cost double points: as many as fit, at least half), costing
    * `cost` points, until `until_day` (about `minutes_left` real minutes). */
-  refound?: { founders: number; requested: number; cost: number; until_day: number; minutes_left: number; reason: string };
+  refound?: { founders: number; requested: number; cost: number; until_day: number; minutes_left: number; reason: string; fee?: number };
   /** Why founding would refuse the design's name (it looks like another player's); absent when fine. */
   name_warning?: string;
 }
@@ -1282,6 +1307,9 @@ export interface CatastropheView {
   start_day: number;
   /** Planned first day after it while active; the day it ended once over. */
   end_day: number;
+  /** First and last days counted from 1, as alerts and screens show them (absent on older servers). */
+  first_day?: number;
+  last_day?: number;
   active: boolean;
   population_before: number;
   population_after?: number;

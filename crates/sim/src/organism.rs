@@ -44,7 +44,7 @@ pub enum DeathCause {
     /// Heat: too far above the comfort range (version 52; counted as
     /// `Exposure` before).
     Heat,
-    /// A hunter killed by its prey fighting back (version 58; counted as
+    /// A hunter killed by its prey fighting back (version 63; counted as
     /// `Predation` before, as if the prey had eaten it).
     FoughtBack,
 }

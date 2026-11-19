@@ -17,6 +17,8 @@ const NEST_CROWD_RADIUS: usize = 2;
 /// attending it (`Balance::egg_attendance`).
 const EGG_ATTEND_RANGE: f32 = 12.0;
 const CHILL_RATE: f32 = 0.006;
+/// Eggs a sitting parent covers fully (`Balance::clutch_cover`).
+const CLUTCH_COVERED: usize = 3;
 /// Most °C a sitting parent can cool her eggs by shading them.
 pub(crate) const BROOD_SHADE: f32 = 3.0;
 /// The egg temperature a sitting warm-blooded parent aims for.
@@ -244,6 +246,15 @@ impl World {
                     Some(gi) => {
                         let o = &mut self.organisms[gi];
                         let (egg, warmed, shaded) = brood(site, o.traits.warm, &bal);
+                        // A sitting parent covers only so many eggs
+                        // (`Balance::clutch_cover`): the rest of a big
+                        // clutch sits nearer the nest's own temperature.
+                        let egg = if bal.clutch_cover > 0.0 && c.eggs.len() > CLUTCH_COVERED {
+                            let cover = (CLUTCH_COVERED as f32 / c.eggs.len() as f32).powf(bal.clutch_cover);
+                            site + (egg - site) * cover
+                        } else {
+                            egg
+                        };
                         // Brooding costs the parent (`brood_cost`): warming
                         // burns food, shading in the heat costs water.
                         let per_hour = 1.0 / 24.0;

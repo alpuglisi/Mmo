@@ -322,15 +322,42 @@ impl World {
     /// Whether a clutch conceived now would hatch in autumn or winter for
     /// an egg layer that sleeps through winter (`Balance::brood_care`): it
     /// would be laid as the herd fattens and beds down, and abandoned
-    /// (playtest 5: the year's last clutches all chilled).
+    /// (playtest 5: the year's last clutches all chilled). With
+    /// `Balance::founding_drought`, a warm egg layer also lays no clutch
+    /// that would be incubated in winter if it sleeps then, or if even a
+    /// brooded nest where it stands would be colder than its eggs bear at
+    /// the coldest of winter (playtest 6: ~600 winter clutches chilled; a
+    /// clutch conceived late in winter hatched after the year's end, so
+    /// the rule above let it through, and the starter's founders with too
+    /// little hibernation to sleep laid all winter).
     fn clutch_too_late(&self, o: &Organism) -> bool {
-        if self.config.balance.brood_care <= 0.0 || !o.traits.birth.lays_eggs() || o.traits.seasonal.winter.is_none() {
+        let bal = &self.config.balance;
+        if bal.brood_care <= 0.0 || !o.traits.birth.lays_eggs() {
             return false;
         }
+        let sleeps = o.traits.seasonal.winter.is_some();
         let dpy = self.config.days_per_year.max(4) as f32;
-        let develop = o.traits.gestation(self.config.balance.cold_gestation) + o.traits.incubation_days;
-        let hatch = self.day_of_year() as f32 + develop;
-        (dpy / 2.0..dpy).contains(&hatch)
+        let lay = self.day_of_year() as f32 + o.traits.gestation(bal.cold_gestation);
+        let hatch = lay + o.traits.incubation_days;
+        if sleeps && (dpy / 2.0..dpy).contains(&hatch) {
+            return true;
+        }
+        if !o.traits.warm || bal.founding_drought <= 0.0 {
+            return false;
+        }
+        // Winter is the year's last quarter (`Season::from_day`): this
+        // year's and the next's.
+        let winter = 0.75 * dpy;
+        if ![winter, winter + dpy].iter().any(|&w0| lay < w0 + 0.25 * dpy && hatch > w0) {
+            return false;
+        }
+        if sleeps {
+            return true;
+        }
+        // The coldest of the year comes early in winter (`Map::seasonal_offset`).
+        let coldest = self.map.ground_at(o.pos).base_temp
+            + crate::terrain::Map::seasonal_offset((13.0 * dpy / 16.0) as u32, dpy as u32);
+        coldest + bal.brood_warmth < super::environment::egg_range(true).0
     }
 
     /// Daily change of breeding drive from the season: `DRIVE_RATE` times
@@ -1417,6 +1444,21 @@ mod tests {
         set_day(&mut w, midsummer);
         assert!(!w.may_conceive(&o(&w, sleeper)), "a midsummer clutch would hatch too late");
         assert!(w.may_conceive(&o(&w, awake)) && w.may_conceive(&o(&w, live)));
+        // Late winter: a clutch would be laid on a frozen nest and hatch
+        // after the year's end.
+        let late_winter = w.config.days_per_year - 3;
+        set_day(&mut w, late_winter);
+        assert!(!w.may_conceive(&o(&w, sleeper)), "a winter clutch would chill");
+        assert!(!w.may_conceive(&o(&w, awake)), "even brooded, a nest here is too cold in winter");
+        assert!(w.may_conceive(&o(&w, live)));
+        // In a warm land a brooding parent keeps a winter clutch warm.
+        for g in &mut w.map.edit_terrain().ground {
+            g.base_temp = 30.0;
+        }
+        assert!(w.may_conceive(&o(&w, awake)) && !w.may_conceive(&o(&w, sleeper)));
+        w.config.balance.founding_drought = 0.0;
+        assert!(w.may_conceive(&o(&w, sleeper)), "the playtest 5 rule let it through");
+        set_day(&mut w, midsummer);
         w.config.balance.brood_care = 0.0;
         assert!(w.may_conceive(&o(&w, sleeper)));
     }
