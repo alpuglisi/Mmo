@@ -293,6 +293,12 @@ pub enum ClientMsg {
     /// alive, at most 200); at most 3 within a ranked season's length.
     /// Data: `{fed, shop}`.
     Provision,
+    /// Restore the pasture around the lineage's main group: every dry tile
+    /// within 12 tiles regrows to its full plant cover. Renown: 1 per living
+    /// member (at least 200), doubled for each restoration already bought
+    /// within a ranked season's length (a sink that grows with the
+    /// lineage). Data: `{restored, price, shop}` (`restored`: food added).
+    RestorePasture,
     /// Protocol 2 only: the client lost track of the delta states; the
     /// connection's next state is a keyframe. Handled by the connection (no
     /// `result`), never by the world.
@@ -394,6 +400,7 @@ impl ClientMsg {
             ClientMsg::Reinforce => "reinforce",
             ClientMsg::Compatibility => "compatibility",
             ClientMsg::Provision => "provision",
+            ClientMsg::RestorePasture => "restore_pasture",
             ClientMsg::SubstituteMating { .. } => "substitute_mating",
             ClientMsg::Survey => "survey",
             ClientMsg::NameAnimal { .. } => "name_animal",
@@ -449,6 +456,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "name_species",
     "nameplates",
     "provision",
+    "restore_pasture",
     "substitute_mating",
     "survey",
     "name_animal",
@@ -1937,6 +1945,12 @@ pub struct ShopView {
     pub provisions_max: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provision_blocked: Option<String>,
+    /// The price of a pasture restoration now (`restore_pasture`) and how
+    /// many were bought within the window.
+    #[serde(default)]
+    pub restore_price: u64,
+    #[serde(default)]
+    pub restores_bought: u32,
     /// When the next reinforcement is possible if the window is full: the
     /// simulated day and about how many real minutes from now. Days count
     /// from 0 like every day in the API; texts (and the client) say them

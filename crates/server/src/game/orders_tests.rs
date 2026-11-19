@@ -755,6 +755,22 @@ fn the_daily_check_alerts_a_dry_territory_and_a_drifted_herd_once() {
     let drifted: Vec<String> =
         alerts(&g, AlertKind::Group).into_iter().filter(|t| t.contains("has drifted from its home")).collect();
     assert_eq!(drifted.len(), 1, "{drifted:?}");
+    // Sent away from that home by a new order (here ended at once, so the
+    // old home stands): no "drifted" for the home it left (playtest 8).
+    for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+        o.pos = target;
+    }
+    g.daily_group_checks(&record, &mut out); // back home: the alert may come again
+    let next = land_away(&g, target, 20.0);
+    run(&mut g, ClientMsg::Migrate { x: next.x, y: next.y, group: None }).unwrap();
+    g.world.clear_migration(1);
+    for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+        o.pos = away;
+    }
+    g.daily_group_checks(&record, &mut out);
+    let again: Vec<String> =
+        alerts(&g, AlertKind::Group).into_iter().filter(|t| t.contains("has drifted from its home")).collect();
+    assert_eq!(again.len(), 1, "not for the home a migration left: {again:?}");
 }
 
 /// Playtest 4: far claims migrate first, rivals' ground and bad radii are
@@ -926,11 +942,14 @@ fn survival_counts_in_the_season_the_catastrophe_fell_in() {
 }
 
 /// A survivor is the lineage alive when the catastrophe began, keeping at
-/// least a quarter of its size then (playtest 7, M15): one that lost ~99%
-/// isn't, nor is a lineage re-founded during it.
+/// least half its size then (playtest 7, M15; a quarter until playtest 8),
+/// through at least a quarter of a season of it: one that lost most isn't,
+/// nor is a lineage re-founded during it, nor one counted after a day.
 #[test]
-fn survivors_keep_a_quarter_of_the_lineage_they_started_with() {
+fn survivors_keep_half_the_lineage_they_started_with() {
     let (mut g, _) = game();
+    // A 4-day season: a quarter of it is a day.
+    g.cfg.season_days = 4;
     g.world.schedule_catastrophe(evo_sim::chronicle::CatastropheKind::SevereWinter, 1, Some(4));
     run_days(&mut g, 2);
     let c = g.world.chronicle.active_catastrophe().expect("under way").id;
@@ -938,7 +957,7 @@ fn survivors_keep_a_quarter_of_the_lineage_they_started_with() {
     assert_eq!(Some(l), g.lineage_of(1));
     assert!(start > 4, "{start}");
     assert!(g.survived(1, c));
-    // Down to under a quarter: not a survivor.
+    // Down to under half: not a survivor.
     let keep = (start as f64 * crate::game::SURVIVAL_KEEP).ceil() as usize - 1;
     for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1).skip(keep) {
         o.alive = false;
@@ -948,6 +967,17 @@ fn survivors_keep_a_quarter_of_the_lineage_they_started_with() {
     g.set_name(2, "bo");
     g.found(2, &design("B")).unwrap();
     assert!(!g.survived(2, c));
+}
+
+/// A grace carries over through the whole re-founding window, not only
+/// twice the grace (playtest 8: small re-foundings chained just past that
+/// got a fresh grace each).
+#[test]
+fn grace_carries_over_through_the_refound_window() {
+    let (g, _) = game();
+    let window = g.refound_window_days() * g.world.config.ticks_per_day as u64;
+    assert!(g.world.grace_carry_ticks() >= window);
+    assert!(g.world.grace_carry_ticks() >= 2 * g.world.grace_length());
 }
 
 /// The found reply (and an alert) says whether a lineage has a newcomer
@@ -1116,6 +1146,8 @@ fn a_drought_founding_says_its_founders_were_watered() {
 #[test]
 fn alerts_have_stable_ids() {
     let (mut g, _) = game();
+    // The founding's own notes (grace, landing) go out on the first tick.
+    tick(&mut g);
     let mut out = Outbox::new();
     g.alert(1, AlertKind::World, "same".into(), None, &mut out);
     g.alert(1, AlertKind::World, "same".into(), None, &mut out);
@@ -1277,4 +1309,76 @@ fn the_survey_shows_territories_held_away_and_works_without_a_main_group() {
     let s = g.survey(1).expect("from the largest group");
     let bo = s.groups.iter().find(|x| x.player == 2).expect("bo surveyed");
     assert!(bo.territory.is_some(), "{s:?}");
+}
+
+/// Playtest 8 (M9): a group about to bed down, a destination on a rival's
+/// territory, water that won't last a drought, a journey's food shared
+/// with the grazers along the way, and where founders landed.
+#[test]
+fn migrate_warns_of_sleep_rival_ground_and_drying_water() {
+    let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
+    let mut g = Game::new(world, GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    g.set_name(1, "ann");
+    g.set_name(2, "bob");
+    g.found(1, &design("A")).unwrap();
+    g.connect(10, 1, "ann");
+    let home = g.world.group_middle(1, 0).unwrap();
+    // Bob lands later: told how far ann is.
+    let bob = g.found(2, &design("B")).unwrap();
+    let landing = bob.landing.expect("landing");
+    assert!(landing.starts_with("Your founders landed around (") && landing.contains("ann's"), "{landing}");
+    // Bob's territory beside ann's herd: a migration into it says so.
+    let m = &g.world.map;
+    let near = (0..m.height)
+        .flat_map(|y| (0..m.width).map(move |x| evo_sim::terrain::Map::tile_center(x, y)))
+        .find(|&p| {
+            let t = m.tile_at(p);
+            (12.0..20.0).contains(&p.dist(home)) && t.water_depth == 0.0 && t.ice == 0.0 && m.ground_at(p).slope < 0.4
+        })
+        .expect("land near");
+    g.world.claim_territory(2, 0, near, 5.0).unwrap();
+    let d = run(&mut g, ClientMsg::Migrate { x: near.x, y: near.y, group: None }).unwrap();
+    let w = d["warning"].as_str().unwrap_or_default().to_string();
+    assert!(w.contains("At the destination: it is inside bob's territory"), "{d}");
+    assert_eq!(w.matches("At the destination").count(), 1, "said once: {w}");
+    // Estivators in a parched land bed down within days (spring drought
+    // estivation): warned, though none sleeps yet.
+    for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+        o.traits.seasonal.estivation = 0.8;
+    }
+    for t in &mut g.world.map.tiles {
+        t.wetness = 0.04;
+    }
+    assert!(g.world.dormant_share(1, 0) < DORMANT_WARN_SHARE);
+    let far = land_away(&g, home, 20.0);
+    let d = run(&mut g, ClientMsg::Migrate { x: far.x, y: far.y, group: None }).unwrap();
+    assert!(d["warning"].as_str().unwrap_or_default().contains("will bed down within about"), "{d}");
+    // In the drought, drinking spots beside no lake don't count as lasting.
+    let m = &g.world.map;
+    let spot =
+        (0..m.height).flat_map(|y| (0..m.width).map(move |x| evo_sim::terrain::Map::tile_center(x, y))).find(|&p| {
+            let t = m.tile_at(p);
+            t.water_depth == 0.0
+                && g.world.water_check(1, 0, p, 3.0).drinkable >= LOW_WATER_TILES
+                && g.lasting_water(p, 3.0) == 0
+        });
+    if let Some(p) = spot {
+        assert!(g.lasting_water(p, 3.0) < g.world.water_check(1, 0, p, 3.0).drinkable);
+    }
+    // The journey's food is shared with the grazers along the way.
+    let way = [home, far];
+    let days = 3.0;
+    for k in 0..g.world.map.tiles.len() {
+        let max = g.world.map.ground()[k].veg_max;
+        g.world.map.tiles[k].veg = 0.01 * max;
+    }
+    let alone = g.journey_food(1, 0, &way, days, None).expect("plant eaters");
+    let bob_ids: Vec<usize> = (0..g.world.organisms.len()).filter(|&i| g.world.organisms[i].owner == 2).collect();
+    for (k, &i) in bob_ids.iter().enumerate() {
+        g.world.organisms[i].pos = home + (far - home) * (k as f32 / bob_ids.len() as f32);
+    }
+    let shared = g.journey_food(1, 0, &way, days, Some(1)).expect("plant eaters");
+    assert!(shared.others > 0 && shared.route < alone.route, "{alone:?} {shared:?}");
+    // And a crowded destination rates the trip.
+    assert!(shared.share() <= shared.destination.unwrap() + 1e-6, "{shared:?}");
 }

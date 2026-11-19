@@ -26,7 +26,8 @@ export interface OfferEntry {
 }
 
 export interface Toast {
-  kind: 'error' | 'info';
+  /** 'warn': done, with a caution (an order accepted with warnings: not red, playtest 8). */
+  kind: 'error' | 'warn' | 'info';
   text: string;
   /** How many alike messages (same words, other #ids or numbers) this one stands for. */
   count?: number;

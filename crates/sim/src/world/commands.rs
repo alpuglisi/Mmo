@@ -235,8 +235,10 @@ impl fmt::Display for CommandError {
                     f,
                     "that circle overlaps another player's territory (rival territories near your groups show on the \
                      map); claim ground of your own (the attempt costs a short wait). A group ten times the size of a \
-                     small holder (at most {}) may claim over its ground",
-                    super::groups::SQUAT_MEMBERS
+                     small holder (at most {} adults; young don't count) may claim over its ground, and a group twice \
+                     the size of one holding {} times the food it needs",
+                    super::groups::SQUAT_MEMBERS,
+                    super::groups::OVERCLAIM_FOOD
                 )
             }
             CommandError::BadRadius => write!(f, "a territory's radius must be a positive number of tiles"),
@@ -466,6 +468,32 @@ impl World {
             body_plan_gaps,
             distance: oa.pos.dist(ob.pos),
         })
+    }
+
+    /// Refill the plants on every dry tile within `radius` of `center` to
+    /// what the tile holds at most (`Tile::veg_max`); the food added. The
+    /// server's pasture restoration, a renown sink (`Game::restore_pasture`).
+    pub fn restore_pasture(&mut self, center: crate::math::Vec2, radius: f32) -> f32 {
+        let r = radius.max(0.0);
+        let (w, h) = (self.map.width as i64, self.map.height as i64);
+        let (cx, cy) = (center.x.floor() as i64, center.y.floor() as i64);
+        let ri = r.ceil() as i64;
+        let mut added = 0.0;
+        for y in (cy - ri).max(0)..=(cy + ri).min(h - 1) {
+            for x in (cx - ri).max(0)..=(cx + ri).min(w - 1) {
+                let p = crate::math::Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                if p.dist(center) > r {
+                    continue;
+                }
+                let max = self.map.ground_at(p).veg_max;
+                let t = self.map.tile_at_mut(p);
+                if t.water_depth <= 0.0 && t.veg < max {
+                    added += max - t.veg;
+                    t.veg = max;
+                }
+            }
+        }
+        added
     }
 
     /// Keep an organism from breeding on its own until `until_tick` (it can
@@ -739,8 +767,11 @@ impl World {
     /// grace: twice the grace's whole length (its real-time minimum
     /// included), so a re-founding never starts afresh a grace that would
     /// still be running; the time left carries over.
+    /// At least `World::set_grace_carry_min_ticks` (the server's whole
+    /// re-founding window): small re-foundings chained just past twice the
+    /// grace each got a fresh one (playtest 8).
     fn grace_cooldown(&self) -> u64 {
-        2 * self.grace_length()
+        (2 * self.grace_length()).max(self.grace_carry_min_ticks)
     }
 
     /// Recomputes every lineage's grace start (after founding or restoring).
@@ -753,6 +784,19 @@ impl World {
     /// says (the server's minimum of real minutes; not saved).
     pub fn set_attack_grace_min_ticks(&mut self, ticks: u64) {
         self.grace_min_ticks = ticks;
+        self.rebuild_grace_starts();
+    }
+
+    /// How long after a founding the owner's next one continues its grace.
+    pub fn grace_carry_ticks(&self) -> u64 {
+        self.grace_cooldown()
+    }
+
+    /// A founding within this many ticks of the owner's previous one
+    /// continues its grace, never starts a new one (at least twice the
+    /// grace either way; not saved).
+    pub fn set_grace_carry_min_ticks(&mut self, ticks: u64) {
+        self.grace_carry_min_ticks = ticks;
         self.rebuild_grace_starts();
     }
 

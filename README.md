@@ -9248,9 +9248,8 @@ Server-side Lows from `docs/playtest-8.md`, fixed or explained:
   hide the losses (954 → 1,251) it says so instead of "dying off".
 - **Over budget.** The refusal says by how much and what to lower, and the
   designer no longer sends an over-budget check.
-- **Drift alert.** None after a migration that ended short of its goal:
-  that outcome was already told, and the group is away from its old home
-  by the player's order.
+- **Drift alert.** Fixed on main: the home a migration left no longer
+  counts until the group has a new one.
 - **Ledger income a day early.** Already fixed on main: income is dated
   the day it is for.
 - **"Lost since founding" dropped.** The server's counts only grow. Two

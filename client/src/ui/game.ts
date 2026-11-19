@@ -840,7 +840,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const who = groupChoice === 'all' ? 'Adults' : `${groupName(groupChoice)} adults`;
       if (r?.ok) {
         model.toast('info', `${who} migrating toward (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? `: ${t.note}` : ''}`);
-        if (t.warning) model.toast('error', `Migrate: ${t.warning}`);
+        if (t.warning) model.toast('warn', `Migrating, but: ${t.warning}`);
         broodingToast(r.data);
       } else if (r?.error) {
         model.toast('error', `Migrate: ${r.error.message}`);
@@ -855,7 +855,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (r.ok) {
         const t = r.data as { x: number; y: number; radius: number; warning?: string; note?: string };
         model.toast('info', `${groupName(id)} gathering at (${t.x.toFixed(0)}, ${t.y.toFixed(0)}), within ${t.radius.toFixed(1)} tiles${t.note ? ` (${t.note})` : ''}`);
-        if (t.warning) model.toast('error', `Rally: ${t.warning}`);
+        if (t.warning) model.toast('warn', `Rallying, but: ${t.warning}`);
         broodingToast(r.data);
       }
       return;
@@ -874,7 +874,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         const t = r.data as { x: number; y: number; radius: number; warning?: string; note?: string; pending?: boolean };
         if (t.pending) model.toast('info', `${groupName(g.id)} is migrating to (${t.x.toFixed(0)}, ${t.y.toFixed(0)}): ${t.note ?? 'it claims the territory when it arrives'}`);
         else model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? ` (${t.note})` : ''}`);
-        if (t.warning) model.toast('error', `Territory: ${t.warning}`);
+        if (t.warning) model.toast('warn', `${t.pending ? 'Ordered' : 'Claimed'}, but: ${t.warning}`);
         broodingToast(r.data);
       }
       return;
@@ -2025,7 +2025,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const listMore = h('p', { class: 'muted small', id: 'organism-list-more' });
   const groupsEl = h('div', { id: 'group-list' });
   const retireBtn = h('button', { type: 'button', id: 'retire-lineage', class: 'danger' }, 'Retire lineage');
-  const retireRule = h('p', { class: 'small', id: 'lineage-retire-rule' }, h('strong', {}, 'Not a free re-roll: '), 'founding again soon after retiring founds fewer founders and costs renown. A quick re-found also continues your last grace instead of starting a new one.');
+  const retireRule = h('p', { class: 'small', id: 'lineage-retire-rule' }, h('strong', {}, 'Not a free re-roll: '), 'founding again soon after retiring founds fewer founders and costs renown. Founding again within that window also continues your last lineage\'s grace (even one that has run out); it never starts a new one.');
   const retireEl = h('details', { id: 'lineage-retire', class: 'retire' },
     h('summary', {}, 'Retire this lineage'),
     h('p', { class: 'muted small' },
@@ -2040,7 +2040,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (!retireEl.open) return;
     void api.world().then((w) => {
       retireRule.replaceChildren(h('strong', {}, 'Not a free re-roll: '), w?.refound_rule ? `after retiring, ${w.refound_rule}.` : 'founding again soon after retiring founds fewer founders and costs renown.',
-        ' A quick re-found also continues your last grace instead of starting a new one.');
+        ' Founding again within that window also continues your last lineage\'s grace (even one that has run out); it never starts a new one.');
     }).catch(() => undefined);
   });
   retireBtn.addEventListener('click', async () => {

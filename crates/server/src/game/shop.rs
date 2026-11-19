@@ -208,6 +208,8 @@ impl Game {
             provisions_max: economy::MAX_PROVISIONS_PER_SEASON,
             provision_blocked: self.provision_terms(player).err().map(|e| e.message),
             survey_price: economy::survey_price(self.owner_population(player)),
+            restore_price: economy::restore_price(self.owner_population(player), self.restores_bought(player)),
+            restores_bought: self.restores_bought(player),
             animal_name_price: economy::ANIMAL_NAME_PRICE,
             reinforce_next_day: self.reinforce_next(player).map(|x| x.0),
             reinforce_next_minutes: self.reinforce_next(player).map(|x| x.1),
@@ -310,6 +312,36 @@ impl Game {
         days.retain(|&d| d + window > today);
         days.push(today);
         Ok((needy.len(), self.shop_view(player)))
+    }
+
+    /// Pasture restorations `player` bought within the last ranked
+    /// season's length.
+    fn restores_bought(&self, player: PlayerId) -> u32 {
+        self.recent_count(self.economy.restore_days.get(&player))
+    }
+
+    /// `restore_pasture`: the plants within [`economy::RESTORE_RADIUS`] of
+    /// the player's main group regrow in full, for renown that scales with
+    /// the lineage and doubles with each restoration in the window.
+    pub(super) fn restore_pasture(&mut self, player: PlayerId) -> Result<(f32, u64, ShopView), ErrorInfo> {
+        if self.lineage_of(player).is_none() || self.is_extinct(player) {
+            return Err(ErrorInfo::new("no_lineage", "you have no living lineage to restore pasture for"));
+        }
+        let Some(at) = self.world.group_middle(player, 0) else {
+            return Err(ErrorInfo::new("no_lineage", "your main group has no animals"));
+        };
+        let price = economy::restore_price(self.owner_population(player), self.restores_bought(player));
+        self.spend(
+            player,
+            price,
+            format!("Pasture restored within {} tiles of your main group", economy::RESTORE_RADIUS),
+        )?;
+        let restored = self.world.restore_pasture(at, economy::RESTORE_RADIUS);
+        let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
+        let days = self.economy.restore_days.entry(player).or_default();
+        days.retain(|&d| d + window > today);
+        days.push(today);
+        Ok(((restored * 10.0).round() / 10.0, price, self.shop_view(player)))
     }
 
     /// `survey`: rivals' groups and territories near the player's main
