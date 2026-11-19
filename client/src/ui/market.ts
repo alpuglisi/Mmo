@@ -19,7 +19,7 @@ import { commandLabel } from '../errors';
 import './market.css';
 import {
   auctionText, expiryText, balanceText, bidProblem, buyProblem, COMPAT_CONFIDENCE, compatRowText, DEFAULT_FILTER, shopText, ledgerRows, ledgerTotals, listingCompat,
-  marketQuery, mergePages, ownAdults, pageText, restoreText, traitSummary, type KindFilter, type MarketFilter, type RoleFilter,
+  marketQuery, mergePages, ownAdults, pageText, restoreText, RESTORE_RADIUS, traitSummary, type KindFilter, type MarketFilter, type RoleFilter,
 } from './marketData';
 
 export interface MarketDeps {
@@ -266,6 +266,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
         l.animal_name && h('span', { class: 'animal-name' }, ` “${l.animal_name}”`),
         h('span', { class: 'pregnant-tag', hidden: true }, ' · pregnant: buyers wait until she has given birth'),
         h('span', { class: 'aging-tag', hidden: true }, ' · old: may die of age before a buyer meets it'),
+        h('span', { class: 'dormant-tag', hidden: true }, ' · asleep: walks to no meeting until it wakes (the deadline waits)'),
         h('span', { class: 'muted' }, ` · ${l.owner_name}'s ${l.lineage_name}`),
         h('span', { class: 'fee' })),
       l.auction && h('div', { class: 'small auction-line' }),
@@ -303,6 +304,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     if (preg) preg.hidden = !(l.pregnant && l.sex === 'female');
     const aging = card.querySelector<HTMLElement>('.aging-tag');
     if (aging) aging.hidden = !l.aging;
+    const dormant = card.querySelector<HTMLElement>('.dormant-tag');
+    if (dormant) dormant.hidden = !l.dormant;
     card.classList.toggle('auction', !!a);
     setText(card.querySelector('.fee')!, a ? `${a.high_bid ?? a.reserve} renown` : `${l.fee} renown`);
     const auctionLine = card.querySelector('.auction-line');
@@ -438,19 +441,27 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   // Restoring the pasture (a sink that grows with the lineage): the dry ground around the main group regrows.
   const restoreBtn = h('button', { id: 'shop-restore', class: 'secondary' }) as HTMLButtonElement;
   const restoreNote = h('span', { class: 'muted small', id: 'shop-restore-note' });
+  // Which group's pasture: any of the player's groups with animals (playtest 9: always the main one).
+  const restoreGroup = h('select', { id: 'shop-restore-group', 'aria-label': 'Group' }) as HTMLSelectElement;
   restoreBtn.addEventListener('click', async () => {
-    // Quoted from a fresh shop: the price follows the lineage's size and doubles with each purchase.
-    const fresh = await deps.send({ type: 'renown_shop' });
-    shop = (fresh.ok && parseShopView(fresh.data)) || shop;
-    const t = shop ? restoreText(shop) : null;
-    if (!shop || !t) return;
-    if (!(await confirmDialog({ id: 'restore-confirm', title: `Restore the pasture for ${shop.restore_price} renown?`, ok: 'Restore', body: t.note }))) return;
-    const r = await deps.send({ type: 'restore_pasture' });
+    const group = Number(restoreGroup.value) || 0;
+    // A preview first: the food it would add now (the season caps it) and the price.
+    const p = await deps.send({ type: 'restore_pasture', group, preview: true });
+    if (!p.ok) return;
+    const v = p.data as { restored: number; unit: string; price: number; priced_by?: string; also_feeds?: string[] };
+    if (v.restored < 1) return model.toast('error', 'Nothing would regrow there now (midwinter, a drought, or already grown).');
+    const body = [
+      `About ${Math.round(v.restored)} ${v.unit} of plants regrow within ${RESTORE_RADIUS} tiles of group ${group}, as high as the season allows.`,
+      v.priced_by ? `Priced by ${v.priced_by}'s larger lineage, which grazes there too.` : '',
+      v.also_feeds?.length ? `Also feeds: ${v.also_feeds.join(', ')}.` : '',
+    ].filter(Boolean);
+    if (!(await confirmDialog({ id: 'restore-confirm', title: `Restore the pasture for ${v.price} renown?`, ok: 'Restore', body }))) return;
+    const r = await deps.send({ type: 'restore_pasture', group });
     if (r.ok) {
-      const d = r.data as { restored?: number; price?: number; shop?: unknown } | undefined;
+      const d = r.data as { restored?: number; unit?: string; price?: number; shop?: unknown } | undefined;
       shop = parseShopView(d?.shop) ?? shop;
       const next = shop?.restore_price;
-      model.toast('info', `Pasture restored around your main group${d?.restored !== undefined ? ` (${Math.round(d.restored)} food regrown)` : ''} for ${d?.price ?? '?'} renown.${next ? ` The next costs ${next}.` : ''}`);
+      model.toast('info', `Pasture restored around group ${group}${d?.restored !== undefined ? ` (about ${Math.round(d.restored)} ${d.unit ?? 'food'} regrown)` : ''} for ${d?.price ?? '?'} renown.${next ? ` The next costs ${next}.` : ''}`);
       render();
     }
   });
@@ -562,7 +573,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     setText(plateNote, `Cosmetic: shown with your name.${s.species_name_price ? ` Naming a species your lineage founded costs ${s.species_name_price}.` : ''}`);
   }
   const provRow = h('div', { class: 'row', hidden: true }, provBtn, provNote);
-  const restoreRow = h('div', { class: 'row', hidden: true, id: 'shop-restore-row' }, restoreBtn, restoreNote);
+  const restoreRow = h('div', { class: 'row', hidden: true, id: 'shop-restore-row' }, restoreGroup, restoreBtn, restoreNote);
   const surveyRow = h('div', { hidden: true }, h('div', { class: 'row' }, surveyBtn, surveyNote), surveyOut);
   const shopBody = h('div', { hidden: true }, shopText_, h('div', { class: 'row' }, slotBtn, slotNote), h('div', { class: 'row' }, reinBtn, reinNote), provRow, restoreRow, surveyRow, nameRow, plateRow);
   const shopLoading = h('p', { class: 'muted small' }, 'Loading…');
@@ -585,6 +596,14 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     setText(reinNote, blocked ?? `For lineages of at most ${s.reinforce_max_alive}; the price doubles with each, at most ${s.reinforcements_max ?? '?'} a ranked season (${s.reinforcements_bought ?? 0} bought).`);
     const rt = restoreText(s);
     restoreRow.hidden = !rt;
+    const groups = (model.state?.groups ?? []).filter((g) => g.members > 0).map((g) => g.id);
+    const gkey = groups.join(',');
+    if (restoreGroup.dataset.key !== gkey && document.activeElement !== restoreGroup) {
+      const keep = restoreGroup.value;
+      restoreGroup.dataset.key = gkey;
+      restoreGroup.replaceChildren(...(groups.length ? groups : [0]).map((id) => h('option', { value: id }, id === 0 ? 'main group' : `group ${String.fromCharCode(65 + id)}`)));
+      if ([...restoreGroup.options].some((o) => o.value === keep)) restoreGroup.value = keep;
+    }
     if (rt) {
       restoreBtn.disabled = !rt.can;
       setText(restoreBtn, rt.label);

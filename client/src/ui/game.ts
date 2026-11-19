@@ -2094,11 +2094,16 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const w = await api.world().catch(() => null);
     // The server's own words for the re-founding rule (its pricing changes: playtest 5).
     const rule = w?.refound_rule ? `After retiring, ${w.refound_rule}.` : 'Founding again soon after retiring founds fewer founders and costs renown.';
+    // Your own next fee, quoted (playtest 9: the dialog gave only the rule).
+    const sh = await send({ type: 'renown_shop' });
+    const fee = sh.ok ? (sh.data as { next_refound_fee?: number; owed?: number } | undefined) : undefined;
+    const feeLine = fee?.next_refound_fee ? `Founding again now would cost you ${fee.next_refound_fee} renown${fee.owed ? ` (you already owe ${fee.owed})` : ''}.` : '';
     const yes = await confirmDialog({
       id: 'retire-confirm', title: `Retire lineage #${lineage}?`, ok: 'Retire lineage', danger: true,
       body: [
         `Its ${animals(alive)} and their eggs leave the world (any carrying at least 25% of another player's genes join that player's lineage instead). This can't be undone.`,
         rule,
+        ...(feeLine ? [feeLine] : []),
       ],
     });
     if (!yes) return;

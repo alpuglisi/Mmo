@@ -2035,6 +2035,27 @@ minutes, every purchase failed when the buyer's animal died):
   is told, so the lobby still routes a player to their lineage's server;
   its own public answer says no more).
 
+**Playtest 9 changes** (economy):
+
+- **Market**: a buyer who steered its animal (possessed or ordered it
+  during the agreement) into the seller's pack loses it at its own risk,
+  not the seller's; the deadline pauses for the whole of the seller's
+  animal's sleep (the buyer's sleep only up to 30 days), and a sleeping
+  seller's animal is never "stood up" (the hold fee is discounted by its
+  sleep instead); moving away is the seller's fault only when the seller
+  steered its animal (not when it fled a predator or went to drink).
+  Animals in open offers and agreements are spared by other players'
+  animals until the offer closes (`World::set_market_shield`, not saved;
+  wild predators still hunt them). Listings show a sleeping animal
+  (`dormant`); a listing closed by a death names the killer.
+- **Retiring**: the receiver of a transferred animal keeps its own
+  alleles (only the retiree's become the wild's).
+- **Restore pasture**: see *Restore pasture* (group, preview, seasonal
+  cap, priced by the largest lineage grazing the circle, rounded food).
+- **Owed renown** gets a ledger line when it is recorded and shows in the
+  shop (`owed`); the retire dialog quotes the player's next re-founding
+  fee (`ShopView::next_refound_fee`).
+
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.
 
@@ -9137,7 +9158,7 @@ titles in this world. Packs of a few hundred beside herds of 2,000 are not
 reached: the herds no longer get that big next to a pack.
 
 **Server** (finding 13):
-- **Restore pasture** (`restore_pasture`, a renown sink that grows with the lineage). Every dry tile within 12 tiles of the main group regrows its full plant cover. It costs 1 renown per living member (at least 200), doubled for each restoration within a ranked season's length: about 2,000, 4,000 and 8,000 in a row for a capped lineage. The shop shows `restore_price` and `restores_bought`; the client protocol has the command and fields (UI for polish).
+- **Restore pasture** (`restore_pasture {group?, preview?}`, a renown sink that grows with the lineage). Every dry tile within 12 tiles of the chosen group (default the main one) regrows as high as the season allows: its plant maximum times this season's warmth, snow cover and dryness, so nothing in midwinter and less in a drought (playtest 9: it set the maximum regardless). It costs 1 renown per living member of the largest lineage with animals in the circle, the buyer's or another's (at least 200; no cheap purchase by a small ally on a leader's ground), doubled for each restoration within a ranked season's length. `preview: true` answers what it would add and cost without spending; nothing to regrow is refused (`nothing_to_restore`), not charged. The answer (`RestoreView`) gives `restored` rounded in `unit` "food", `price`, `priced_by` and `also_feeds` (other players grazing the circle).
 - **Survivor** now requires keeping half the lineage's size at the catastrophe's start (`SURVIVAL_KEEP`, 0.25 before), through at least a quarter of a ranked season of the catastrophe (`SURVIVAL_HELD`).
 
 **Checks**: sweep 11.91 (± 0.07); tests, fmt, both clippy, client

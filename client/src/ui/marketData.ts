@@ -157,7 +157,8 @@ export function compatRowText(r: CompatibilityView['rows'][number]): string {
 export function shopText(s: ShopView): string {
   return `Renown spent here is gone for good. Sales pay out less a ${s.market_fee_percent}% market fee; `
     + `alleles of yours living in other players' lineages (studs siring into their dams) earn a royalty of `
-    + `${s.royalty_per_point} renown a day per 1% of all alleles.`;
+    + `${s.royalty_per_point} renown a day per 1% of all alleles.`
+    + (s.owed ? ` You owe ${s.owed} renown: it is taken from the renown you earn next.` : '');
 }
 
 /**
@@ -283,7 +284,7 @@ export function restoreText(s: Pick<ShopView, 'balance' | 'restore_price' | 'res
   const short = s.balance < s.restore_price ? ` You have ${s.balance}.` : '';
   return {
     label: `Restore pasture: ${s.restore_price} renown`,
-    note: `Every dry tile within ${RESTORE_RADIUS} tiles of your main group regrows to full plant cover. Priced at 1 renown per living animal (at least ${RESTORE_MIN_PRICE}). ${doubling}${short}`,
+    note: `Every dry tile within ${RESTORE_RADIUS} tiles of the group regrows as high as the season allows (nothing in midwinter). Priced at 1 renown per living animal of the largest lineage grazing there (at least ${RESTORE_MIN_PRICE}). ${doubling}${short}`,
     can: s.balance >= s.restore_price,
   };
 }
