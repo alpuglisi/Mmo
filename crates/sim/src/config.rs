@@ -1380,6 +1380,12 @@ pub struct Balance {
     /// nothing that summer and starved its second winter). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v77"))]
     pub dry_spell: f32,
+    /// Prey per hunter from which a player pack's larder is full
+    /// (`prey_larder`; gone at half of it), in place of `apply::PREY_FULL`
+    /// (40) and `apply::PREY_NONE` (20): playtest 8's best pack peaked at
+    /// 190–240 beside herds of 2,000 (M12). 0: the constants.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v77"))]
+    pub pack_prey: f32,
 }
 
 impl Balance {
@@ -1685,12 +1691,13 @@ impl Default for Balance {
             wild_isolation: 0.6,
             clutch_split: 1.0,
             dry_spell: 1.0,
+            pack_prey: 40.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 175;
+    pub const FIELD_COUNT: usize = 176;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1875,6 +1882,7 @@ impl Balance {
             ("wild_isolation", &mut self.wild_isolation),
             ("clutch_split", &mut self.clutch_split),
             ("dry_spell", &mut self.dry_spell),
+            ("pack_prey", &mut self.pack_prey),
         ]
     }
 

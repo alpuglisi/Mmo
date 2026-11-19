@@ -567,7 +567,7 @@ fn balance73_off(b: &mut crate::Balance) {
 /// read them.
 fn playtest8_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v77::OLD_VALUE;
-    (b.clutch_split, b.dry_spell) = (old, old);
+    (b.clutch_split, b.dry_spell, b.pack_prey) = (old, old, old);
 }
 
 /// Version 72 snapshots (before the playtest 7 balance rules) restore with
