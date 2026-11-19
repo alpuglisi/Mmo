@@ -3128,11 +3128,12 @@ pub mod before_v73 {
     }
 }
 
-/// `#[serde(with = "crate::serde_util::before_v74")]` on the playtest 8
-/// founding tunable (`Balance::rival_reach`). On a thread holding a
-/// [`before_v74::Guard`] (reading or hashing a snapshot of version 73 or
-/// before) it is neither written nor read: it reads as 0 (off).
-pub mod before_v74 {
+/// `#[serde(with = "crate::serde_util::before_v77")]` on the playtest 8
+/// egg and sleep tunables (`Balance::clutch_split`, `dry_spell`). On a
+/// thread holding a [`before_v77::Guard`] (reading or hashing a snapshot
+/// of version 76 or before) they are neither written nor read: they read
+/// as 0 (off).
+pub mod before_v77 {
     use std::cell::Cell;
 
     use super::*;
@@ -3141,7 +3142,55 @@ pub mod before_v74 {
         static OLD: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// The tunable before version 74: off.
+    /// The tunable before version 77: off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+}
+
+/// `#[serde(with = "crate::serde_util::before_v78")]` on the playtest 8
+/// founding tunable (`Balance::rival_reach`). On a thread holding a
+/// [`before_v78::Guard`] (reading or hashing a snapshot of version 77 or
+/// before) it is neither written nor read: it reads as 0 (off).
+pub mod before_v78 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The tunable before version 78: off.
     pub const OLD_VALUE: f32 = 0.0;
 
     /// The old layout on this thread while this guard lives.

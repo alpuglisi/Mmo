@@ -193,3 +193,23 @@ From `docs/playtest-7.md` (M6, M8 and the Lows in `Rulebender7.md`). Each has a 
 | Finding | Fix | Test |
 |---|---|---|
 | e2e context-loss once failed at registration: base36 ids like `ctx_mi8k3gm2` read as ending in "gm" once all digits were dropped. | Digits now only hide a staff word that comes before the first digit of a word ("Claude2", "GM2", "Wild2", "Moder8or" stay refused). Dropping every digit, which merged random letters ("k3gm2x" → "kgmx"), is gone. The e2e scripts share `client/e2e/names.mjs`, whose `stamp()` gives letter-only suffixes from consonants that spell no word. | `staff_words_with_digits_or_run_together_are_refused_but_plain_names_pass` (random ids pass) |
+
+## Round 9: the name filter (playtest 8, Medium 5)
+
+The staff-word check now works per word instead of on substrings:
+
+- **Strong staff words** (gm, mod, admin, owner, claude, support, operator, sysop, official) are refused as a whole word. They are also refused at either end of a word, or inside a word when a lead-in comes before them (the, my, real, true, head, ...) or a role word comes after them (bot, team, crew, official, user, ...). A word on a small allowlist of common English words passes when it covers the staff word: modest, landowner, cooperator, claudette, gmelina, ... Otherwise a staff word inside a word passes: dogma, badminton, commodore.
+- **Soft staff words** (server, system, staff, root, dev, help) are inside common words, so they only count run together with a lead-in or a role word and nothing else: "serverbot", "realstaff", "rootuser".
+- **Long fragments** (moderator, administrator, gamemaster, sysop, developer, anthropic, rootuser) are still refused anywhere in the name.
+- **Wild:** a word reads as the wild only when "wild" is followed by a tail meaning a group (herd, pack, lings, born, ...) or comes after a lead-in ("TheWild").
+- **Digits and split letters:** digits at both ends of a word are taken off ("2claude2", "2wild"). A single letter set apart is read with the word next to it ("C laude").
+
+| Finding | Fix | Test |
+|---|---|---|
+| False positives: "Taproot/Beetroot/Arrowroot", "Ecosystem/Systematic", "Observer", "Badminton", "Distaff", "Cooperator", "Modesty", "Modena", "Claudette", "Wildly/Wildrose/Wilder/Oscar Wilde", "Supports", "The Help", "Gmelina", "Staffpick". | Per-word matching as above. "Supports" is a plain plural. "Help" is no longer a reserved whole name ("Help desk" still is). "RootGrazers" now passes, like "Root grazers". | `staff_words_are_matched_per_word_with_common_words_allowed` |
+| Bypasses: "realclaudebot", "theownerbob", "mygmherd", "2claude2 fan", "C laude fan", "2wild herd". | Lead-ins and role words, trimmed digits, joined single letters. "Moder8or" is caught by reading 8 as "at" ("moderator"). | same |
+| Copies with extras of a wild or rival name ("Meadow vole II", "Red Foxes", "New …", "Sunbright Drove II"). | `names::copies` compares word by word, setting aside articles, digits, roman numerals and plurals ("foxes" → "fox"). The copied words may be run together, with only decorating words added (new, old, real, second, ...). "Meadow vole hunters" still passes. | `copies_with_decorations_are_copies`, `wild_species_names_are_refused` |
+| Animal names and nameplates skipped the wild-name and rival-name checks. | `name_animal` checks both (`bad_name` / `name_taken`). `set_nameplate` also checks rival lineage names (`bad_title`). | `wild_species_names_are_refused` |
+| Account look-alikes with a prefix or suffix ("8Rulebender", "Herdmaster8x"). | Names that match once every digit is dropped are look-alikes, for any kind of name. A new account that holds another account's letters with at most 2 more (at least 5 letters) is also a look-alike. | `titles_naming_another_player_are_look_alikes` |
+
+A random id with digits around a staff word ("8mod2") is now refused, the same as "2claude2". The e2e names have been letter-only since the previous follow-up.

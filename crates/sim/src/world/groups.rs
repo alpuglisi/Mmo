@@ -447,6 +447,9 @@ pub struct GroupInfo {
     pub migration_deadline_tick: Option<u64>,
     /// Where it settles after arriving from a migration, while that lasts.
     pub settle: Option<Settle>,
+    /// The territory it left behind on a migration and still holds
+    /// ([`HeldPlans::away`]).
+    pub territory_away: Option<Territory>,
 }
 
 /// What [`World::split_group`] did.
@@ -1135,6 +1138,7 @@ impl World {
                         .and_then(|_| self.group_plans.migrations.get(&key))
                         .map(|p| p.deadline_tick),
                     settle: self.settle_circle(player, g),
+                    territory_away: self.group_plans.held.away.get(&key).copied(),
                 })
             })
             .collect()

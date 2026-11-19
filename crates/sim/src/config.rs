@@ -1361,8 +1361,33 @@ pub struct Balance {
     /// of most sizes aren't diluted by a wild species. 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v73"))]
     pub wild_isolation: f32,
-    /// Founding search, farther-sighted (version 74; off at 0, what
-    /// snapshots before version 74 read, `serde_util::before_v74`): with
+    // Playtest 8 eggs and sleep (version 77; *Playtest 8: clutches, sleep
+    // and group alerts* in the README). Off at 0, what snapshots before
+    // version 77 read (`serde_util::before_v77`).
+    /// A brooding parent warms only so many eggs (`environment::
+    /// CLUTCH_COVERED`, 4): those get her full heat, the rest of a bigger
+    /// clutch lie at the nest's own temperature and chill egg by egg
+    /// (each with chance `(low − egg) × chill rate` an hour) instead of the
+    /// whole clutch cooling together (playtest 8: a warm incubated design
+    /// with litter 8 hatched nothing in ~140 days; litter 4 bred well).
+    /// Replaces `clutch_cover`'s averaging. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v77"))]
+    pub clutch_split: f32,
+    /// An estivator sleeps through a drought out of summer only in a real
+    /// dry spell where it stands: no water to drink beside it and thirst
+    /// already past `seasonal::DRY_SPELL_THIRST` (playtest 8: a drought
+    /// founding with estivation slept through spring beside water, bred
+    /// nothing that summer and starved its second winter). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v77"))]
+    pub dry_spell: f32,
+    /// Prey per hunter from which a player pack's larder is full
+    /// (`prey_larder`; gone at half of it), in place of `apply::PREY_FULL`
+    /// (40) and `apply::PREY_NONE` (20): playtest 8's best pack peaked at
+    /// 190–240 beside herds of 2,000 (M12). 0: the constants.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v77"))]
+    pub pack_prey: f32,
+    /// Founding search, farther-sighted (version 78; off at 0, what
+    /// snapshots before version 78 read, `serde_util::before_v78`): with
     /// `founding_rivals`, other players' groups count where they range and
     /// are headed, not only where their animals stand: each group's middle
     /// with its forage circle, its migration target and its rally count as
@@ -1370,7 +1395,7 @@ pub struct Balance {
     /// (carnivory above 0.6) count 3 times as much, out to twice the
     /// range. Playtest 8: late joiners landed inside a third group's
     /// territory 8 days later, and beside a pack.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v74"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v78"))]
     pub rival_reach: f32,
 }
 
@@ -1675,13 +1700,16 @@ impl Default for Balance {
             prey_floor: 40.0,
             honest_signals: 1.0,
             wild_isolation: 0.6,
+            clutch_split: 1.0,
+            dry_spell: 1.0,
+            pack_prey: 40.0,
             rival_reach: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 174;
+    pub const FIELD_COUNT: usize = 177;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1864,6 +1892,9 @@ impl Balance {
             ("prey_floor", &mut self.prey_floor),
             ("honest_signals", &mut self.honest_signals),
             ("wild_isolation", &mut self.wild_isolation),
+            ("clutch_split", &mut self.clutch_split),
+            ("dry_spell", &mut self.dry_spell),
+            ("pack_prey", &mut self.pack_prey),
             ("rival_reach", &mut self.rival_reach),
         ]
     }

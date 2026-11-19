@@ -33,6 +33,19 @@ describe('design warnings', () => {
     expect(designWarnings(design(), world(0, { kind: 'severe_winter', active: false, end_day: 14 }))).toEqual([]);
   });
 
+  it('says how many eggs a parent warms and when eggs chill', () => {
+    const eggs = (litter: number) => ({ ...design(), birth: 'incubated_eggs', litter_size: litter } as DesignSpec);
+    expect(designWarnings(eggs(4), world(0)).map((w) => w.id)).toEqual([]);
+    const big = designWarnings(eggs(8), world(0));
+    expect(big.map((w) => w.id)).toEqual(['clutch']);
+    expect(big[0].text).toContain('of each clutch of 8, the other 4 chill');
+    const spring = { ...world(0), clock: { day: 10, season: 'Spring' } } as unknown as WorldSummary;
+    const chill = designWarnings(eggs(3), spring);
+    expect(chill.map((w) => w.id)).toEqual(['egg_chill']);
+    expect(chill[0].text).toContain('Warm-blooded eggs need the most heat');
+    expect(designWarnings(design(), spring)).toEqual([]);
+  });
+
   it('says when wings do nothing on a heavy body', () => {
     expect(designWarnings(design({ wings: 0.8, body_size: 0.1 }), null)).toEqual([]);
     const heavy = designWarnings(design({ wings: 0.8, body_size: 0.9 }), null);

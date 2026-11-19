@@ -560,26 +560,34 @@ fn playtest7_off(b: &mut crate::Balance) {
 fn balance73_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v73::OLD_VALUE;
     (b.honest_signals, b.wild_isolation) = (old, old);
+    playtest8_off(b);
+}
+
+/// The playtest 8 egg and sleep tunables as snapshots before version 77
+/// read them.
+fn playtest8_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v77::OLD_VALUE;
+    (b.clutch_split, b.dry_spell, b.pack_prey) = (old, old, old);
     rival_reach_off(b);
 }
 
-/// The playtest 8 founding tunable as snapshots before version 74 read it.
+/// The playtest 8 founding tunable as snapshots before version 78 read it.
 fn rival_reach_off(b: &mut crate::Balance) {
-    b.rival_reach = crate::serde_util::before_v74::OLD_VALUE;
+    b.rival_reach = crate::serde_util::before_v78::OLD_VALUE;
 }
 
-/// Version 73 snapshots (before the farther-sighted founding search)
+/// Version 77 snapshots (before the farther-sighted founding search)
 /// restore with it off, and are otherwise the same world.
 #[test]
-fn version_73_snapshots_restore_without_rival_reach() {
+fn version_77_snapshots_restore_without_rival_reach() {
     let mut w = fixture_world();
-    let old = w.snapshot_v73();
+    let old = w.snapshot_v77();
     let h = SnapshotHeader::read(&old).unwrap();
-    assert_eq!(h.version, 73);
+    assert_eq!(h.version, 77);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
-    assert_eq!(r.config.balance.rival_reach, crate::serde_util::before_v74::OLD_VALUE);
-    assert!(r.snapshot_v73() == old);
+    assert_eq!(r.config.balance.rival_reach, crate::serde_util::before_v78::OLD_VALUE);
+    assert!(r.snapshot_v77() == old);
     rival_reach_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
@@ -2021,4 +2029,25 @@ fn version_70_snapshots_restore_without_winter_larder() {
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.winter_larder, 1.0);
     assert_eq!(r.config.balance.prey_floor, 40.0);
+}
+
+/// Version 73 snapshots (before the playtest 8 egg and sleep rules)
+/// restore with them off, and are otherwise the same world.
+#[test]
+fn version_73_snapshots_restore_without_clutch_split() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v73();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 73);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.clutch_split, r.config.balance.dry_spell), (0.0, 0.0));
+    assert!(r.snapshot_v73() == old);
+    playtest8_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    // This version keeps them.
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.clutch_split, r.config.balance.dry_spell), (1.0, 1.0));
 }

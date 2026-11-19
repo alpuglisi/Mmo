@@ -1235,7 +1235,7 @@ Server → client:
 | --- | --- |
 | `welcome` `{player, name, lineage, proto?}` | On connect; `proto: 2` when the connection speaks protocol 2 (absent for protocol 1) |
 | `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration` (the main group's), `groups` (yours by id, the main group always: `{id, members, adults, migration?, territory?: {x, y, radius, claimed_tick}, rally?: {x, y, radius, expires_tick}, max_radius, claim_ready_tick?, obedience}` (`obedience`: the members' mean obedience gene, to hundredths)), `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`, `group` when not 0; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one; `heading`, its facing as one of 32 directions, and `vision`, its eyes for the vision cones: see *Vision cones* below), `nearby` (others in the window, also with `look`; never a heading or eyes), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements), `grace` while your lineage's newcomer grace lasts (`{days_left, until_tick, real_seconds_left?}`: game days to a tenth, the tick it ends, real seconds rounded up to tens; absent otherwise), and `protected: true` on a `nearby` organism whose lineage is under its grace |
-| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command, with its `id` (also for a message that doesn't parse, when its `id` can be read: a number, a numeric string, or found in text that isn't valid JSON: `bad_message`, named after its `type` if that is a command, else `message`, and never with the parser's text). Day numbers in `day` fields count from 0; player-facing texts (ledger, alerts) count from 1. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor`, the request rules' `requests_refused` (the partner's owner blocked you or declines every request), `too_many_requests` (at most 3 requests to one player an hour; `detail.ticks_left`), `too_many_blocked`, `partner_unavailable` (another player's female can't mate now: her pregnancy is not told), `out_of_sight` (`set_view`; `request_mating` and `preview_mating` for a partner not within your animals' sight plus 16 tiles, not on the market and not in your offers, and for an id that doesn't exist), `no_such_player` (`mating_prefs`; `detail.players`), `self_block`, `newcomer_grace` and `own_grace` (`possess_attack`; `detail.days_left`, `detail.real_seconds_left`), `no_grace` (`end_grace`), `bad_title` and `bad_name` (every chosen name, lineage and design names included, goes through one filter, `crate::names`: ASCII letters, digits, single spaces and `. , ' ! ? - : + # ( )` only, nothing passing for the server, its staff, the wild or another player, also read run together ("G.M.", "TheOwner", "SupportTeam", "the wild") and with trailing digits dropped ("Herdmaster" for "Herdmaster5"); a title can't contain another player's name; names saved before the filter are cleaned on load; `/api/design/compatibility` gives `name_warning` for a look-alike before Found), `bad_price` (also for a price past `u64::MAX`), `too_large` (a command message over 16 KB: answered with its id when readable, the connection stays open; a design body over 64 KB), `duplicate_gene` (two trait keys naming one gene, or one key twice), `bad_coordinates` also for a bare `NaN`/`Infinity` and a `set_view` radius of 0 or less, `in_auction` (a dam in an open auction is locked against other requests, acceptances, purchases, bids and directed matings until it closes or is withdrawn; `detail.listing`) |
+| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command, with its `id` (also for a message that doesn't parse, when its `id` can be read: a number, a numeric string, or found in text that isn't valid JSON: `bad_message`, named after its `type` if that is a command, else `message`, and never with the parser's text). Day numbers in `day` fields count from 0; player-facing texts (ledger, alerts) count from 1. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor`, the request rules' `requests_refused` (the partner's owner blocked you or declines every request), `too_many_requests` (at most 3 requests to one player an hour; `detail.ticks_left`), `too_many_blocked`, `partner_unavailable` (another player's female can't mate now: her pregnancy is not told), `out_of_sight` (`set_view`; `request_mating` and `preview_mating` for a partner not within your animals' sight plus 16 tiles, not on the market and not in your offers, and for an id that doesn't exist), `no_such_player` (`mating_prefs`; `detail.players`), `self_block`, `newcomer_grace` and `own_grace` (`possess_attack`; `detail.days_left`, `detail.real_seconds_left`), `no_grace` (`end_grace`), `bad_title` and `bad_name` (every chosen name, lineage and design names included, goes through one filter, `crate::names`: ASCII letters, digits, single spaces and `. , ' ! ? - : + # ( )` only, nothing passing for the server, its staff, the wild or another player, also read run together ("G.M.", "TheOwner", "SupportTeam", "the wild"), per word (a staff word at a word's end, or inside after a lead-in or before a role word: "claudebot", "realclaudebot", "mygmherd", "serverbot"; common words holding one pass: "Taproot", "Ecosystem", "Badminton", "Modesty", "Wildly") and with digits around it ("2claude2"); another player's name with its digits moved ("8Rulebender") is a look-alike, and so is a new account's with up to 2 letters more ("Herdmaster8x"); lineage, species and animal names and titles can't copy a wild species' or a rival's lineage name, decorations aside ("Meadow vole II", "New Sunbright Drove"); a title can't contain another player's name; names saved before the filter are cleaned on load; `/api/design/compatibility` gives `name_warning` for a look-alike before Found), `bad_price` (also for a price past `u64::MAX`), `too_large` (a command message over 16 KB: answered with its id when readable, the connection stays open; a design body over 64 KB), `duplicate_gene` (two trait keys naming one gene, or one key twice), `bad_coordinates` also for a bare `NaN`/`Infinity` and a `set_view` radius of 0 or less, `in_auction` (a dam in an open auction is locked against other requests, acceptances, purchases, bids and directed matings until it closes or is withdrawn; `detail.listing`) |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
 | `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe), `market` (someone bought a mating with your listed organism, a sale paid to you, a price paid or refunded from your escrow, a listing closed by expiry or death, an achievement's renown bonus, a bid on your auction, outbid and refunded, an auction won, sold, unsold or failed) |
@@ -9598,6 +9598,111 @@ plateaued at 60–84 and lost 60% in its first winter, inside its grace.
 | `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 14/16 (12), 16/16 (16); 4 | 13/16 (11), 16/16 (16); 4 |
 | workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (459), build | | pass |
 | e2e (16 scripts, `E2E_JOBS=2`) | | 14 of 16: smoke and builder failed under load. Alone, builder passed; smoke failed once on a `claim_territory` near water (`mostly_water`, the group's position at that moment) and passed twice after |
+
+### Playtest 8: clutches, sleep and group alerts
+
+Round 9 for `docs/playtest-8.md` findings H4, M8 and M14. Snapshot version
+77 (provisional; main is at 73). It adds `Balance::clutch_split` and
+`Balance::dry_spell`, off at 0, which is what snapshots of version 76 and
+before read (`serde_util::before_v77`).
+
+**H4: large incubated clutches chill entirely.** A warm incubated-egg
+design with litter 8 hatched nothing in ~140 days; at litter 4 it bred
+well.
+- **The cause.** `clutch_cover` (round 6) spread a parent's warmth over the
+  whole clutch: past 4 eggs the clutch sat at `site + (brooded − site) ×
+  (4 / eggs)^2.1`. At 8 eggs that is under a quarter of her warmth, so on
+  any cool nest all 8 chilled together.
+- **A parent warms 4** (`Balance::clutch_split` 1). The 4 eggs she covers
+  (`environment::CLUTCH_COVERED`) get her full warmth. The rest lie at the
+  nest's own temperature and chill one by one: each with chance `(low −
+  nest) × chill rate` an hour (its own `rng_for` stream). A clutch of 8
+  loses its extra eggs, not all of them; at 4 or fewer nothing changes.
+- **Said in the designer.** For incubated eggs with a litter over 4: "A
+  brooding parent warms 4 eggs at most: of each clutch of 8, the other 4
+  chill whenever the nest is cool, so about 4 hatch. The extra eggs still
+  cost points …".
+- **Said in the daily summary.** Chilled eggs of a lineage whose brooders
+  lay more than 4 read "chilled: a brooding parent warms 4 eggs at most,
+  and the rest of each clutch of 8 chill on a cool nest". Otherwise
+  "chilled: the nest was too cold for them (a cold night or season), or
+  the parent left it", no longer blaming straying first.
+
+Measured with `examples/bigclutch.rs`: a warm incubated-egg grazer, 30
+founders, founded into grown 96-tile worlds for 180 days (4 seeds, totals).
+
+| Clutch | `clutch_split` 0 | Default |
+| --- | --- | --- |
+| 4: laid, hatched, chilled; alive at the end | 1,202, 778, 350; 25 | 1,335, 803, 474; 28 |
+| 8: laid, hatched, chilled; alive at the end | 1,785, 944, 768; 30 | 1,773, 1,034, 660; 29 |
+
+- **A modest gain where it was measured.** At litter 8, 10% more eggs
+  hatch and 14% fewer chill. In these worlds the old rule didn't lose
+  every clutch: the nests there are warm often enough. The playtest's total
+  loss (cool nests, every egg under a quarter of the warmth) is the case
+  the unit test `a_big_clutch_keeps_the_eggs_its_parent_warms` covers: on
+  a 10 °C nest a clutch of 8 keeps 4 with the rule and loses all 8
+  without.
+- **Litter 4 moves too**, though a clutch of 4 is unchanged: the litter
+  gene mutates, so some young lay 5 or more, and the runs diverge from
+  there. The lineage's numbers at the end swing widely across seeds (0 to
+  19 alive) in both arms.
+
+**M8: the designer's estivation advice was a trap.** At 40% drought it said
+"Add estivation (0.6 or more)". The estivating lineage slept through spring,
+had no summer births and starved in its second winter, while a plain starter
+thrived.
+- **Drought sleep only in a real dry spell** (`Balance::dry_spell` 1). Out
+  of summer (round 8's `founding_rivals` added spring and autumn), an
+  estivator now sleeps through a drought only with no water beside it
+  (`Map::can_drink_at`) and thirst already at 30 or more
+  (`seasonal::DRY_SPELL_THIRST`). Summer heat and summer drought work as
+  before.
+- **The advice states the costs.** "Keeping them by lasting water (the Food
+  layer) is the surest answer, or wait for the drought to ease. Estivation
+  (0.6 or more) lets them sleep through a real dry spell where no water is
+  near, but it has costs: a sleeping lineage doesn't breed, so a dry spring
+  can cost a season's young, and it wakes needing food."
+- **Chill in the designer.** Incubated eggs designed in winter or spring
+  get a warning that clutches laid in winter, early spring or a cold
+  climate often chill (warm-blooded eggs need the most heat).
+
+**M14: group alerts and orders.**
+- **The group's own deaths.** The grazed-bare and no-water alerts said the
+  whole lineage's hunger or thirst deaths ("46 starved" for a 6-animal
+  group). The server now counts the day's bodies by group just before the
+  world clears them (`Game::group_deaths`) and says "N of the group
+  starved". After a restart, until a day has been counted, it falls back to
+  the lineage's count.
+- **Loosened holds.** When every starving holder's hold is already loosened
+  (round 8 load), the warning says they "already forage past the claim's
+  edge, and it isn't enough", not "obey the claim and stay inside".
+- **A territory kept while migrating.** The migrate reply no longer says it
+  replaces the territory. It carries `territory_kept` and says the group
+  keeps it while away. Each group in the state carries `territory_kept`; the
+  map draws it and the group line says "migrating toward …, keeping its
+  territory at …".
+- **View group** pins the view on the densest cluster of a scattered group
+  (the members in and around the fullest 12-tile cell), not on the mean,
+  which fell on a lake between its parts.
+- **Survey** works from the biggest group when the main group is empty
+  (refused before with 88 alive).
+- **No attack orders asleep.** A possessed animal in its deep sleep is
+  refused with `asleep`.
+
+**Checks** (main at version 73 with balance's round 8, against this round):
+
+| Check | `clutch_split` and `dry_spell` 0 | Defaults |
+| --- | --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | | 11.87 (± 0.16); every lineage 12 of 12 |
+| `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 12/16 (12), 16/16 (16); 4 | 10/16 (9), 16/16 (16); 4 |
+| workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (467), build | | pass |
+| e2e (16 scripts, `E2E_JOBS=2`, beside the studies) | | 14 of 16: mobile and panels timed out under load; both passed alone |
+
+- **The wild fox** survived on 2 fewer seeds with this round's rules. The
+  fox bears live young, so the egg rule doesn't touch it directly; the
+  wild egg layers (newts, frogs) and estivators change its prey. Within
+  the seeds' spread on 16 seeds, but not shown to be noise.
 
 ## Genetics validation
 

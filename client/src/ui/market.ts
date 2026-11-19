@@ -19,7 +19,7 @@ import { commandLabel } from '../errors';
 import './market.css';
 import {
   auctionText, expiryText, balanceText, bidProblem, buyProblem, COMPAT_CONFIDENCE, compatRowText, DEFAULT_FILTER, shopText, ledgerRows, ledgerTotals, listingCompat,
-  marketQuery, mergePages, ownAdults, pageText, traitSummary, type KindFilter, type MarketFilter, type RoleFilter,
+  marketQuery, mergePages, ownAdults, pageText, restoreText, traitSummary, type KindFilter, type MarketFilter, type RoleFilter,
 } from './marketData';
 
 export interface MarketDeps {
@@ -432,6 +432,25 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       render();
     }
   });
+  // Restoring the pasture (a sink that grows with the lineage): the dry ground around the main group regrows.
+  const restoreBtn = h('button', { id: 'shop-restore', class: 'secondary' }) as HTMLButtonElement;
+  const restoreNote = h('span', { class: 'muted small', id: 'shop-restore-note' });
+  restoreBtn.addEventListener('click', async () => {
+    // Quoted from a fresh shop: the price follows the lineage's size and doubles with each purchase.
+    const fresh = await deps.send({ type: 'renown_shop' });
+    shop = (fresh.ok && parseShopView(fresh.data)) || shop;
+    const t = shop ? restoreText(shop) : null;
+    if (!shop || !t) return;
+    if (!(await confirmDialog({ id: 'restore-confirm', title: `Restore the pasture for ${shop.restore_price} renown?`, ok: 'Restore', body: t.note }))) return;
+    const r = await deps.send({ type: 'restore_pasture' });
+    if (r.ok) {
+      const d = r.data as { restored?: number; price?: number; shop?: unknown } | undefined;
+      shop = parseShopView(d?.shop) ?? shop;
+      const next = shop?.restore_price;
+      model.toast('info', `Pasture restored around your main group${d?.restored !== undefined ? ` (${Math.round(d.restored)} food regrown)` : ''} for ${d?.price ?? '?'} renown.${next ? ` The next costs ${next}.` : ''}`);
+      render();
+    }
+  });
   // A provision (a sink for small lineages): feeds and waters the neediest adults.
   const provBtn = h('button', { id: 'shop-provision', class: 'secondary' }) as HTMLButtonElement;
   const provNote = h('span', { class: 'muted small' });
@@ -540,8 +559,9 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     setText(plateNote, `Cosmetic: shown with your name.${s.species_name_price ? ` Naming a species your lineage founded costs ${s.species_name_price}.` : ''}`);
   }
   const provRow = h('div', { class: 'row', hidden: true }, provBtn, provNote);
+  const restoreRow = h('div', { class: 'row', hidden: true, id: 'shop-restore-row' }, restoreBtn, restoreNote);
   const surveyRow = h('div', { hidden: true }, h('div', { class: 'row' }, surveyBtn, surveyNote), surveyOut);
-  const shopBody = h('div', { hidden: true }, shopText_, h('div', { class: 'row' }, slotBtn, slotNote), h('div', { class: 'row' }, reinBtn, reinNote), provRow, surveyRow, nameRow, plateRow);
+  const shopBody = h('div', { hidden: true }, shopText_, h('div', { class: 'row' }, slotBtn, slotNote), h('div', { class: 'row' }, reinBtn, reinNote), provRow, restoreRow, surveyRow, nameRow, plateRow);
   const shopLoading = h('p', { class: 'muted small' }, 'Loading…');
   shopEl.replaceChildren(shopLoading, shopBody);
 
@@ -560,6 +580,13 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     // Blocked, the next price would mislead (playtest 7: "600" while the real one was 150).
     setText(reinBtn, blocked ? `Reinforcements (${s.reinforce_size} adults): not now` : `Reinforcements (${s.reinforce_size} adults): ${s.reinforce_price} renown`);
     setText(reinNote, blocked ?? `For lineages of at most ${s.reinforce_max_alive}; the price doubles with each, at most ${s.reinforcements_max ?? '?'} a ranked season (${s.reinforcements_bought ?? 0} bought).`);
+    const rt = restoreText(s);
+    restoreRow.hidden = !rt;
+    if (rt) {
+      restoreBtn.disabled = !rt.can;
+      setText(restoreBtn, rt.label);
+      setText(restoreNote, rt.note);
+    }
     provRow.hidden = s.provision_price === undefined;
     if (s.provision_price !== undefined) {
       provBtn.disabled = s.provision_blocked !== undefined || s.balance < s.provision_price;
