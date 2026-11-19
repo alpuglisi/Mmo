@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  canSplit, claimWait, clearMigrationMsg, groupName, groupObedience, groupOptions, groupOrders, groupsOf, homeRangeGroup, homeRangeNote, memberCounts, protectionLeft, migrateMsgs, parseChoice, rallyLeft, rallyMsg,
+  canSplit, claimWait, clearMigrationMsg, groupCenter, groupName, nextViewGroup, groupObedience, groupOptions, groupOrders, groupsOf, homeRangeGroup, homeRangeNote, memberCounts, protectionLeft, migrateMsgs, parseChoice, rallyLeft, rallyMsg,
   targetGroup, territoryRadius, territoryTap, validChoice, TERRITORY_MIN_RADIUS,
 } from './groups';
 import type { GroupView, OwnOrganism, StateView } from './protocol';
@@ -107,10 +107,30 @@ describe('groups', () => {
     expect(homeRangeNote(g(0, { territory }))).toBe('');
     expect(homeRangeNote(g(0, { home_range: true }))).toBe('');
     // The protection left, from the server.
-    expect(homeRangeNote({ ...home, protection_left_min: 450 })).toMatch(/Protection left: 7 h 30 min \(at most 12 hours in any 24\)\.$/);
-    expect(protectionLeft({ ...home, protection_left_min: 720 })).toBe('Protection left: 12 h (at most 12 hours in any 24).');
-    expect(protectionLeft({ ...home, protection_left_min: 5 })).toBe('Protection left: 5 min (at most 12 hours in any 24).');
-    expect(protectionLeft({ ...home, protection_left_min: 0 })).toMatch(/^Protection used up for now/);
+    // In real time at this speed, one statement (playtest 7: three durations side by side).
+    const fast = { ...home, protection_budget_min: 75, protection_window_min: 150 };
+    expect(homeRangeNote({ ...fast, protection_left_min: 72 })).toMatch(/Protection left: 1 h 12 min of at most 1 h 15 min in any 2 h 30 min \(real time at this game speed\)\.$/);
+    expect(homeRangeNote(fast)).not.toMatch(/12 hours/);
+    expect(protectionLeft({ ...home, protection_left_min: 720, protection_budget_min: 720, protection_window_min: 1440 })).toBe('Protection left: 12 h of at most 12 h in any 24 h (real time at this game speed).');
+    expect(protectionLeft({ ...home, protection_left_min: 5 })).toBe('Protection left: 5 min (real time at this game speed).');
+    expect(protectionLeft({ ...fast, protection_left_min: 0 })).toMatch(/^Protection used up for now \(you get at most 1 h 15 min in any 2 h 30 min\)/);
     expect(protectionLeft(home)).toBe('');
+  });
+});
+
+describe('View group', () => {
+  const at = (list: [number, number, number][]): StateView => ({
+    organisms: list.map(([group, x, y], i) => ({ id: i + 1, group, x, y }) as unknown as OwnOrganism),
+    groups: [g(0), g(1), g(2, { members: 0 })],
+  }) as unknown as StateView;
+  it('cycles the groups with agents, then back to the lineage', () => {
+    const s = at([[0, 0, 0], [0, 2, 4], [1, 10, 10]]);
+    expect(groupCenter(s, 0)).toEqual({ x: 1, y: 2, n: 2 });
+    expect(groupCenter(s, 2)).toBeNull();
+    expect(nextViewGroup(s, null)).toBe(0);
+    expect(nextViewGroup(s, 0)).toBe(1);
+    expect(nextViewGroup(s, 1)).toBeNull();
+    // One group: nothing to cycle.
+    expect(nextViewGroup(at([[0, 1, 1]]), null)).toBeNull();
   });
 });

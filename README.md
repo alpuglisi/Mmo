@@ -201,8 +201,10 @@ score).
   a stuck order alive. A migrate, far claim or rally given while 30% or
   more of the group is dormant warns in its reply, migrate and far claims
   warn of open water on the route (not for fliers), and migrate checks the
-  destination like a claim, rated for the ground a group its size spreads
-  over there (the rally circle, not the small home circle) and without the
+  destination like a claim, rated for the ground the group forages there
+  (twice its home circle, `World::forage_bound`, the circle the daily home
+  check rates too: playtest 7 rated the rally circle and then alerted
+  "grazed bare" for the smaller home circle four days in) and without the
   "far from the group" warning (`destination`: water, food, drought;
   warnings start "At the destination:"). Migrate and far claims also
   estimate the **journey** (`journey`: tiles, days, food share;
@@ -211,10 +213,18 @@ score).
   to the playtests: about 10 for a few dozen, 6 for 300, 3 for 1,000, since
   big herds stop to eat and drink and wait on each other), and the plants
   standing within 3 tiles of the route against the group's need for those
-  days. A walk of 7 days or more whose land can't feed the group, or of 14
-  days or more, warns ("About N days on the way ... expect heavy losses.
-  Split the group or migrate in stages"): playtest 6 sent 1,000 animals 75
-  tiles, and the walk at 2–3 tiles a day killed 60% of them. A target moved by
+  days. A walk of 7 days or more whose land can't feed the group, of 14
+  days or more, or of any length whose land holds under 30% of the food it
+  needs (`JOURNEY_BARE_SHARE`; playtest 7: 6.2 days at 18% went unflagged)
+  warns ("About N days on the way ... The land along the way holds about
+  N% ... expect heavy losses. Split the group or migrate in stages"):
+  playtest 6 sent 1,000 animals 75 tiles, and the walk at 2–3 tiles a day
+  killed 60% of them. A migration keeps the territory the group held
+  (`HeldPlans::away`, snapshot version 66): still its ground, public and
+  closed to rival claims, until the group arrives or claims anew; clearing
+  the order holds it again, and a migration that times out with the group
+  still on it does too (playtest 7: a probe migrate cost the territory, and
+  the claim cooldown locked it out). Abandoning gives it up. A target moved by
   under a tile (onto a tile's centre) carries no `moved` note. Migrate, claim and
   rally replies say which standing orders they replace (`replaced`, and
   the `note`). `World::reroute_migration`
@@ -308,10 +318,23 @@ score).
   water no member can get to no longer counts), `food_supports` and `standing_days`
   (`World::food_check`: what the circle feeds at this season's regrowth,
   by the terrain's own logistic rule at today's plants, warmth, snow cover
-  and dryness, plus the plants standing now spread over 30 days, against
-  the group's daily need with a 1.3 margin; playtest 4 found the old peak-
-  regrowth measure 2–3× too hopeful), `prey_nearby` for meat-eaters
-  (`World::prey_check`: other lineages' animals within 8 tiles of the
+  and dryness, plus the plants standing now (only what the group's bodies
+  reach) spread over 30 days, against the group's daily need with a 1.15
+  margin; playtest 4 found the old peak-regrowth measure 2–3× too hopeful.
+  The need is each member's hunger in a typical day where it stands
+  (`World::steady_hunger_per_day`: crowding by kin and by the lineage's
+  size past its soft cap, warm-body upkeep and cold, pregnancy, toxin
+  upkeep, body size, a mean activity of 1.1), and other plant eaters in
+  the circle (wild herds, rivals, the player's other groups; `others`)
+  take their share of the food. Playtest 7's claims were still 2–5× too
+  hopeful in play ("supports 1,044 for 65.7 days", 232 of 576 starving
+  four days later): the bare hunger rate left out crowding, and a
+  640-animal herd held among wild grazers ate about twice the need
+  counted. Measured now (`a_big_held_herd_eats_what_the_food_check_says`):
+  the circle's grazers eat 0.92× the need counted, and the 8.6 days of
+  standing food the claim predicted (with its regrowth) ran out on day 14
+  (the regrowth of a grazed circle rises), so the estimate errs short),
+  `prey_nearby` for meat-eaters (`World::prey_check`: other lineages' animals within 8 tiles of the
   circle), `dryness` and `distance` from the group, with `warning`s (and a
   `warnings` list) when there are fewer than 3 drinkable tiles (in a
   drought, fewer than one per 8 animals), a quarter of it is water, its
@@ -323,14 +346,23 @@ score).
   `migrating_to`, and the territory is claimed when the group arrives
   (snapshot version 48 keeps it waiting; a timeout drops it): a far claim
   used to become a territory, and the home range, with nobody in it. A
-  circle overlapping another player's territory is refused (`overlaps`,
-  not saying whose), checked at the radius the claim would get (cut to the
-  group's limit first: a typed radius of 300 found any rival territory on
-  the map). A refused claim costs a short wait, a quarter of the cooldown,
+  far claim is rated, and its reply says, at the radius it will get (cut
+  to the group's limit; playtest 7: "radius 300, food_supports 6,211" for
+  31 animals). A circle overlapping another player's territory is refused
+  (`overlaps`, not saying whose), checked at the radius the claim would get
+  (cut to the group's limit first: a typed radius of 300 found any rival
+  territory on the map), unless that territory is a squat: held by at most
+  12 animals (`SQUAT_MEMBERS`) against a claiming group ten times their
+  number (`SQUAT_RATIO`), whose claim takes the ground (the squatter is
+  told; playtest 7: a 2-animal splinter could deny a key water spot to
+  every rival for good). A far claim's arrival checks again: if a rival
+  claimed there on the way, the group arrives without claiming and is told. A refused claim costs a short wait, a quarter of the cooldown,
   and an accepted far claim starts the cooldown at once. Other players'
   territories are public: the state carries those reaching into the view
-  window (`territories`: outlines, no owner) and the map draws them as grey
-  circles, so a refusal tells nobody anything new,
+  window or within 48 tiles of any of the player's groups
+  (`OUTLINES_NEAR_GROUP`; playtest 7: split groups away from the view
+  claimed blind) (`territories`: outlines, no owner) and the map draws them
+  as grey circles, so a refusal tells nobody anything new,
   and a radius that isn't a positive number (`bad_radius`): a negative one
   used to commit a 3-tile territory and its cooldown. A radius raised to the minimum or cut to the group's limit
   says so (`note`). Every day the server checks each group's held ground
@@ -342,6 +374,16 @@ score).
   playtest 5's herd was claimed at 475 and held 1,941); and, for hunters,
   when prey around it is fewer than half the pack. The drift alert is only
   given while no rally, territory or migration holds the group elsewhere.
+  Every hour the sim counts a territory's starving and parched holders
+  (hunger or thirst at 80): at 15% (`HOLD_LOOSEN_SHARE`) the hold loosens
+  and the whole group forages up to its radius (at least 10 tiles) past the
+  edge, until fewer than 5% are (`HeldPlans::loosened`, snapshot version
+  66); the owner is told both ways. A claim made before a drought or a lean
+  season no longer holds a starving herd on bare ground (playtest 7: a held
+  herd fell from 1,144 to 449 and recovered only once abandoned). Split and
+  merge replies list every group's members and adults as the state counts
+  them, and the lineage's `population`, with a note when animals far from
+  every player live out in aggregate outside any group.
 - **Rally** (`rally_group`, `cancel_rally`): gather a group at a point.
   The circle it gathers in has radius `2 + √members`, about π tiles of
   ground per member, up to 24 tiles (the largest territory's cap, reached
@@ -1041,7 +1083,7 @@ square MP4s and GIFs, with a manifest of titles, captions and hashtags. See
 | `GET /api/leaderboard` | | Legacy shares from the latest daily snapshot: `{day, breeding_adults, rows: [{player, name, share, weighted_share, alive}]}` |
 | `GET /api/leaderboard/history?limit=30&from=&to=&genes=` | (genes) | The stored daily records, oldest first (legacy shares, lineage sizes, daily births and deaths by cause, player lineages' mean genes; thinned with age: see *Daily history retention*): the newest `limit` (at most 365) with a day in `from..=to` (the newest world's days; both optional). Gene means need a login (`genes=true` without one: 401; the default is with a login only), and give every gene of the caller's own lineages but only `body_size`, `leg_length` and `fur`, to quarters, of others' (what their animals show); `genes=false` leaves them out. At most 60 days logged out |
 | `GET /api/leaderboard/seasons?limit=8` | | Seasonal leaderboards from the whole stored history, newest first: `[{year, season, first_day, last_day, days, current, rows: [{player, name, mean_share, final_share, peak_share, mean_weighted_share, peak_alive, days}]}]`, ranked by mean share over the season's recorded days (a missing day counts as 0; a restart, whose world starts again at day 0, starts a new run) |
-| `GET /api/terrain` | | The tile grid: `{width, height, terrain_version, biome, elevation, river, base_water, dynamic}`; every layer is one byte per tile, row-major, base64 (biome index 0–7; elevation 0–255 lowest..highest; river 0–255; depths in cm, capped at 255) |
+| `GET /api/terrain` | | The tile grid: `{width, height, terrain_version, biome, elevation, river, base_water, dynamic}`; every layer is one byte per tile, row-major, base64 (biome index 0–7; elevation 0–255 lowest..highest; river 0–255; depths in cm, capped at 255). Public: the land only, no animals (`/api/map.png`, which shows animals, needs a login) |
 | `GET /api/terrain/dynamic` | | Only what changes (the sim updates it hourly): `{tick, day, hour, season, water (cm), ice, snow (0–255 for 0–0.5 m), veg (share of the tile's maximum), wetness (0.5 normal, < 0.3 drought)}`, about 110 KB of JSON for 128×128 |
 | `GET /api/species` | | Detected species, living first by size: `{day, detected_day, samples, alive, species: [{id, name, origin (initial/founding/split), parent?, founded_day, extinct_day?, merged_into?, founder?, founder_name?, dominant, dominant_name, dominant_share, adults, peak_adults, lineages: [{lineage, name, owner, adults}], carnivory, body_size}], founded: [{player, name, count}]}` (`parent` links give the species tree) |
 | `GET /api/eras` | | `{era, era_days, first_day, last_day, days_left, eras: [{era, first_day, last_day, breeding_adults, species_alive, catastrophes, rows: [{player, name, share, weighted_share}], niches: [{niche, player, name, share, adults}]}]}`, finished eras newest first with their final ranking |
@@ -1064,7 +1106,7 @@ square MP4s and GIFs, with a manifest of titles, captions and hashtags. See
 | `POST /api/push/prefs` | Bearer | Replace them; the reply is normalized (sorted, no duplicates); an unknown kind is refused (422) |
 | `GET /api/map.png?scale=4` | yes | PNG of the world as the caller may see it (`Game::map_rgb`: the terrain, their organisms and others only within their view radius of them; 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
 | `GET /api/spectate` | | The read-only spectator view (watch links `?watch=<world>&lineage=<n>`, `tools/marketing/README.md`): clock, active catastrophes and every lineage's public name, owner, head counts, share, most common look and members per cell (8 tiles for the wild species; none, with `hidden: true`, for players' lineages, which are counted but not placed); no ids, positions, genes or needs, and refreshed at most once per simulated day |
-| `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`), the process's `cpu_seconds` and `rss_bytes` (Linux), the `allocator` (`jemalloc` by default, `glibc` without the feature) and its `heap` statistics (`allocated`: live allocations; `retained`: resident memory the allocator holds but has not handed out; read at most every 2 s), and password hashing over the whole process, `hashing`: `concurrency` and `queue` (the bound), `in_flight` and `waiting` now, `peak_in_flight` (never above `concurrency`), `hashes` done, `rejected` (refused as busy) and `mean_ms` per hash |
+| `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`), the process's `cpu_seconds` and `rss_bytes` (Linux), the `allocator` (`jemalloc` by default, `glibc` without the feature) and its `heap` statistics (`allocated`: live allocations; `retained`: resident memory the allocator holds but has not handed out; read at most every 2 s), and password hashing over the whole process, `hashing`: `concurrency` and `queue` (the bound), `in_flight` and `waiting` now, `peak_in_flight` (never above `concurrency`), `hashes` done, `rejected` (refused as busy) and `mean_ms` per hash. Without a login `conns` and `players_online` read 0 and `apply_by_command` is empty (they told rivals when a player logged off) |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
 
 Routes about a world (founding, `world`, the leaderboards, terrain, species,
@@ -1176,6 +1218,8 @@ Client → server:
 | `buy_mating_slot` | | One extra directed-mating slot until the weather season changes: 30 renown, doubling with each bought that season, at most 6 (`limit_reached`, `insufficient_funds`, `no_lineage`); `data` = the shop after |
 | `reinforce` | | 10 young adults copied from your lineage's living adults join it on the best-fed ground near them: 150 renown, doubling with each, at most 2 within a ranked season's length per player (a rolling window; retired lineages count: `limit_reached`), only while at most a fifth of the soft lineage cap is alive (`too_large`, `no_adults`, `no_lineage`, `insufficient_funds`, `lineage_full`); `data` = `{added: [ids], shop}` |
 | `provision` | | The hungriest or thirstiest adults of your lineage get 50 off hunger and thirst, priced per adult fed: 20 adults at 2 renown each while at most a fifth of the soft lineage cap is alive, else 20 per fifth of the cap alive (at most 200) at 4 each; at most 3 within a ranked season's length (`limit_reached`, `no_adults`, `no_lineage`, `insufficient_funds`); `data` = `{fed, shop}` |
+| `name_animal` | `organism`, `name` | Name one of your living animals (cosmetic, 50 renown each time; the species-name filter; `same_name`, `bad_name`, `not_owned`); shown on its listings (`animal_name`); `data` = `{name, shop}` |
+| `animal_names` | | Your living animals' names; `data` = `{names: {id: name}}` |
 | `survey` | | Rival groups and territories within 64 tiles of your main group's middle, in 8-tile cells (members rounded to tens), now: 30 renown plus 1 per 10 of your animals alive; `data` = `{price, x, y, radius, groups: [{player, name, x, y, members, territory?: [x, y, radius]}], shop}` (`no_lineage`, `insufficient_funds`) |
 | `substitute_mating` | `request`, `mine` | The requester of an accepted agreement whose animal died sends another adult of theirs instead, before the deadline (the purchase checks; `not_substitutable` while the first still lives or for anyone else); `data` = `{offer}` |
 | `set_nameplate` | `color, title` | A cosmetic nameplate (a palette color, a 1–24 character title) shown with your name: 500 renown, 100 per change (`bad_color`, `bad_title`); `data` = `{nameplate, shop}` |
@@ -1940,6 +1984,30 @@ minutes, every purchase failed when the buyer's animal died):
   form clears its old error on success and starts at 5; a pregnant dam's
   card says so in its title; outcomes mention the failure risk only for
   a miss; the provision quote is fetched fresh before confirming.
+
+**Playtest 7 changes** (`docs/playtest-7.md`):
+
+- **Market**: a buyer's animal lost first and the partner gone later
+  still forfeits the hold fee (it used to refund in full); a buyer's
+  death is excused only for disease, a harmful recessive, attrition or
+  the winter-sleep toll, and never once they possessed or ordered it
+  during the agreement (predation and journeys could be arranged); the
+  meeting point moves toward the partner (to 7/8, then the partner) when
+  a third party's or the wild's predator is within 12 tiles
+  (`Game::safe_meeting_point`); only sales of 10 renown or more count
+  toward the stud-market title (`MARKET_TITLE_MIN_PRICE`); a seller who
+  retires with a sold mating refunds the buyer and pays them the hold fee
+  from their own renown, and a retiring buyer forfeits it.
+- **Re-founding fee**: what the balance can't pay is owed
+  (`Economy::refound_debt`) and taken from the next renown coming in
+  (spending renown first dodged it); a lineage that died out young
+  (within the window of its founding) pays half the fee.
+- **Names for animals** (`name_animal`, 50 renown): a cosmetic sink.
+- Small: the survey asks in the app's dialog and its result is dated; a
+  blocked reinforcement or provision shows "not now", not a price;
+  adult pickers say they search the animals in view; listings of animals
+  past 90% of their lifespan say "old"; accepted agreements' escort views
+  refresh twice a game day.
 
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.
@@ -8928,6 +8996,66 @@ around it.
   thirsty in a drought.
 
 
+
+### Playtest 6: balance
+
+Playtest 6 (`docs/playtest-6.md`, findings 1, 4, 6 and part of 9 here). The
+warm egg-laying hibernator took over (Herdmaster6: warm, small, six
+incubated eggs, hibernating, toxic and bright, very sociable, 50 founders;
+the hard cap from about day 200; every legacy crown). A late cold flier
+still reached first place by share. Species credit went to copies of a
+rival's design and to a 47-animal group of one's own lineage, and players'
+toxins made the wild Steppe antelope "poisonous". Founding in a drought
+wiped a lineage, and egg-laying carnivores lost about 10 eggs per hatching
+without a warning.
+
+**Sim rules, on by default from snapshot version 62** (taken as 58 and
+renumbered at merge after versions 58–61), off at 0 for older saves
+(`serde_util::before_v62`):
+
+| Tunable (default) | Rule |
+| --- | --- |
+| `clutch_cover` (2.1) | A sitting parent fully covers 4 eggs. A bigger clutch's brooded temperature is `site + (brooded − site) × (4 / eggs)^2.1`: a clutch of 6 is warmed only 42% of the way, so it chills on cool nights. This is the lever that moved playtest 6's herd. The wild burrowing omnivores' four-egg clutches are spared: with 3 eggs covered they suffered, and two wild prey species died out on single `predlong` seeds. |
+| `toxin_upkeep` (0.5) | Toxins cost food: hunger × `1 + 0.4 × 0.5 × toxins` (+12% at toxins 0.6), whatever the body's metabolism. |
+| `hungry_hunters` (1) | A hunter's learned avoidance of a toxic prey lineage falls by up to 60% as its hunger rises from 60 to 100: a starving predator takes the risk. |
+| `toxin_source` (1) | A poisoning teaches a hunter's lineage about the prey's lineage only when the prey's toxin is that lineage's own (one of its two toxin alleles carries the lineage owner's origin). A wild antelope carrying a player's toxin through a hybrid no longer marks the wild species as poisonous. |
+| `speciation_credit` (1) | A split is credited (the "Species founded" achievement) only when its parent species was the player's own, at least a year old, and the split holds at least 100 adults (`species::SPECIATION_ADULTS`). A copy of a rival's design, or a small or young split, is a species without credit (its own lineage may still name it, once). A species whose lineage has died keeps its owner, so it never continues as another player's cluster: the copier's lineage is never re-filed into the original's species. |
+
+**Server**:
+- **Design-check warnings.** `POST /api/design/compatibility` adds `drought_warning` (drought ≥ 40% and estivation below 0.3) and `carnivore_egg_warning` (incubated eggs with carnivory ≥ 0.5); polish shows both. The founders' drought provision is `founding_drought` (version 61), from another branch.
+- **Namer.** A named species keeps its namer, and an uncredited split is named by its own lineage's player.
+- **Game text.** The warnings carry no playtest notes.
+
+**Scripted replay** (`dominance`). Eight players; Herd is Herdmaster6's
+exact design, founded on day 28. Seeds 1–4, 840 days, both arms on the
+merged build. The playtest 6 arm has the five new tunables off.
+
+| Player | Playtest 6 rules: final share, titles*, capped | New rules: final share, titles*, capped |
+| --- | --- | --- |
+| Steady | 3.6%, 0, 2 | 2.9%, 0, 1 |
+| Big (warm hibernator) | 6.3%, 3, 1 | 9.3%, 12, 1 |
+| Broker (warm live herd) | 4.8%, 1, 0 | 6.2%, 7, 1 |
+| Eggs (playtest 2's egg layer) | 11.2%, 1, 3 | 8.9%, 0, 2 |
+| Flier (PocketNomad5) | 19.5%, 10, 3 | 20.9%, 11, 3 |
+| Cold (LateComer5/6) | 8.4%, 0, 3 | 11.5%, 1, 2 |
+| Loophole (Rulebender5) | 6.2%, 0, 0 | 3.6%, 0, 0 |
+| Herd (Herdmaster6) | 12.7%, 25, 4 | 8.1%, 9, 2 |
+| **Warm egg layers (Eggs + Herd)** | **26 of 40** | **9 of 40** |
+| **Cold fliers** | **10 of 40** | **12 of 40** |
+
+(* Titles are the legacy titles of the 40 whole seasons after day 210.
+"Capped" counts the seeds on which the lineage touched 95% of the 2,100
+hard cap at least once; no lineage ends at it.) The herd falls from 25
+titles to 9 and from the cap on every seed to two. Its mean share falls
+from 17% to 8%. No design takes more than 12 titles, the warm herds gain,
+and every design survives every seed. The toxic flier's 11 titles come
+from 10 founders.
+
+How the defaults were found:
+- **Toxin levers alone don't touch the herd.** With `toxin_upkeep` at 1 or 2 the herd still took 29–30 titles; the toxic fliers and the playtest 2 egg layer took the losses.
+- **Clutch size does.** `clutch_cover` at 1 gave the herd 14 titles before the last merge and 23 after; at 2 it died out on every seed.
+- **Settled at** 1.25 with toxin upkeep 0.5 (with 3 eggs covered), then moved to 4 eggs covered at 2.1. That keeps the same cover for a clutch of 6 and spares the wild four-egg layers; the table above is that final setting.
+
 ### Playtest 5: balance
 
 Playtest 5 (`docs/playtest-5.md`, findings 1, 2, 3, 7 and part of 13 here):
@@ -9149,9 +9277,9 @@ How the prey-per-hunter bounds were chosen (the six-player study,
 ### Playtest 7: predators and warnings
 
 Round 8 for `docs/playtest-7.md` findings H3, M4 and the predator and
-warning lows. Snapshot version 65 (provisional; main is at 63). It adds
-`Balance::winter_larder`, off at 0, which is what snapshots of version 64
-and before read (`serde_util::before_v65`).
+warning lows. Snapshot version 67 (provisional; main is at 66). It adds
+`Balance::winter_larder`, off at 0, which is what snapshots of version 66
+and before read (`serde_util::before_v67`).
 
 **H3: predators can't compete.** Playtest 7 ran without round 7's
 prey-scaled larder and honest prey check. In it, a pure carnivore pack

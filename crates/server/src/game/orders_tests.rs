@@ -925,6 +925,31 @@ fn survival_counts_in_the_season_the_catastrophe_fell_in() {
     assert!(now[4].rows.is_empty(), "not credited again in season 2: {:?}", now[4]);
 }
 
+/// A survivor is the lineage alive when the catastrophe began, keeping at
+/// least a quarter of its size then (playtest 7, M15): one that lost ~99%
+/// isn't, nor is a lineage re-founded during it.
+#[test]
+fn survivors_keep_a_quarter_of_the_lineage_they_started_with() {
+    let (mut g, _) = game();
+    g.world.schedule_catastrophe(evo_sim::chronicle::CatastropheKind::SevereWinter, 1, Some(4));
+    run_days(&mut g, 2);
+    let c = g.world.chronicle.active_catastrophe().expect("under way").id;
+    let (l, start) = *g.survival_starts.get(&c).and_then(|m| m.get(&1)).expect("player 1's size at the start");
+    assert_eq!(Some(l), g.lineage_of(1));
+    assert!(start > 4, "{start}");
+    assert!(g.survived(1, c));
+    // Down to under a quarter: not a survivor.
+    let keep = (start as f64 * crate::game::SURVIVAL_KEEP).ceil() as usize - 1;
+    for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1).skip(keep) {
+        o.alive = false;
+    }
+    assert!(!g.survived(1, c));
+    // A lineage founded during it (player 2, absent at the start): not a survivor.
+    g.set_name(2, "bo");
+    g.found(2, &design("B")).unwrap();
+    assert!(!g.survived(2, c));
+}
+
 /// The found reply (and an alert) says whether a lineage has a newcomer
 /// grace and why: a fresh one, or one continued from an earlier lineage,
 /// even when that one has run out (playtest 5).
@@ -948,6 +973,9 @@ fn founding_says_whether_grace_applies_and_why() {
     }
     let lineage = g.lineage_of(2).unwrap();
     g.command(20, 2, Some(1), ClientMsg::RetireLineage { lineage });
+    // The designer says so before founding (playtest 7: it promised the winter rule).
+    let preview = g.grace_preview(2, 20).unwrap();
+    assert!(preview.starts_with("If you found now: No newcomer grace: it continues the grace"), "{preview}");
     let again = g.found(2, &design("B2")).unwrap();
     let text = again.grace.unwrap();
     assert!(text.starts_with("No newcomer grace: it continues the grace of your earlier lineage"), "{text}");
@@ -1058,4 +1086,97 @@ fn a_stalled_migration_says_how_far_it_got_and_bare_alerts_dont_repeat() {
     set_veg(&mut g, 0.0);
     g.daily_group_checks(&record, &mut out);
     assert_eq!(bare(&g), 1, "said once until it really recovers");
+}
+
+/// Alerts carry a stable id: two with the same tick and text are told
+/// apart, and reading the feed again (or after a restart) gives the same
+/// ids and ticks (playtest 7: a watcher keyed by tick and text saw
+/// "duplicates").
+#[test]
+fn alerts_have_stable_ids() {
+    let (mut g, _) = game();
+    let mut out = Outbox::new();
+    g.alert(1, AlertKind::World, "same".into(), None, &mut out);
+    g.alert(1, AlertKind::World, "same".into(), None, &mut out);
+    let a = g.alerts(1);
+    let ids: Vec<u64> = a.iter().rev().take(2).map(|x| x.id).collect();
+    assert!(ids[0] != ids[1] && ids.iter().all(|&i| i > 0), "{a:?}");
+    tick(&mut g);
+    assert_eq!(g.alerts(1), a, "unchanged by later reads and ticks");
+    let r = Game::resume(g.world.clone(), GameConfig::default(), g.saved(), Vec::new());
+    assert_eq!(r.alerts(1), a, "kept over a restart");
+}
+
+/// Playtest 7: a short trip over bare land warns too, and the sentence
+/// starts with a capital.
+#[test]
+fn a_short_trip_over_bare_land_warns() {
+    let (mut g, _) = game();
+    let home = g.world.group_middle(1, 0).unwrap();
+    let near = land_away(&g, home, 14.0);
+    for t in &mut g.world.map.tiles {
+        t.veg = 0.0;
+    }
+    let d = run(&mut g, ClientMsg::Migrate { x: near.x, y: near.y, group: None }).unwrap();
+    let days = d["journey"]["days"].as_f64().unwrap();
+    assert!(days < JOURNEY_WARN_DAYS as f64, "{d}");
+    assert!(d["journey"]["food_share"].as_f64().unwrap() < JOURNEY_BARE_SHARE as f64, "{d}");
+    let warning = d["warning"].as_str().unwrap_or("");
+    assert!(warning.contains("days on the way") && warning.contains("The land along the way holds about"), "{d}");
+}
+
+/// Playtest 7: a split group far from the view still sees its rivals'
+/// territories (the refusal says they show on the map), and a split's
+/// reply counts every group as the state does.
+#[test]
+fn rival_outlines_follow_each_group_and_splits_count_like_the_state() {
+    let world = build_world(&WorldSettings { seed: 7, width: 128, height: 128, wild: false, ..Default::default() });
+    let mut g = Game::new(world, GameConfig::default());
+    let a = g.found(1, &design("A")).unwrap().founders;
+    g.found(2, &design("B")).unwrap();
+    g.connect(10, 1, "ann");
+    let mine = g.world.group_middle(1, 0).unwrap();
+    // Half of ann's founders walk far off and split.
+    let far = land_away(&g, mine, g.cfg.default_view_radius + 40.0);
+    let half: Vec<OrgId> = a[..3].to_vec();
+    for o in g.world.organisms.iter_mut().filter(|o| half.contains(&o.id)) {
+        o.pos = far;
+    }
+    let d = run(&mut g, ClientMsg::SplitGroup { group: 0, organisms: Some(half) }).unwrap();
+    let groups = d["groups"].as_array().unwrap();
+    let total: u64 = groups.iter().map(|x| x["members"].as_u64().unwrap()).sum();
+    assert_eq!(total, d["population"].as_u64().unwrap(), "{d}");
+    let state_total: usize = g.state_for(10).unwrap().groups.iter().map(|x| x.members).sum();
+    assert_eq!(total as usize, state_total);
+    // Bob claims beside the far group, out of ann's view.
+    let by = g.world.map.clamp(far + Vec2::new(6.0, 0.0));
+    g.world.claim_territory(2, 0, by, 3.0).unwrap();
+    let s = g.state_for(10).unwrap();
+    assert!((s.view.x - by.x).abs() > s.view.radius + 3.0 || (s.view.y - by.y).abs() > s.view.radius + 3.0);
+    assert!(s.territories.iter().any(|t| (t.x - by.x).abs() < 0.01), "{:?}", s.territories);
+}
+
+/// Playtest 7: a far claim's reply rates the circle it will get, and a
+/// starving territory's hold loosens with an alert.
+#[test]
+fn far_claims_rate_the_clamped_circle_and_a_starving_hold_loosens() {
+    let (mut g, _) = game();
+    let home = g.world.group_middle(1, 0).unwrap();
+    let far = land_away(&g, home, evo_sim::world::groups::FAR_CLAIM_TILES + 4.0);
+    let limit = World::territory_radius_limit(g.world.groups(1)[0].adults);
+    let d = run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: far.x, y: far.y, radius: 300.0 }).unwrap();
+    assert_eq!(d["pending"], true, "{d}");
+    assert!((d["radius"].as_f64().unwrap() - limit as f64).abs() < 1e-3, "{d}");
+    assert!(d["note"].as_str().unwrap().contains("radius cut to the group's limit"), "{d}");
+    // A territory at home whose holders all starve.
+    let (mut g, _) = game();
+    g.world.claim_territory(1, 0, home, 4.0).unwrap();
+    for _ in 0..3 * g.world.config.ticks_per_hour().max(1) {
+        for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+            o.needs.hunger = o.needs.hunger.max(90.0);
+        }
+        tick(&mut g);
+    }
+    let texts = alerts(&g, AlertKind::Group);
+    assert!(texts.iter().any(|t| t.contains("the hold is loosened")), "{texts:?}");
 }

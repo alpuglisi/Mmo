@@ -542,9 +542,9 @@ fn playtest6_off(b: &mut crate::Balance) {
     playtest7_off(b);
 }
 
-/// The playtest 7 predator tunable as snapshots before version 65 read it.
+/// The playtest 7 predator tunable as snapshots before version 67 read it.
 fn playtest7_off(b: &mut crate::Balance) {
-    b.winter_larder = crate::serde_util::before_v65::OLD_VALUE;
+    b.winter_larder = crate::serde_util::before_v67::OLD_VALUE;
 }
 
 /// Version 61 snapshots (before the playtest 6 balance rules) restore with
@@ -1891,18 +1891,44 @@ fn version_62_snapshots_restore_without_prey_larder() {
     assert_eq!(r.config.balance.prey_larder, 1.0);
 }
 
-/// Version 63 snapshots (before the playtest 7 predator rule) restore
-/// with it off, and are otherwise the same world.
+/// Version 63 snapshots (before loosened holds and kept territories)
+/// restore with none, and are otherwise the same world.
 #[test]
-fn version_63_snapshots_restore_without_winter_larder() {
+fn version_63_snapshots_restore_without_held_plans() {
     let mut w = fixture_world();
+    let key = (1, 0);
+    let t = crate::world::groups::Territory { center: crate::math::Vec2::new(5.0, 5.0), radius: 4.0, claimed_tick: 0 };
+    w.group_plans.held.away.insert(key, t);
+    w.group_plans.held.loosened.insert(key);
     let old = w.snapshot_v63();
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!(h.version, 63);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
-    assert_eq!(r.config.balance.winter_larder, 0.0);
+    assert_eq!(r.group_plans.held, Default::default());
     assert!(r.snapshot_v63() == old);
+    w.group_plans.held = Default::default();
+    assert!(r.snapshot() == w.snapshot());
+    // This version keeps them.
+    let mut w = fixture_world();
+    w.group_plans.held.away.insert(key, t);
+    w.group_plans.held.loosened.insert(key);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.group_plans.held, w.group_plans.held);
+}
+
+/// Version 66 snapshots (before the playtest 7 predator rule) restore
+/// with it off, and are otherwise the same world.
+#[test]
+fn version_66_snapshots_restore_without_winter_larder() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v66();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 66);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.winter_larder, 0.0);
+    assert!(r.snapshot_v66() == old);
     playtest7_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());

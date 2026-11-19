@@ -12,8 +12,8 @@ import type { ConnState } from './socket';
 import { friendlyError } from './ui/friendlyErrors';
 import { offerUpdateText } from './ui/matingHistory';
 
-/** Commands whose errors the matings form shows itself. */
-const FORM_WORDED = new Set(['preview_mating', 'request_mating']);
+/** Commands whose errors their form shows itself (the matings form; the species-name dialog). */
+const FORM_WORDED = new Set(['preview_mating', 'request_mating', 'name_species']);
 /** Mating commands: their errors toast in plain words (`friendlyError`). */
 const MATING_COMMANDS = new Set(['respond_mating', 'complete_mating', 'cancel_mating', 'buy_listing', 'bid_auction']);
 

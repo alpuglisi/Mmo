@@ -202,7 +202,10 @@ pub enum ClientMsg {
         organism: OrgId,
         #[serde(deserialize_with = "price")]
         reserve: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Whole days; a fraction is rounded up (1.5 → 2), a negative or
+        /// zero number gives `bad_duration` (it was a generic `bad_message`:
+        /// playtest 7).
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "whole_days")]
         days: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ticks: Option<u64>,
@@ -271,6 +274,11 @@ pub enum ClientMsg {
     /// share fertile), the drift risk, and the body-plan gene that keeps
     /// you apart. Data: [`CompatibilityView`].
     Compatibility,
+    /// Name one of your living animals (cosmetic, 50 renown each time):
+    /// shown on its listings and by `animal_names`. Data: `{name, shop}`.
+    NameAnimal { organism: OrgId, name: String },
+    /// The names of your living animals. Data: `{names: {id: name}}`.
+    AnimalNames,
     /// A survey: rivals' groups and territories within 64 tiles of your
     /// main group, in 8-tile cells, now (30 renown plus 1 per 10 of your
     /// animals alive). Data: [`SurveyView`].
@@ -318,6 +326,15 @@ fn price_of(v: &serde_json::Value) -> Option<u64> {
 fn price<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
     let v = serde_json::Value::deserialize(d)?;
     price_of(&v).ok_or_else(|| serde::de::Error::custom("a price is a whole number of renown"))
+}
+
+fn whole_days<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    if v.is_null() {
+        return Ok(None);
+    }
+    let f = v.as_f64().filter(|f| f.is_finite()).ok_or_else(|| serde::de::Error::custom("days is a number"))?;
+    Ok(Some(f.max(0.0).ceil().min(u32::MAX as f64) as u32))
 }
 
 fn opt_price<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
@@ -379,6 +396,8 @@ impl ClientMsg {
             ClientMsg::Provision => "provision",
             ClientMsg::SubstituteMating { .. } => "substitute_mating",
             ClientMsg::Survey => "survey",
+            ClientMsg::NameAnimal { .. } => "name_animal",
+            ClientMsg::AnimalNames => "animal_names",
             ClientMsg::SetNameplate { .. } => "set_nameplate",
             ClientMsg::NameSpecies { .. } => "name_species",
             ClientMsg::Nameplates => "nameplates",
@@ -432,6 +451,8 @@ pub const COMMAND_NAMES: &[&str] = &[
     "provision",
     "substitute_mating",
     "survey",
+    "name_animal",
+    "animal_names",
     "end_grace",
 ];
 
@@ -836,6 +857,12 @@ impl NativeService {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AlertView {
+    /// Unique per player and stable (kept across restarts): what a client
+    /// should tell alerts apart by. Two alerts can share a tick and a text
+    /// (playtest 7's watcher took two same-text alerts for one whose tick
+    /// changed). 0 in alerts from before ids.
+    #[serde(default)]
+    pub id: u64,
     pub tick: u64,
     pub day: u64,
     pub kind: AlertKind,
@@ -1319,6 +1346,13 @@ pub struct GroupView {
     /// reconnect; `game::offline`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protection_left_min: Option<u32>,
+    /// On the home range: the most protection in real minutes at this game
+    /// speed, and the rolling window it counts over (playtest 7: the tab
+    /// said "12 hours" though the playtest clock gave 75 minutes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protection_budget_min: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protection_window_min: Option<u32>,
 }
 
 impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
@@ -1339,6 +1373,8 @@ impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
             obedience: g.obedience,
             home_range: false,
             protection_left_min: None,
+            protection_budget_min: None,
+            protection_window_min: None,
         }
     }
 }
@@ -1884,6 +1920,9 @@ pub struct ShopView {
     /// The price of a survey now.
     #[serde(default)]
     pub survey_price: u64,
+    /// The price of naming one of your animals.
+    #[serde(default)]
+    pub animal_name_price: u64,
     #[serde(default)]
     pub provisions_bought: u32,
     #[serde(default)]
@@ -1997,6 +2036,10 @@ pub struct DesignCompatView {
     /// player's), so the designer can warn before Found; absent when fine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name_warning: Option<String>,
+    /// The newcomer grace a founding of this design would get now: fresh
+    /// (with the first-winter rule) or continued from the last founding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_note: Option<String>,
 }
 
 /// `DesignCompatView::refound`.
@@ -2171,6 +2214,13 @@ pub struct ListingView {
     pub owner: PlayerId,
     pub owner_name: String,
     pub organism: OrgId,
+    /// The name its owner gave it (`name_animal`), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animal_name: Option<String>,
+    /// Past 90% of its lifespan: it may die of old age before a buyer
+    /// meets it (playtest 7: listings outlived old animals unwarned).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub aging: bool,
     /// `stud` (male) or `dam` (female).
     pub role: String,
     pub sex: String,
@@ -2426,6 +2476,22 @@ mod tests {
     }
 
     #[test]
+    fn fractional_auction_days_round_up() {
+        let days = |j: &str| match serde_json::from_str::<ClientEnvelope>(j).unwrap().msg {
+            ClientMsg::CreateAuction { days, .. } => days,
+            m => panic!("{m:?}"),
+        };
+        assert_eq!(days(r#"{"type":"create_auction","organism":1,"reserve":5,"days":1.5}"#), Some(2));
+        assert_eq!(days(r#"{"type":"create_auction","organism":1,"reserve":5,"days":0.01}"#), Some(1));
+        assert_eq!(
+            days(r#"{"type":"create_auction","organism":1,"reserve":5,"days":-3}"#),
+            Some(0),
+            "bad_duration later"
+        );
+        assert_eq!(days(r#"{"type":"create_auction","organism":1,"reserve":5}"#), None);
+    }
+
+    #[test]
     fn huge_prices_reach_the_range_check() {
         let m: ClientEnvelope =
             serde_json::from_str(r#"{"type":"create_listing","organism":1,"fee":18446744073709552000}"#).unwrap();
@@ -2591,7 +2657,7 @@ mod tests {
             let kind = LedgerKind::parse(k).unwrap();
             assert_eq!(serde_json::to_value(kind).unwrap(), k);
         }
-        let alert = AlertView { tick: 1, day: 0, kind: AlertKind::Market, text: "sold".into(), organism: None };
+        let alert = AlertView { id: 1, tick: 1, day: 0, kind: AlertKind::Market, text: "sold".into(), organism: None };
         assert_eq!(serde_json::to_value(alert).unwrap()["kind"], "market");
     }
 
@@ -2627,11 +2693,12 @@ mod tests {
         assert_eq!(s["ok"], true);
         assert_eq!(s["id"], 1);
         // The shapes client/src/protocol.ts parses.
-        let alert = AlertView { tick: 96, day: 2, kind: AlertKind::DailySummary, text: "Day 3".into(), organism: None };
+        let alert =
+            AlertView { id: 2, tick: 96, day: 2, kind: AlertKind::DailySummary, text: "Day 3".into(), organism: None };
         let s = serde_json::to_value(ServerMsg::Alert { alert }).unwrap();
         assert_eq!(
             s,
-            serde_json::json!({"type": "alert", "alert": {"tick": 96, "day": 2, "kind": "daily_summary", "text": "Day 3"}})
+            serde_json::json!({"type": "alert", "alert": {"id": 2, "tick": 96, "day": 2, "kind": "daily_summary", "text": "Day 3"}})
         );
         let s = serde_json::to_value(ServerMsg::SessionEnded { reason: "expired".into() }).unwrap();
         assert_eq!(s, serde_json::json!({"type": "session_ended", "reason": "expired"}));

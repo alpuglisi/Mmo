@@ -255,6 +255,15 @@ pub const STANDING_WARN_DAYS: f32 = 10.0;
 /// A migration expected to take at least this many days warns when the
 /// land along it can't feed the group, and always at twice it.
 pub const JOURNEY_WARN_DAYS: f32 = 7.0;
+/// Share of its food on the way under which a journey of any length is
+/// warned about.
+pub const JOURNEY_BARE_SHARE: f32 = 0.3;
+
+/// The ground a group of `members` forages from its home after a
+/// migration: twice its home circle (`World::forage_bound`).
+fn home_forage_radius(members: usize) -> f32 {
+    2.0 * World::home_radius(members)
+}
 /// A territory or rally circle farther than this from its group's middle
 /// draws a warning (playtest 3: a claim 85 tiles off).
 pub const FAR_CIRCLE_TILES: f32 = 30.0;
@@ -267,6 +276,9 @@ pub const DRIFT_FACTOR: f32 = 2.0;
 /// A migration route crossing at least this many tiles of open water draws
 /// a warning.
 pub const ROUTE_WATER_TILES: usize = 3;
+/// The share of its size at a catastrophe's start a lineage must keep to
+/// have survived it (playtest 7: one that lost ~99% was a "Survivor").
+pub const SURVIVAL_KEEP: f64 = 0.25;
 /// A migration given while at least this share of the group is dormant
 /// draws a warning.
 pub const DORMANT_WARN_SHARE: f32 = 0.3;
@@ -641,6 +653,14 @@ pub fn refound_fee(count: u32) -> u64 {
 /// meeting point lies, from the requester's (0.5: halfway).
 pub const MEET_TOWARD_PARTNER: f32 = 0.75;
 
+/// Tiles a meeting point keeps from a third party's (or the wild's)
+/// predators when it can (`Game::safe_meeting_point`).
+pub const MEET_PREDATOR_CLEAR: f32 = 12.0;
+
+/// The least price a sale counts toward the stud-market title at
+/// (playtest 7: fee-free 5-renown sales in a ring of three colluders).
+pub const MARKET_TITLE_MIN_PRICE: u64 = 10;
+
 /// Renown for the first re-founding within the window (see [`refound_fee`]).
 pub const REFOUND_FEE: u64 = 100;
 
@@ -803,10 +823,14 @@ pub struct Game {
     /// catastrophe whether its start and end were.
     seen_achievements: usize,
     seen_eras: usize,
-    /// Era standings by mean share (`eras::EraScores`).
     /// Survival credits given (player, catastrophe): once each, in the
     /// season the catastrophe mostly fell in (`credit_survival`).
     survival_credited: BTreeSet<(PlayerId, u32)>,
+    /// Each player's lineage and its living members when a catastrophe
+    /// began (`note_catastrophe_starts`): a survivor is that lineage still
+    /// holding [`SURVIVAL_KEEP`] of it at the end.
+    survival_starts: BTreeMap<u32, BTreeMap<PlayerId, (u32, usize)>>,
+    /// Era standings by mean share (`eras::EraScores`).
     era_scores: eras::EraScores,
     seen_catastrophes: Vec<(bool, bool)>,
     /// A drought warning is out (`DROUGHT_WARN`); cleared below
@@ -978,9 +1002,11 @@ pub struct SavedGame {
     focused: BTreeSet<PlayerId>,
     seen_achievements: usize,
     seen_eras: usize,
-    /// Era standings by mean share (absent in older saves).
     /// Survival credits given (absent in older saves).
     survival_credited: BTreeSet<(PlayerId, u32)>,
+    /// Lineage sizes at catastrophe starts (absent in older saves).
+    survival_starts: BTreeMap<u32, BTreeMap<PlayerId, (u32, usize)>>,
+    /// Era standings by mean share (absent in older saves).
     era_scores: eras::EraScores,
     seen_catastrophes: Vec<(bool, bool)>,
     /// Version 2 on.
@@ -1045,7 +1071,8 @@ fn named_organisms(msg: &ClientMsg) -> Vec<OrgId> {
         | ClientMsg::PossessAttack { organism, .. }
         | ClientMsg::Release { organism }
         | ClientMsg::CreateListing { organism, .. }
-        | ClientMsg::CreateAuction { organism, .. } => vec![*organism],
+        | ClientMsg::CreateAuction { organism, .. }
+        | ClientMsg::NameAnimal { organism, .. } => vec![*organism],
         ClientMsg::SplitGroup { organisms, .. } => organisms.clone().unwrap_or_default(),
         ClientMsg::RequestMating { mine, .. }
         | ClientMsg::PreviewMating { mine, .. }
@@ -1165,6 +1192,7 @@ impl Game {
             seen_eras: 0,
             era_scores: eras::EraScores::default(),
             survival_credited: BTreeSet::new(),
+            survival_starts: BTreeMap::new(),
             seen_catastrophes: Vec::new(),
             drought_warned: false,
             flood_warned: false,
@@ -1270,7 +1298,7 @@ impl Game {
         let ended: Vec<PlayerId> = self.graced.difference(&now).copied().collect();
         self.graced = now;
         for p in ended {
-            let text = "Your newcomer grace has ended: other players' animals can now attack yours, and yours theirs"
+            let text = "Your newcomer grace has ended: other players' animals can now attack yours, and yours theirs."
                 .to_string();
             self.alert(p, AlertKind::Attack, text, None, out);
         }
@@ -1344,6 +1372,7 @@ impl Game {
             seen_eras: self.seen_eras,
             era_scores: self.era_scores.clone(),
             survival_credited: self.survival_credited.clone(),
+            survival_starts: self.survival_starts.clone(),
             seen_catastrophes: self.seen_catastrophes.clone(),
             economy: Some(self.economy.clone()),
             season: Some(self.season.clone()),
@@ -1417,6 +1446,7 @@ impl Game {
         g.seen_eras = saved.seen_eras;
         g.era_scores = saved.era_scores;
         g.survival_credited = saved.survival_credited;
+        g.survival_starts = saved.survival_starts;
         g.seen_catastrophes = saved.seen_catastrophes;
         match saved.economy {
             Some(e) if saved.version >= 2 => {
@@ -1612,6 +1642,20 @@ impl Game {
         day: u64,
     ) -> Result<LedgerEntry, Insufficient> {
         let tick = self.world.tick();
+        // A re-founding fee still owed comes out of renown coming in.
+        let (delta, text) = match self.economy.refound_debt.get(&player).copied() {
+            Some(owed) if delta > 0 && owed > 0 => {
+                let take = owed.min(delta as u64);
+                let left = owed - take;
+                if left == 0 {
+                    self.economy.refound_debt.remove(&player);
+                } else {
+                    self.economy.refound_debt.insert(player, left);
+                }
+                (delta - take as i64, format!("{text} (less {take} toward the re-founding fee owed)"))
+            }
+            _ => (delta, text),
+        };
         let entry = self.economy.post(player, delta, kind, text, offer, listing, tick, day)?;
         self.persist.push(PersistEvent::Ledger(LedgerRecord { world_id: self.world_id.clone(), entry: entry.clone() }));
         self.persist.push(PersistEvent::Balance(BalanceRecord { player, balance: entry.balance, day }));
@@ -1716,6 +1760,9 @@ impl Game {
         if self.wild_name(&name) {
             return Err(FoundError::BadName("it is a wild species' name".into()));
         }
+        if self.rival_name(player, &name) {
+            return Err(FoundError::BadName("another player's lineage or species has that name".into()));
+        }
         // Re-founding soon after the player's last lineage ended (retired or
         // died out) prices founders double ([`Game::refound_terms`]):
         // ending a lineage and founding again was a free re-roll (fresh, fed
@@ -1728,12 +1775,17 @@ impl Game {
                 ok.cost = RefoundTerms::cost(design, n);
                 ok.requested = design.founders;
                 ok.reduced = Some(t.reason.clone());
-                // The renown fee, at most what they have (a player without
-                // renown can still play; the halved founders still apply).
-                let fee = t.fee.min(self.balance(player));
-                if fee > 0 {
+                // The renown fee: what they have now, the rest owed and
+                // taken from their next renown (a player without renown can
+                // still play; spending it first doesn't dodge the fee).
+                let fee = t.fee;
+                let paid = fee.min(self.balance(player));
+                if paid > 0 {
                     let text = format!("Re-founding fee (re-founding {} within the window)", t.count + 1);
-                    let _ = self.post(player, -(fee as i64), LedgerKind::Purchase, text, None, None);
+                    let _ = self.post(player, -(paid as i64), LedgerKind::Purchase, text, None, None);
+                }
+                if fee > paid {
+                    *self.economy.refound_debt.entry(player).or_default() += fee - paid;
                 }
                 ok.refound_fee = fee;
                 let (today, window) = (self.world.day(), self.refound_window_days());
@@ -1804,8 +1856,16 @@ impl Game {
                 until_day: ended + window,
                 minutes_left: minutes_left as u64,
                 reason: format!("your last lineage {how} on day {}: {}", ended + 1, self.refound_rule()),
-                // The fee is for a deliberate re-roll: after a retirement.
-                fee: if how == "retired" { refound_fee(count) } else { 0 },
+                // The fee is for a re-roll: in full after a retirement, half
+                // after a lineage that died out young (within the window of
+                // its founding: churn), none after one that lived.
+                fee: if how == "retired" {
+                    refound_fee(count)
+                } else if ended < founded + window {
+                    refound_fee(count) / 2
+                } else {
+                    0
+                },
                 count,
             }
         })
@@ -1816,7 +1876,7 @@ impl Game {
     pub fn refound_rule(&self) -> String {
         let window = self.refound_window_days();
         format!(
-            "re-founding within {window} days (about {} real minutes) founds half your founders (rounded up) and, after a retirement, costs {REFOUND_FEE} renown, doubling with each re-founding in that time",
+            "re-founding within {window} days (about {} real minutes) founds half your founders (rounded up) and costs {REFOUND_FEE} renown after a retirement (half after a lineage that died out young), doubling with each re-founding in that time; renown you don't have is owed from your next",
             (window as f64 * self.world.config.ticks_per_day as f64 * self.cfg.tick_ms / 60_000.0).round()
         )
     }
@@ -1857,6 +1917,7 @@ impl Game {
         self.lineage_of.insert(player, lineage);
         self.founded.insert(lineage, self.founding_sample(&founders));
         self.founded_day.insert(player, self.world.day());
+        self.unpin_views(player);
         self.joined.push(player);
         for &id in &founders {
             self.watched.insert(id, (player, Watch::Founder));
@@ -1891,6 +1952,15 @@ impl Game {
     /// ledger, records and the old lineage's history stay. Marketplace
     /// offers and listings of the removed animals close on the next tick as
     /// for any animal gone. The number removed.
+    /// Drops `player`'s pinned views (every connection): a view pinned
+    /// over a lineage that was retired or replaced stayed pinned at a spot
+    /// the server would now refuse (playtest 7).
+    fn unpin_views(&mut self, player: PlayerId) {
+        for c in self.conns.values_mut().filter(|c| c.player == player) {
+            c.view = None;
+        }
+    }
+
     pub fn retire(&mut self, player: PlayerId, lineage: u32) -> Result<usize, ErrorInfo> {
         self.retire_sparing(player, lineage, &mut Outbox::new()).map(|r| r.0)
     }
@@ -1923,10 +1993,12 @@ impl Game {
             .filter(|&(&p, _)| p != player && !self.is_extinct(p))
             .map(|(&p, &l)| (p, l))
             .collect();
+        self.settle_agreements_on_retire(player, out);
         let before: BTreeMap<PlayerId, usize> = homes.keys().map(|&p| (p, self.world.owner_count(p))).collect();
         let (n, moved) = self.world.retire_player_sparing(player, &homes, RETIRE_TRANSFER_SHARE);
         self.economy.retired_day.insert(player, self.world.day());
         self.economy.died_out.remove(&player);
+        self.unpin_views(player);
         for (&p, &b) in &before {
             let got = self.world.owner_count(p).saturating_sub(b);
             if got > 0 {
@@ -1951,6 +2023,46 @@ impl Game {
         self.market.validated = None;
         self.held_tick = None;
         Ok((n, moved))
+    }
+
+    /// A retiring player's accepted agreements end before their animals
+    /// leave: as the seller (partner's owner) they refund the buyer in full
+    /// and pay them the hold fee from their own renown (playtest 7: a
+    /// seller voided a sold mating by retiring, unnoticed); as the buyer
+    /// they forfeit the hold fee as a cancel would.
+    fn settle_agreements_on_retire(&mut self, player: PlayerId, out: &mut Outbox) {
+        let ids: Vec<u64> = self
+            .offers
+            .values()
+            .filter(|o| o.status == OfferStatus::Accepted && o.from != o.to && (o.from == player || o.to == player))
+            .map(|o| o.id)
+            .collect();
+        for id in ids {
+            let o = self.offers[&id].clone();
+            let info = if o.to == player {
+                let fee = (o.escrow * LAPSE_FEE_PERCENT / 100).max(LAPSE_FEE_MIN).min(self.balance(player));
+                if fee > 0 {
+                    let text = format!("Penalty: retired with a mating sold to {} (offer #{id})", self.name(o.from));
+                    let _ = self.post(player, -(fee as i64), LedgerKind::Purchase, text, Some(id), o.listing);
+                    let text = format!("Compensation: {} retired before your mating (offer #{id})", self.name(player));
+                    let _ = self.post(o.from, fee as i64, LedgerKind::Refund, text, Some(id), o.listing);
+                }
+                ErrorInfo::new(
+                    "seller_retired",
+                    format!(
+                        "{} retired their lineage before the mating: your renown is refunded, plus {fee} renown compensation",
+                        self.name(player)
+                    ),
+                )
+            } else {
+                let forfeit = self.forfeit_hold(id, "the buyer retired");
+                ErrorInfo::new(
+                    "cancelled",
+                    format!("{} retired their lineage before the mating; {forfeit}", self.name(player)),
+                )
+            };
+            self.close(id, OfferStatus::Cancelled, None, Some(info), out);
+        }
     }
 
     pub fn connect(&mut self, conn: ConnId, player: PlayerId, name: &str) -> Outbox {
@@ -2084,12 +2196,13 @@ impl Game {
                     data["route"] = serde_json::to_value(route).unwrap_or_default();
                 }
                 let mut warnings = self.travel_warnings(player, group, true);
-                // What waits at the destination, rated for the ground a group
-                // its size spreads over there (the rally circle), not the small
-                // home circle: a big herd grazes far wider.
+                // What waits at the destination, rated for the ground the group
+                // forages there (twice its home circle), the ground the daily
+                // home check rates too (playtest 7: rated at the rally circle,
+                // then "grazed bare" for the home circle four days in).
                 let members = self.world.groups(player).iter().find(|g| g.id == group).map_or(0, |g| g.members);
                 let mut dest = serde_json::json!({});
-                let there = self.circle_report_at(player, group, to, World::rally_radius(members), &mut dest, false);
+                let there = self.circle_report_at(player, group, to, home_forage_radius(members), &mut dest, false);
                 warnings.extend(there.into_iter().map(|w| format!("At the destination: {w}")));
                 dest.as_object_mut().map(|o| o.remove("distance"));
                 data["destination"] = dest;
@@ -2160,21 +2273,30 @@ impl Game {
                         put_warnings(&mut data, warnings);
                         data
                     }
-                    ClaimOutcome::Migrating { target, radius } => {
+                    ClaimOutcome::Migrating { target, radius: r } => {
                         self.plan_route(player, group);
+                        let cut = if (r - radius).abs() > 0.01 {
+                            if r > radius {
+                                format!(" (radius raised to the smallest territory, {r:.0} tiles)")
+                            } else {
+                                format!(" (radius cut to the group's limit, {r:.1} tiles)")
+                            }
+                        } else {
+                            String::new()
+                        };
                         let mut data = serde_json::json!({
-                            "x": x, "y": y, "radius": radius, "pending": true,
+                            "x": x, "y": y, "radius": r, "pending": true,
                             "migrating_to": { "x": target.x, "y": target.y },
                             "note": format!(
                                 "the circle is more than {FAR_CLAIM_TILES:.0} tiles from the group: it migrates there \
-                                 first and claims the territory when it arrives"
+                                 first and claims the territory when it arrives{cut}"
                             ),
                         });
                         if let Some((_, route)) = self.routes.get(&(player, group)) {
                             data["route"] = serde_json::to_value(route).unwrap_or_default();
                         }
                         let mut warnings = self.travel_warnings(player, group, true);
-                        warnings.extend(self.circle_report(player, group, Vec2::new(x, y), radius.max(3.0), &mut data));
+                        warnings.extend(self.circle_report(player, group, Vec2::new(x, y), r, &mut data));
                         put_warnings(&mut data, warnings);
                         data
                     }
@@ -2220,11 +2342,15 @@ impl Game {
                     ));
                 }
                 let out = self.world.split_group(player, group, organisms.as_deref()).map_err(e)?;
-                Ok(Some(serde_json::json!({ "group": out.group, "moved": out.moved, "kept": out.kept })))
+                let mut data = serde_json::json!({ "group": out.group, "moved": out.moved, "kept": out.kept });
+                self.group_counts_report(player, &mut data);
+                Ok(Some(data))
             }
             ClientMsg::MergeGroups { from, into } => {
                 let moved = self.world.merge_groups(player, from, into).map_err(e)?;
-                Ok(Some(serde_json::json!({ "moved": moved })))
+                let mut data = serde_json::json!({ "moved": moved });
+                self.group_counts_report(player, &mut data);
+                Ok(Some(data))
             }
             ClientMsg::SetView { x, y, radius } => {
                 finite(&[x, y, radius])?;
@@ -2274,6 +2400,20 @@ impl Game {
                 }
             }
             ClientMsg::Survey => Ok(Some(serde_json::to_value(self.survey(player)?).unwrap())),
+            ClientMsg::NameAnimal { organism, name } => {
+                let (name, shop) = self.name_animal(player, organism, &name)?;
+                Ok(Some(serde_json::json!({ "name": name, "shop": shop })))
+            }
+            ClientMsg::AnimalNames => {
+                let names: BTreeMap<String, String> = self
+                    .economy
+                    .animal_names
+                    .iter()
+                    .filter(|(&id, _)| self.world.organism(id).is_some_and(|o| o.owner == player))
+                    .map(|(id, n)| (id.to_string(), n.clone()))
+                    .collect();
+                Ok(Some(serde_json::json!({ "names": names })))
+            }
             ClientMsg::SubstituteMating { request, mine } => self.substitute_mating(player, request, mine, out),
             ClientMsg::CancelMating { request } => {
                 let offer = self.offer_for(request, player)?;
@@ -3223,6 +3363,8 @@ impl Game {
             owner: l.owner,
             owner_name: self.name(l.owner),
             organism: l.organism,
+            animal_name: self.economy.animal_names.get(&l.organism).cloned(),
+            aging: o.age_days(tpd) >= 0.9 * o.traits.lifespan_days,
             role: role_name(o.sex).into(),
             sex: sex_name(o.sex).into(),
             fee: l.fee,
@@ -3697,22 +3839,23 @@ impl Game {
             }
         }
         let p = self.world.mating_preview(mine, partner).map_err(e)?;
+        // Exact numbers only for one's own pair: with a few of one's own
+        // animals (whose genes the Genes tab shows) the exact gaps and
+        // fertilities against one rival animal solved its body plan
+        // (playtest 7). A rival's (or the wild's) partner gets tenths.
+        let own = self.world.organism(partner).is_some_and(|b| b.owner == player);
+        let r = |x: f32| if own { x } else { (x * 10.0).round() / 10.0 };
         Ok(MatingPreviewView {
             mine,
             partner,
             compatible: p.fertility > 0.0,
-            fertility: p.fertility,
-            body_plan_fertility: p.body_plan_fertility,
-            distance_fertility: p.distance_fertility,
-            // Exact gene differences only for a partner in plain sight (one
-            // just inside the naming margin got its exact genes: playtest 4).
-            body_plan_gaps: body_plan_gaps(&p)
-                .into_iter()
-                .map(|g| if partner_seen { g } else { BodyPlanGap { gap: (g.gap * 10.0).round() / 10.0, ..g } })
-                .collect(),
-            mismatch: p.mismatch,
+            fertility: r(p.fertility),
+            body_plan_fertility: r(p.body_plan_fertility),
+            distance_fertility: r(p.distance_fertility),
+            body_plan_gaps: body_plan_gaps(&p).into_iter().map(|g| BodyPlanGap { gap: r(g.gap), ..g }).collect(),
+            mismatch: r(p.mismatch),
             cost: p.cost,
-            failure_chance: p.failure_chance,
+            failure_chance: r(p.failure_chance),
             // Exact only for a partner the player can see: distances to
             // hidden organisms would locate them (rounded up to 16 tiles).
             distance: if partner_seen { p.distance } else { (p.distance / LISTING_CELL).ceil() * LISTING_CELL },
@@ -4017,7 +4160,9 @@ impl Game {
             let fee_note = if fee > 0 { format!(", less a {fee} renown market fee") } else { String::new() };
             let text =
                 format!("Sale: {net} renown from {from} for {what}{fee_note} (your #{} with #{})", o.partner, o.mine);
-            if self.post(o.to, net as i64, LedgerKind::Sale, text.clone(), Some(o.id), o.listing).is_ok() {
+            if self.post(o.to, net as i64, LedgerKind::Sale, text.clone(), Some(o.id), o.listing).is_ok()
+                && amount >= MARKET_TITLE_MIN_PRICE
+            {
                 self.season.add_sale(o.to, o.from, net);
             }
             self.alert(o.to, AlertKind::Market, format!("{text}."), Some(o.partner), out);
@@ -4073,19 +4218,17 @@ impl Game {
                 .message
                 .replace(&format!("organism {} ", o.mine), "")
                 .replace(" before the mating", "");
-            let tpd = self.world.config.ticks_per_day as u64;
-            let steered = o.steered.is_some_and(|t| t + tpd >= self.world.tick());
+            // Excused only for what the buyer couldn't have arranged or
+            // foreseen (disease, a harmful recessive, attrition, the
+            // winter-sleep toll), and never once they possessed or ordered
+            // the animal during the agreement (playtest 7: park it by a
+            // pack, release, wait a day; predation and journeys could be
+            // chosen).
+            let steered = o.steered.is_some();
             let excused = !steered
                 && matches!(
                     cause,
-                    Some(
-                        DeathCause::Predation
-                            | DeathCause::Disease
-                            | DeathCause::Recessive
-                            | DeathCause::Attrition
-                            | DeathCause::WinterSleep
-                            | DeathCause::Journey
-                    )
+                    Some(DeathCause::Disease | DeathCause::Recessive | DeathCause::Attrition | DeathCause::WinterSleep)
                 );
             let x = self.offers.get_mut(&id).unwrap();
             x.lost = Some(how.clone());
@@ -4195,12 +4338,37 @@ impl Game {
         // (playtest 6: lure-and-eat).
         let meet = match o.meet {
             Some((x, y)) => Some(Vec2::new(x, y)),
-            None => self.world.meeting_point_toward(a, b, MEET_TOWARD_PARTNER),
+            None => self.safe_meeting_point(o.from, o.to, a, b),
         };
         if let Some(m) = meet {
             self.offers.get_mut(&id).unwrap().meet = Some((m.x, m.y));
             self.world.set_rendezvous(a, b, m);
         }
+    }
+
+    /// The meeting point of `a` (the requester's) and `b` (the partner's):
+    /// [`MEET_TOWARD_PARTNER`] of the way to the partner, or nearer it, the
+    /// first candidate with no predator of a third party (or the wild)
+    /// within [`MEET_PREDATOR_CLEAR`] tiles; else at the partner. (Playtest
+    /// 7: a buyer could still line the point up with a third party's pack.)
+    fn safe_meeting_point(&self, from: PlayerId, to: PlayerId, a: OrgId, b: OrgId) -> Option<Vec2> {
+        let predators: Vec<Vec2> = self
+            .world
+            .organisms
+            .iter()
+            .filter(|x| x.alive && x.owner != from && x.owner != to && x.genome.expr(Gene::Carnivory) >= 0.5)
+            .map(|x| x.pos)
+            .collect();
+        let clear = |p: Vec2| predators.iter().all(|q| q.dist(p) > MEET_PREDATOR_CLEAR);
+        let mut last = None;
+        for t in [MEET_TOWARD_PARTNER, 0.875, 1.0] {
+            let p = self.world.meeting_point_toward(a, b, t)?;
+            if clear(p) {
+                return Some(p);
+            }
+            last = Some(p);
+        }
+        last
     }
 
     /// Whether `id` is already in an accepted agreement other than `except`
@@ -4342,15 +4510,46 @@ impl Game {
                         let from = self.name(self.offers[&id].from);
                         self.pay_from_escrow(id, escrow, &format!("Price kept: {from}'s lineage killed the partner"));
                     }
+                    // The buyer's animal was already lost (`buyer_lost`) and
+                    // the partner is gone too: the hold fee still applies
+                    // (playtest 7: a full refund despite the forfeit).
+                    let lost_first = accepted && !eaten_by_buyer && self.offers[&id].lost.is_some();
+                    let forfeit = lost_first.then(|| self.forfeit_hold(id, "the buyer's animal was lost first"));
                     let info = if eaten_by_buyer {
                         ErrorInfo::new(
                             "died",
                             format!("#{partner} was killed by the buyer's own lineage before the mating: the price is paid, not refunded"),
                         )
+                    } else if let Some(f) = forfeit {
+                        let g = self.gone(missing);
+                        ErrorInfo::new(&g.code, format!("{}; the buyer's animal was lost first, so {f}", g.message))
                     } else {
                         self.gone(missing)
                     };
                     self.close(id, OfferStatus::Failed, None, Some(info), &mut out);
+                }
+            }
+        }
+        // Accepted agreements' escort views (positions, sleep, the moving
+        // deadline) refresh twice a game day (playtest 7: stale while the
+        // deadline paused).
+        let half_day = (self.world.config.ticks_per_day as u64 / 2).max(1);
+        if tick.is_multiple_of(half_day) {
+            let accepted: Vec<u64> = self
+                .offers
+                .values()
+                .filter(|o| o.status == OfferStatus::Accepted && o.from != o.to)
+                .map(|o| o.id)
+                .collect();
+            for id in accepted {
+                let o = &self.offers[&id];
+                let (from, to) = (o.from, o.to);
+                let view = self.offer_view(id);
+                for p in [from, to] {
+                    out.push((
+                        Target::Player(p),
+                        ServerMsg::MatingUpdate { offer: view.clone(), outcome: None, error: None },
+                    ));
                 }
             }
         }
@@ -4438,13 +4637,12 @@ impl Game {
     /// ending season is credited there to the players alive through it so
     /// far (its later achievement doesn't credit the next season again).
     fn credit_survival(&mut self, record_day: u64) {
+        self.note_catastrophe_starts();
         let ch = &self.world.chronicle;
-        let founded_before = |p: PlayerId, start: u64| self.founded_day.get(&p).is_none_or(|&f| f < start);
         let mut credits: Vec<(PlayerId, u32)> = Vec::new();
         for a in &ch.achievements[self.seen_achievements.min(ch.achievements.len())..] {
             if let AchievementKind::SurvivedCatastrophe { catastrophe } = a.kind {
-                let start = ch.catastrophes.iter().find(|c| c.id == catastrophe).map_or(0, |c| c.start_day);
-                if a.player != WILD && founded_before(a.player, start) {
+                if a.player != WILD && self.survived(a.player, catastrophe) {
                     credits.push((a.player, catastrophe));
                 }
             }
@@ -4455,10 +4653,8 @@ impl Game {
                 let total = c.end_day.saturating_sub(c.start_day).max(1);
                 let inside = c.end_day.min(s1).saturating_sub(c.start_day.max(s0));
                 if 2 * inside > total {
-                    let counts = self.world.population_counts();
-                    for (&p, &l) in &self.lineage_of {
-                        let alive = counts.get(l as usize).is_some_and(|x| x.alive > 0);
-                        if alive && founded_before(p, c.start_day) {
+                    for &p in self.lineage_of.keys() {
+                        if self.survived(p, c.id) {
                             credits.push((p, c.id));
                         }
                     }
@@ -4468,6 +4664,46 @@ impl Game {
         for (p, id) in credits {
             if self.survival_credited.insert((p, id)) {
                 self.season.add_survival(p, id);
+            }
+        }
+    }
+
+    /// Record each player's lineage and its size when a catastrophe begins
+    /// (once per catastrophe).
+    fn note_catastrophe_starts(&mut self) {
+        let Some(c) = self.world.chronicle.active_catastrophe() else { return };
+        if self.survival_starts.contains_key(&c.id) {
+            return;
+        }
+        let counts = self.world.population_counts();
+        let sizes = self
+            .lineage_of
+            .iter()
+            .filter_map(|(&p, &l)| {
+                let alive = counts.get(l as usize).map_or(0, |x| x.alive);
+                (p != WILD && alive > 0).then_some((p, (l, alive)))
+            })
+            .collect();
+        self.survival_starts.insert(c.id, sizes);
+    }
+
+    /// Whether `player` survived `catastrophe` (playtest 7, M15): the lineage
+    /// it had when the catastrophe began is still its lineage and holds at
+    /// least [`SURVIVAL_KEEP`] of its size then. A lineage re-founded during
+    /// one, or one that lost nearly everything, didn't. A catastrophe begun
+    /// before sizes were recorded (an older save) falls back to the founding
+    /// day.
+    fn survived(&self, player: PlayerId, catastrophe: u32) -> bool {
+        let Some(&now) = self.lineage_of.get(&player) else { return false };
+        let alive = self.world.population_counts().get(now as usize).map_or(0, |x| x.alive);
+        match self.survival_starts.get(&catastrophe) {
+            Some(starts) => starts
+                .get(&player)
+                .is_some_and(|&(l, size)| l == now && alive > 0 && alive as f64 >= SURVIVAL_KEEP * size as f64),
+            None => {
+                let start =
+                    self.world.chronicle.catastrophes.iter().find(|c| c.id == catastrophe).map_or(0, |c| c.start_day);
+                alive > 0 && self.founded_day.get(&player).is_none_or(|&f| f < start)
             }
         }
     }
@@ -4589,7 +4825,8 @@ impl Game {
         day: u64,
         out: &mut Outbox,
     ) {
-        let alert = AlertView { tick: self.world.tick(), day, kind, text, organism };
+        let id = self.alerts.get(&player).and_then(|l| l.iter().map(|a| a.id).max()).unwrap_or(0) + 1;
+        let alert = AlertView { id, tick: self.world.tick(), day, kind, text, organism };
         let list = self.alerts.entry(player).or_default();
         list.push_back(alert.clone());
         if list.len() > MAX_ALERTS {
@@ -5014,7 +5251,17 @@ impl Game {
             let n = |c: &str| e.deaths.get(c).copied().unwrap_or(0);
             let (starved, thirst) = (n("starved"), n("thirst"));
             let died = starved + thirst;
-            let base = e.alive as u64 + e.deaths.values().sum::<u64>();
+            // Against the lineage's size as the day began (the record before),
+            // not what was left at its end: a retire that day removed most of
+            // it (playtest 7: 53 of ~2,000 read as "90% of it").
+            let before = self
+                .history
+                .iter()
+                .rev()
+                .nth(1)
+                .and_then(|p| p.lineages.iter().find(|x| x.lineage == lineage))
+                .map_or(0, |x| x.alive as u64);
+            let base = (e.alive as u64 + e.deaths.values().sum::<u64>()).max(before);
             if died >= STARVING_MIN
                 && base > 0
                 && (died >= STARVING_FLOOR || died as f64 >= STARVING_SHARE * base as f64)
@@ -5273,13 +5520,38 @@ impl Game {
     /// continues the old grace (even one already over) rather than starting
     /// a new one. None on worlds without a grace.
     fn grace_at_founding(&self, player: PlayerId, lineage: u32) -> Option<String> {
+        let start = self.world.lineage_grace_start(lineage)?;
+        let founders = self.world.lineages.get(lineage as usize).map_or(0, |l| l.founders);
+        self.grace_words(player, founders, start, false)
+    }
+
+    /// The newcomer grace a founding of `founders` by `player` would get
+    /// now, for the designer (playtest 7: it promised the winter rule to a
+    /// quick re-found whose grace was continued instead).
+    pub fn grace_preview(&self, player: PlayerId, founders: u32) -> Option<String> {
+        let start = self.world.grace_start_for(player, self.world.tick());
+        self.grace_words(player, founders, start, true).map(|t| format!("If you found now: {t}"))
+    }
+
+    /// How the winter rule extends a small founding's grace, in words.
+    fn grace_winter_words(&self) -> &'static str {
+        if self.world.config.balance.founding_drought > 0.0 {
+            "keeps it through that winter and the spring after it, while its first young grow up"
+        } else {
+            "keeps it until that winter ends"
+        }
+    }
+
+    /// The grace of a founding of `founders` by `player` whose grace starts
+    /// at `start` (a continued one when before now), in words; `preview`
+    /// for one not made yet.
+    fn grace_words(&self, player: PlayerId, founders: u32, start: u64, preview: bool) -> Option<String> {
         let w = &self.world;
         if w.config.balance.attack_grace <= 0.0 {
             return None;
         }
         let tpd = w.config.ticks_per_day.max(1) as f64;
-        let founded = w.tick();
-        let start = w.lineage_grace_start(lineage)?;
+        let now = w.tick();
         let soon = (2.0 * w.grace_length() as f64 / tpd).round();
         let days = |t: u64| t as f64 / tpd;
         let real = |t: u64| {
@@ -5291,40 +5563,44 @@ impl Game {
             }
         };
         let max = evo_sim::world::commands::GRACE_WINTER_FOUNDERS;
-        let founders = w.lineages.get(lineage as usize).map_or(0, |l| l.founders);
-        let winter = if w.grace_end(lineage, start) > start + w.grace_length() {
-            format!(" It lasts through your first winter: a founding of {max} or fewer whose grace would end in late autumn or winter keeps it until that winter ends.")
+        let rule = self.grace_winter_words();
+        let end = w.grace_end_for(founders, start);
+        let winter = if end > start + w.grace_length() {
+            format!(" It lasts through your first winter: a founding of {max} or fewer whose grace would end in late autumn or winter {rule}.")
         } else if founders <= max {
-            format!(" (A founding of {max} or fewer whose grace would end in late autumn or winter keeps it until that winter ends; this one ends before then.)")
+            format!(" (A founding of {max} or fewer whose grace would end in late autumn or winter {rule}; this one ends before then.)")
         } else {
             format!(" (Only a founding of {max} or fewer keeps its grace through its first winter; this one has {founders}.)")
         };
-        let text = match w.lineage_grace_ticks(lineage) {
-            Some(left) if start >= founded => format!(
+        let waived = w.grace_waived().get(&player).is_some_and(|&t| t >= start);
+        let left = end.saturating_sub(now);
+        let from_day = start / w.config.ticks_per_day.max(1) as u64 + 1;
+        let text = if start == 0 && !preview {
+            return None;
+        } else if waived {
+            "No newcomer grace: you ended it, and founding again soon doesn't bring it back. Other players' animals \
+             can attack yours from then on."
+                .to_string()
+        } else if start >= now {
+            format!(
                 "Newcomer grace: {:.0} days ({} of real time). Other players can't order attacks on your animals, \
                  nor yours on theirs, until it ends.{winter}",
                 days(left),
                 real(left)
-            ),
-            Some(left) => format!(
-                "Newcomer grace: {:.1} days left ({}). It continues the grace of your earlier lineage (from day {}): \
+            )
+        } else if left > 0 {
+            format!(
+                "Newcomer grace: {:.1} days left ({}). It continues the grace of your earlier lineage (from day {from_day}): \
                  founding again within {soon:.0} days of your last founding carries a grace on instead of starting a new one.",
                 days(left),
                 real(left),
-                start / w.config.ticks_per_day.max(1) as u64 + 1
-            ),
-            None if start == 0 => return None,
-            None if w.grace_waived().get(&player).is_some_and(|&t| t >= start) => {
-                "No newcomer grace: you ended it, and founding again soon doesn't bring it back. Other players' animals \
-                 can attack yours from now on."
-                    .to_string()
-            }
-            None => format!(
-                "No newcomer grace: it continues the grace of your earlier lineage (from day {}), which has run out. \
+            )
+        } else {
+            format!(
+                "No newcomer grace: it continues the grace of your earlier lineage (from day {from_day}), which has run out. \
                  Founding again within {soon:.0} days of your last founding carries a grace on rather than starting \
-                 a fresh one; other players' animals can attack yours now.",
-                start / w.config.ticks_per_day.max(1) as u64 + 1
-            ),
+                 a fresh one; other players' animals can attack yours then."
+            )
         };
         Some(text)
     }
@@ -5424,10 +5700,16 @@ impl Game {
                     never_moved,
                     gained,
                     pending_claim,
+                    territory_kept,
                 } => {
                     self.routes.remove(&(player, group));
                     let (why, short) = timeout_reason(dormant_share, basking_share, needy_share, never_moved, gained);
                     let claim = if pending_claim { " The territory it was to claim there is dropped too." } else { "" };
+                    let claim = if territory_kept {
+                        format!("{claim} It is still on the territory it left, and holds it again.")
+                    } else {
+                        claim.to_string()
+                    };
                     let text = format!(
                         "{} didn't gather at its migration target ({:.0}, {:.0}) (half the group is still more than \
                          {:.0} tiles away); the order has ended: {why}.{claim}",
@@ -5440,6 +5722,54 @@ impl Game {
                         (player, group),
                         format!("migration to ({:.0}, {:.0}) ended: {short}", target.x, target.y),
                     );
+                    self.alert(player, AlertKind::Group, text, None, out);
+                }
+                GroupEvent::HoldLoosened { player, group, hungry_share, parched_share } => {
+                    let what = match (hungry_share >= 0.05, parched_share >= 0.05) {
+                        (true, true) => format!(
+                            "{:.0}% of it is starving and {:.0}% parched",
+                            hungry_share * 100.0,
+                            parched_share * 100.0
+                        ),
+                        (false, true) => format!("{:.0}% of it is parched", parched_share * 100.0),
+                        _ => format!("{:.0}% of it is starving", hungry_share * 100.0),
+                    };
+                    let text = format!(
+                        "{}'s territory no longer feeds it ({what}): the hold is loosened, and the group forages \
+                         beyond the edge until it recovers. Claim better ground, or abandon the territory to move on.",
+                        group_name(group)
+                    );
+                    self.alert(player, AlertKind::Group, text, None, out);
+                }
+                GroupEvent::Displaced { player, group, by, territory: t } => {
+                    self.territory_alerted.retain(|&(p, g, _)| (p, g) != (player, group));
+                    let who = self.name(by);
+                    let text = format!(
+                        "{}'s territory at ({:.0}, {:.0}) was taken over by a far larger group of {who}'s: a group of \
+                         {} or fewer can't hold ground against one ten times its size.",
+                        group_name(group),
+                        t.center.x,
+                        t.center.y,
+                        evo_sim::world::groups::SQUAT_MEMBERS
+                    );
+                    self.alert(player, AlertKind::Group, text, None, out);
+                }
+                GroupEvent::ClaimBlocked { player, group, target } => {
+                    self.routes.remove(&(player, group));
+                    self.drift_alerted.remove(&(player, group));
+                    let text = format!(
+                        "{} reached ({:.0}, {:.0}), but another player's territory covers that ground now, so it \
+                         claimed none; it keeps the place as its home ground. Claim a circle clear of it.",
+                        group_name(group),
+                        target.x,
+                        target.y
+                    );
+                    self.outcomes
+                        .insert((player, group), format!("reached ({:.0}, {:.0}), claim blocked", target.x, target.y));
+                    self.alert(player, AlertKind::Group, text, None, out);
+                }
+                GroupEvent::HoldRestored { player, group } => {
+                    let text = format!("{} has recovered: it keeps inside its territory again.", group_name(group));
                     self.alert(player, AlertKind::Group, text, None, out);
                 }
             }
@@ -5539,6 +5869,31 @@ impl Game {
         warnings
     }
 
+    /// Add every group's members and adults (`groups`, as the state's
+    /// group list counts them) and the lineage's `population` to a split or
+    /// merge reply, with a note when the two differ (playtest 7: the reply's
+    /// counts didn't match the state's). Eggs aren't counted; animals far
+    /// from every player may be simulated in aggregate, outside any group.
+    fn group_counts_report(&self, player: PlayerId, data: &mut serde_json::Value) {
+        let groups = self.world.groups(player);
+        let in_groups: usize = groups.iter().map(|g| g.members).sum();
+        data["groups"] = groups
+            .iter()
+            .map(|g| serde_json::json!({ "id": g.id, "members": g.members, "adults": g.adults }))
+            .collect::<Vec<_>>()
+            .into();
+        let population = self.owner_population(player);
+        data["population"] = population.into();
+        if population > in_groups {
+            data["note"] = format!(
+                "{} of your {population} animals are far from every player and lived out in aggregate, outside any \
+                 group; they rejoin the main group when someone comes near",
+                population - in_groups
+            )
+            .into();
+        }
+    }
+
     /// Warnings for a group about to travel: much of it dormant, and (with
     /// `route`) its planned way over open water. Shared by migrate, far
     /// claims and rallies.
@@ -5558,10 +5913,13 @@ impl Game {
                 if let Some(j) = self.world.journey_check(player, group, &way) {
                     let pace = World::group_pace(j.members);
                     let starve = j.food_share < 1.0;
-                    if j.days >= JOURNEY_WARN_DAYS && (starve || j.days >= 2.0 * JOURNEY_WARN_DAYS) {
+                    // A short trip over bare land warns too (playtest 7: 6.2
+                    // days at 18% of the food the group needs, no warning).
+                    let long = j.days >= JOURNEY_WARN_DAYS && (starve || j.days >= 2.0 * JOURNEY_WARN_DAYS);
+                    if long || j.food_share < JOURNEY_BARE_SHARE {
                         let food = if starve {
                             format!(
-                                "the land along the way holds about {:.0}% of the food the group needs for it; expect \
+                                "The land along the way holds about {:.0}% of the food the group needs for it; expect \
                                  heavy losses. ",
                                 j.food_share * 100.0
                             )
@@ -5649,8 +6007,10 @@ impl Game {
                 // last migration gave it while no other order takes it away.
                 let held = match (g.territory, g.settle) {
                     (Some(t), _) => Some((t.center, t.radius, "territory")),
+                    // The ground it forages from home: twice the home circle
+                    // (`World::forage_bound`), as the destination was rated.
                     (None, Some(h)) if g.rally.is_none() && g.migration.is_none() => {
-                        Some((h.center, h.radius, "home ground"))
+                        Some((h.center, 2.0 * h.radius, "home ground"))
                     }
                     _ => None,
                 };
@@ -6150,17 +6510,12 @@ impl Game {
                     }
                     push = Some(PushKind::Species);
                 }
-                AchievementKind::SurvivedCatastrophe { catastrophe } => {
-                    // Only a lineage founded before the catastrophe began
-                    // survived it: re-founding during one used to earn the
-                    // bonus and the season's survival count.
-                    let start = ch.catastrophes.iter().find(|c| c.id == catastrophe).map(|c| c.start_day);
-                    let founded = self.founded_day.get(&a.player).copied();
-                    paid = match (start, founded) {
-                        (Some(s), Some(f)) => f < s,
-                        _ => true,
-                    };
-                    // The season's credit was given before the rollover (`credit_survival`).
+                // Only the lineage alive at its start, keeping a quarter of
+                // itself (`survived`): re-founding during one, or losing ~99%,
+                // used to earn the title, bonus and alert. (The season's credit
+                // was given before the rollover: `credit_survival`.)
+                AchievementKind::SurvivedCatastrophe { catastrophe } if !self.survived(a.player, catastrophe) => {
+                    continue;
                 }
                 _ => {}
             }
@@ -7022,7 +7377,7 @@ fn achievement_text(w: &World, k: &AchievementKind) -> String {
                 .get(*catastrophe as usize)
                 .map_or("a catastrophe", |c| catastrophe_text(c.kind));
             // Factual, not a cheer: it can come after heavy losses (playtest 3: after a 70% loss).
-            format!("Survivor: your lineage is still alive after {what}, whatever it lost.")
+            format!("Survivor: your lineage came through {what} with at least a quarter of its animals.")
         }
     }
 }
@@ -7481,7 +7836,10 @@ mod tests {
         assert!(!ok.founders.is_empty());
         assert_eq!(g.owner_population(1), ok.founders.len());
         assert_eq!(g.world.lineages[first as usize].owner, 1, "the old lineage stays in the history");
-        assert_eq!(g.balance(1), renown, "renown kept, no second founding grant");
+        // A lineage that died out young (within the window of its founding)
+        // pays half the re-founding fee (churn); renown kept otherwise, no
+        // second founding grant.
+        assert_eq!(g.balance(1), renown - REFOUND_FEE / 2, "half the fee after dying out young");
         // The new lineage is alive: a further lineage is refused again.
         assert!(
             matches!(g.found(1, &design("third")), Err(FoundError::AlreadyFounded { lineage }) if lineage == ok.lineage)
@@ -9072,7 +9430,11 @@ mod tests {
         let l = g.lineage_of(1).unwrap();
         g.retire(1, l).unwrap();
         let ok = g.found(1, &design("A4").founders(10)).unwrap();
-        assert_eq!((ok.refound_fee, g.balance(1)), (50, 0), "at most the balance");
+        assert_eq!((ok.refound_fee, g.balance(1)), (4 * REFOUND_FEE, 0), "what they have now");
+        assert_eq!(g.economy.refound_debt.get(&1), Some(&(4 * REFOUND_FEE - 50)), "the rest owed");
+        // Owed renown comes out of the next renown coming in.
+        let _ = g.post(1, 400, LedgerKind::Income, "test".into(), None, None);
+        assert_eq!((g.balance(1), g.economy.refound_debt.get(&1)), (50, None));
         // Long after: the full design, free.
         let l = g.lineage_of(1).unwrap();
         g.retire(1, l).unwrap();
@@ -9317,7 +9679,7 @@ mod tests {
         g.set_name(1, "ann");
         let wild = g.world.lineages.iter().find(|l| l.owner == WILD).unwrap().name.clone();
         let singular = wild.strip_suffix('s').unwrap_or(&wild).to_string();
-        for n in [wild.clone(), singular.clone(), wild.to_uppercase()] {
+        for n in [wild.clone(), singular.clone(), wild.to_uppercase(), format!("The {singular} 2")] {
             assert!(matches!(g.found(1, &design(&n)), Err(FoundError::BadName(_))), "{n}");
         }
         assert!(g.design_compatibility(1, &design(&singular)).name_warning.is_some());
@@ -9325,6 +9687,11 @@ mod tests {
         let out = g.command(10, 1, None, ClientMsg::SetNameplate { color: "amber".into(), title: singular.clone() });
         assert_eq!(result(&out).1.as_deref(), Some("bad_title"));
         assert!(g.found(1, &design("Grazers of the north")).is_ok());
+        // Nor a copy of another player's living lineage's name (playtest 7).
+        g.set_name(2, "bob");
+        let copy = g.found(2, &design("The Grazers of the north 2"));
+        assert!(matches!(copy, Err(FoundError::BadName(_))), "{:?}", copy.map(|o| o.lineage));
+        assert!(g.found(2, &design("Grazers of the south")).is_ok());
     }
 
     /// A juvenile reads `not_mature`, not `same_sex` (playtest 5), in a
@@ -10590,7 +10957,9 @@ mod tests {
     /// refunded everything, a free dam-lock, and failed every purchase.
     #[test]
     fn a_buyer_whose_animal_dies_may_send_another_or_pays_the_hold() {
-        for (cause, excused) in [(DeathCause::Thirst, false), (DeathCause::Predation, true)] {
+        for (cause, excused) in
+            [(DeathCause::Thirst, false), (DeathCause::Predation, false), (DeathCause::Disease, true)]
+        {
             let (mut g, a, b) = game();
             g.cfg.purchase_deadline_ticks = 30;
             let dam = female(&g, &a);
@@ -10640,7 +11009,7 @@ mod tests {
                 assert_eq!(
                     (entry(1, LedgerKind::Sale), entry(2, LedgerKind::Refund)),
                     (None, Some(20)),
-                    "eaten: no fault"
+                    "disease: no fault"
                 );
             } else {
                 assert_eq!(
@@ -10742,6 +11111,91 @@ mod tests {
         assert_eq!((bob.x % 8.0, bob.y % 8.0), (4.0, 4.0), "coarse cells");
         assert_eq!(bob.members % 10, 0);
         assert!(v.groups.iter().all(|x| x.player != 1), "not your own");
+    }
+
+    /// Playtest 7's market holes: a seller retiring with a sold mating
+    /// refunds the buyer and pays them the hold fee; the buyer's animal lost
+    /// first and then the partner gone still forfeits; the meeting point
+    /// keeps clear of a third party's predators.
+    #[test]
+    fn retiring_sellers_pay_and_meeting_points_avoid_predators() {
+        let (mut g, a, b) = game();
+        g.cfg.purchase_deadline_ticks = 300;
+        let dam = female(&g, &a);
+        let studs: Vec<OrgId> =
+            b.iter().copied().filter(|&i| g.world.organism(i).unwrap().sex == Sex::Male).take(2).collect();
+        not_pregnant(&mut g, &[dam]);
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: dam, fee: 20, expires_days: None });
+        let listing = data(&out)["listing"]["id"].as_u64().unwrap();
+        g.economy.balances.insert(2, 100);
+        g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().pos = Vec2::new(10.0, 10.0);
+        g.world.organisms.iter_mut().find(|o| o.id == studs[0]).unwrap().pos = Vec2::new(50.0, 50.0);
+        // A third player's predator sits where the usual point (3/4 of the
+        // way) falls.
+        let hunter = FounderDesign::new("C", Thermo::Warm, BirthType::Live, 2).founders(4).with(Gene::Carnivory, 0.9);
+        let wolves = g.found(3, &hunter).unwrap().founders;
+        let usual = g.world.meeting_point_toward(studs[0], dam, MEET_TOWARD_PARTNER).unwrap();
+        for &w in &wolves {
+            g.world.organisms.iter_mut().find(|o| o.id == w).unwrap().pos = usual;
+        }
+        let out = g.command(20, 2, None, ClientMsg::BuyListing { listing, mine: studs[0] });
+        assert!(result(&out).0, "{out:?}");
+        let id = *g.offers.keys().next().unwrap();
+        let (mx, my) = g.offers[&id].meet.unwrap();
+        assert!(Vec2::new(mx, my).dist(usual) > 1.0, "moved off the predator");
+        // The seller retires: refunded plus compensation.
+        let before = g.balance(2);
+        let l = g.lineage_of(1).unwrap();
+        g.retire(1, l).unwrap();
+        assert!(!g.offers.contains_key(&id));
+        assert_eq!(g.balance(2), before + 20 + 5, "the price back and the hold fee from the seller");
+
+        // A second world: the buyer's animal starves, then the partner vanishes.
+        let (mut g, a, b) = game();
+        g.cfg.purchase_deadline_ticks = 300;
+        let dam = female(&g, &a);
+        let stud = male(&g, &b);
+        not_pregnant(&mut g, &[dam]);
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: dam, fee: 20, expires_days: None });
+        let listing = data(&out)["listing"]["id"].as_u64().unwrap();
+        g.economy.balances.insert(2, 100);
+        g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().pos = Vec2::new(10.0, 10.0);
+        g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().pos = Vec2::new(50.0, 50.0);
+        assert!(result(&g.command(20, 2, None, ClientMsg::BuyListing { listing, mine: stud })).0);
+        let id = *g.offers.keys().next().unwrap();
+        for (who, cause) in [(stud, DeathCause::Starvation), (dam, DeathCause::OldAge)] {
+            let o = g.world.organisms.iter_mut().find(|o| o.id == who).unwrap();
+            o.alive = false;
+            o.death = Some(cause);
+            g.world.step();
+            g.after_tick();
+        }
+        assert!(!g.offers.contains_key(&id));
+        let sale =
+            g.ledger(1, 50).into_iter().find(|e| e.kind == LedgerKind::Sale && e.offer == Some(id)).map(|e| e.delta);
+        assert_eq!(sale, Some(5), "the hold fee still applies");
+    }
+
+    /// Naming an animal: 50 renown each time, shown on its listing and by
+    /// `animal_names`; not a rival's animal, not the same name twice.
+    #[test]
+    fn animals_can_be_named_for_renown() {
+        let (mut g, a, b) = game();
+        let _ = g.post(1, 500, LedgerKind::Income, "test".into(), None, None);
+        let before = g.balance(1);
+        let d = data(&g.command(10, 1, None, ClientMsg::NameAnimal { organism: a[0], name: "Old Grey".into() }));
+        assert_eq!(d["name"], "Old Grey");
+        assert_eq!(g.balance(1), before - economy::ANIMAL_NAME_PRICE);
+        let out = g.command(10, 1, None, ClientMsg::NameAnimal { organism: a[0], name: "Old Grey".into() });
+        assert_eq!(result(&out).1.as_deref(), Some("same_name"));
+        let out = g.command(10, 1, None, ClientMsg::NameAnimal { organism: b[0], name: "Mine".into() });
+        assert!(!result(&out).0);
+        let names = data(&g.command(10, 1, None, ClientMsg::AnimalNames));
+        assert_eq!(names["names"][a[0].to_string()], "Old Grey");
+        let id = a[0];
+        not_pregnant(&mut g, &[id]);
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: id, fee: 10, expires_days: None });
+        assert_eq!(data(&out)["listing"]["animal_name"], "Old Grey");
     }
 
     /// A pending request naming a listed animal doesn't make it busy (a
@@ -10949,6 +11403,29 @@ mod tests {
         assert_eq!(code(&out), Some("not_mature".into()), "own pair");
     }
 
+    /// A pinned view ends with the lineage: retiring (and re-founding)
+    /// unpins it, as the old spot may now be refused (playtest 7).
+    #[test]
+    fn retire_and_refound_unpin_the_view() {
+        let (mut g, a, _) = game();
+        let p = g.world.organism(a[0]).unwrap().pos;
+        let pin = g.command(10, 1, Some(1), ClientMsg::SetView { x: p.x, y: p.y, radius: 8.0 });
+        assert!(result(&pin).0, "{pin:?}");
+        assert!(g.state_for(10).unwrap().view.pinned);
+        let l = g.lineage_of(1).unwrap();
+        g.retire(1, l).unwrap();
+        assert!(!g.state_for(10).unwrap().view.pinned, "retire unpins");
+        g.found_at_any_price(1, &design("Again")).unwrap();
+        let p = g.world.organisms.iter().find(|o| o.alive && o.owner == 1).unwrap().pos;
+        // With no lineage there is nowhere to pin; a founding unpins anyway
+        // (an extinct lineage's pin is dropped with its replacement).
+        g.conns.get_mut(&10).unwrap().view = Some(ViewWindow { x: p.x, y: p.y, radius: 8.0, pinned: true });
+        g.retire(1, g.lineage_of(1).unwrap()).unwrap();
+        g.conns.get_mut(&10).unwrap().view = Some(ViewWindow { x: p.x, y: p.y, radius: 8.0, pinned: true });
+        g.found_at_any_price(1, &design("Third")).unwrap();
+        assert!(!g.state_for(10).unwrap().view.pinned, "found unpins");
+    }
+
     /// Info leaks: the map image shows a player only what they may see,
     /// `set_view` only looks where their organisms are, listings give the
     /// region rather than the live position, and a rival's pregnancy is
@@ -11026,6 +11503,7 @@ mod tests {
         assert_eq!(p.distance % 16.0, 0.0, "{}", p.distance);
         let tenths = |x: f32| ((x * 10.0).round() - x * 10.0).abs() < 1e-4;
         assert!(p.body_plan_gaps.iter().all(|g| tenths(g.gap)), "{:?}", p.body_plan_gaps);
+        assert!([p.fertility, p.mismatch, p.failure_chance, p.distance_fertility].iter().all(|&x| tenths(x)), "{p:?}");
         let listing = reply_data(&out)["listing"]["id"].as_u64().unwrap();
         g.command(20, 2, Some(10), ClientMsg::WithdrawListing { listing });
         assert_eq!(g.preview_mating(1, dam, stud).unwrap_err().code, "out_of_sight");
@@ -11441,7 +11919,11 @@ mod tests {
             escrow: g.escrow(player),
             grace: g.grace_view(player),
             poisonous: (0..g.world.lineages.len() as u32).filter(|&l| g.world.looks_poisonous_to(player, l)).collect(),
-            territories: g.rival_territories(player, view),
+            territories: g.rival_territories(
+                player,
+                view,
+                &states::group_middles(g.world.organisms.iter().filter(|o| o.owner == player)),
+            ),
         }
     }
 

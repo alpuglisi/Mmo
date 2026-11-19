@@ -47,7 +47,7 @@ fn homes_hash() -> u64 {
         config.balance.drink_reach = 0.0;
         // Playtest 6 (version 58): the prey-scaled pack larder.
         config.balance.prey_larder = 0.0;
-        // Playtest 7 (version 65): the first-winter larder.
+        // Playtest 7 (version 67): the first-winter larder.
         config.balance.winter_larder = 0.0;
         // Playtest 5 (version 52): brooders keeping their nests, young
         // following and escaping rising water change the days the world

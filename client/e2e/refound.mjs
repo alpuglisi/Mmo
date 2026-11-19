@@ -95,6 +95,7 @@ async function found(page) {
   });
   if (which === 'reduced') {
     step(`re-founding notice: "${(await page.textContent('#founded-reduced')).replace(/\s+/g, ' ').slice(0, 90)}…"`);
+    check(!(await page.$('#founded-reduced-cancel')), 'the notice after founding has one OK button, no Cancel');
     await page.click('#founded-reduced-ok');
   }
   await page.waitForSelector('#world-canvas', { timeout: UI_MS });
@@ -213,7 +214,7 @@ async function main() {
     // The app's own dialog (not the browser's confirm), with the server's window.
     await page.waitForSelector('#retire-confirm', { timeout: UI_MS });
     const confirmText = await page.textContent('#retire-confirm');
-    check(/re-founding within \d+ days \(about \d+ real minutes?\) founds half your founders \(rounded up\) and, after a retirement, costs \d+ renown/.test(confirmText) && !confirmText.includes('ranked season'), 'the retire dialog states the server\'s rule', confirmText);
+    check(/re-founding within \d+ days \(about \d+ real minutes?\) founds half your founders \(rounded up\) and costs \d+ renown after a retirement/.test(confirmText) && !confirmText.includes('ranked season'), 'the retire dialog states the server\'s rule', confirmText);
     await page.click('#retire-confirm-ok');
     await page.waitForSelector('#lineage-extinct', { state: 'visible', timeout: UI_MS });
     check(await page.locator('#lineage-retire').isHidden(), 'the retire section should hide once retired');

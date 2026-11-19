@@ -79,6 +79,8 @@ export type ClientMsg =
   | { type: 'reinforce' }
   | { type: 'provision' }
   | { type: 'survey' }
+  | { type: 'name_animal'; organism: OrgId; name: string }
+  | { type: 'animal_names' }
   | { type: 'substitute_mating'; request: number; mine: OrgId }
   /** Which lineages yours can breed with; data: `CompatibilityView`. */
   | { type: 'compatibility' }
@@ -358,8 +360,11 @@ export interface GroupView {
   obedience?: number;
   /** Its territory is the player's home range, shielded while they are offline (absent: no). */
   home_range?: boolean;
-  /** On the home range: minutes of offline protection left (at most 12 hours in any 24, however often you reconnect; absent from older servers). */
+  /** On the home range: real minutes of offline protection left (a rolling budget, however often you reconnect; absent from older servers). */
   protection_left_min?: number;
+  /** On the home range: the most protection, and the rolling window it counts over, in real minutes at this game speed (absent from older servers). */
+  protection_budget_min?: number;
+  protection_window_min?: number;
 }
 
 /** Someone else's organism inside the view window: only what can be seen. */
@@ -593,6 +598,8 @@ export interface PushPayload {
 }
 
 export interface AlertView {
+  /** Unique per player and stable: tell alerts apart by this (two can share a tick and text). Absent from older servers. */
+  id?: number;
   tick: number;
   day: number;
   kind: AlertKind;
@@ -702,6 +709,10 @@ export interface ListingView {
   /** A dam already promised in an open agreement. */
   busy: boolean;
   pregnant: boolean;
+  /** The name its owner gave it (`name_animal`). */
+  animal_name?: string;
+  /** Past 90% of its lifespan: it may die of old age before a buyer meets it. */
+  aging?: boolean;
   lineage: number;
   lineage_name: string;
   generation: number;
@@ -1099,6 +1110,8 @@ export interface ShopView {
   provision_size?: number;
   /** The price of a survey now (rival groups near your main group). */
   survey_price?: number;
+  /** The price of naming one of your animals (cosmetic). */
+  animal_name_price?: number;
   provisions_bought?: number;
   provisions_max?: number;
   provision_blocked?: string;
@@ -1170,6 +1183,8 @@ export interface DesignCompatView {
   refound?: { founders: number; requested: number; cost: number; until_day: number; minutes_left: number; reason: string; fee?: number };
   /** Why founding would refuse the design's name (it looks like another player's); absent when fine. */
   name_warning?: string;
+  /** The newcomer grace a founding of this design would get now (fresh with the first-winter rule, or continued); absent from older servers. */
+  grace_note?: string;
 }
 
 export interface SeasonRow {
