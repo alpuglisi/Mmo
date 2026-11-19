@@ -5013,21 +5013,28 @@ impl Game {
             // A pending offer: about how far apart the two are (8-tile
             // steps), so Accept can say what the walk will be (playtest 10).
             // For an offer to the lineage, the nearest adult of the other sex
-            // in it (playtest 11: incoming lineage offers had no distance).
+            // in it (playtest 11: incoming lineage offers had no distance);
+            // 32-tile steps while the requester doesn't see that partner (a
+            // listed one, requested from anywhere, was placed finer than its
+            // listing's region, playtest 11).
             apart: (o.status == OfferStatus::Pending)
                 .then(|| {
                     let a = self.world.organism(o.mine)?;
-                    let d = match (o.partner, o.lineage) {
+                    let (d, at) = match (o.partner, o.lineage) {
                         (0, Some(l)) => self
                             .world
                             .organisms
                             .iter()
                             .filter(|b| b.alive && b.lineage == l && b.matured && b.sex != a.sex)
-                            .map(|b| a.pos.dist(b.pos))
-                            .fold(f32::INFINITY, f32::min),
-                        (p, _) => a.pos.dist(self.world.organism(p)?.pos),
+                            .map(|b| (a.pos.dist(b.pos), b.pos))
+                            .fold((f32::INFINITY, a.pos), |m, x| if x.0 < m.0 { x } else { m }),
+                        (p, _) => {
+                            let b = self.world.organism(p)?;
+                            (a.pos.dist(b.pos), b.pos)
+                        }
                     };
-                    d.is_finite().then(|| (d / 8.0).ceil() * 8.0)
+                    let step = if self.in_sight(o.from, at) { 8.0 } else { LISTING_REGION };
+                    d.is_finite().then(|| (d / step).ceil() * step)
                 })
                 .flatten(),
             meet_note: o.meet_note.clone().filter(|_| o.status == OfferStatus::Accepted),
@@ -7516,13 +7523,20 @@ impl Game {
                 .iter()
                 .filter(|o| o.alive && o.owner != player && o.owner != WILD && o.traits.carnivory > 0.6)
             {
-                if off(o.pos) < WAY_HUNTER_TILES {
+                // Only hunters the player sees, in bands: exact counts along
+                // a way drawn anywhere were a radar (playtest 11).
+                if off(o.pos) < WAY_HUNTER_TILES && self.in_sight(player, o.pos) {
                     *by.entry(o.owner).or_default() += 1;
                 }
             }
             if !by.is_empty() {
+                let band = |n: usize| match n {
+                    0..5 => "a few",
+                    5..20 => "some",
+                    _ => "many",
+                };
                 let named: Vec<String> =
-                    by.iter().map(|(&o, &n)| format!("{n} of {}'s hunters", self.name(o))).collect();
+                    by.iter().map(|(&o, &n)| format!("{} of {}'s hunters", band(n), self.name(o))).collect();
                 out.push(format!(
                     "The way ({len:.0} tiles) passes {} within {WAY_HUNTER_TILES:.0} tiles: the group walks it in the \
                      open.",
@@ -13949,6 +13963,56 @@ mod tests {
         g.conns.get_mut(&10).unwrap().view = Some(ViewWindow { x: p.x, y: p.y, radius: 8.0, pinned: true });
         g.found_at_any_price(1, &design("Third")).unwrap();
         assert!(!g.state_for(10).unwrap().view.pinned, "found unpins");
+    }
+
+    /// Playtest 11: a claim's or rally's way names rival hunters only where
+    /// the player sees them, and in bands.
+    #[test]
+    fn way_warnings_name_only_hunters_in_sight_in_bands() {
+        let (mut g, _, _) = game();
+        let here = Vec2::new(8.0, 32.0);
+        for o in g.world.organisms.iter_mut().filter(|o| o.alive) {
+            match o.owner {
+                1 => o.pos = here,
+                2 => o.pos = Vec2::new(60.0, 4.0),
+                _ => {}
+            }
+        }
+        let bobs: Vec<usize> = (0..g.world.organisms.len())
+            .filter(|&i| g.world.organisms[i].alive && g.world.organisms[i].owner == 2)
+            .collect();
+        let to = Vec2::new(56.0, 32.0);
+        let hunters = |g: &mut Game, at: Vec2| {
+            for &i in bobs.iter().take(3) {
+                g.world.organisms[i].pos = at;
+                g.world.organisms[i].traits.carnivory = 1.0;
+            }
+        };
+        // On the way but out of sight: not named.
+        hunters(&mut g, Vec2::new(48.0, 32.0));
+        assert!(!g.in_sight(1, Vec2::new(48.0, 32.0)));
+        let w = g.way_warnings(1, 0, to);
+        assert!(!w.iter().any(|x| x.contains("hunters")), "{w:?}");
+        // In sight: named, as a band.
+        hunters(&mut g, here + Vec2::new(3.0, 0.0));
+        let w = g.way_warnings(1, 0, to);
+        assert!(w.iter().any(|x| x.contains("a few of bob's hunters")), "{w:?}");
+    }
+
+    /// Playtest 11: without the renown, a title or animal name that would be
+    /// refused for another player's name answers `insufficient_funds` like
+    /// any other (the name checks were a free oracle).
+    #[test]
+    fn name_checks_come_after_the_price() {
+        let (mut g, a, _) = game();
+        assert!(g.balance(1) < economy::NAMEPLATE_PRICE);
+        let out = g.command(10, 1, None, ClientMsg::SetNameplate { color: "amber".into(), title: "bob".into() });
+        assert_eq!(result(&out).1.as_deref(), Some("insufficient_funds"));
+        while g.balance(1) >= economy::ANIMAL_NAME_PRICE {
+            let _ = g.post(1, -1, LedgerKind::Income, "test".into(), None, None);
+        }
+        let out = g.command(10, 1, None, ClientMsg::NameAnimal { organism: a[0], name: "B".into() });
+        assert_eq!(result(&out).1.as_deref(), Some("insufficient_funds"));
     }
 
     /// Playtest 10: a claim or rally circle counts prey only where the

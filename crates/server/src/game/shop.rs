@@ -389,6 +389,9 @@ impl Game {
             // anywhere a lone animal walked gave a census of rivals).
             .filter(|o| self.in_sight(player, o.pos))
             .count();
+        // Rounded up to tens: the price against the shop's own (head count
+        // only) was an exact count of the rivals around (playtest 11).
+        let others = others.div_ceil(10) * 10;
         let size = self.owner_population(player) + others;
         let tick = self.world.tick();
         // A preview's price is honoured for a few seconds (playtest 10: the
@@ -541,6 +544,15 @@ impl Game {
     ) -> Result<(String, ShopView), ErrorInfo> {
         let name = names::check(name, crate::design::MAX_NAME_LEN, names::Kind::Species)
             .map_err(|why| ErrorInfo::new("bad_name", format!("that name can't be used: {why}")))?;
+        match self.world.organism(organism) {
+            Some(o) if o.owner == player => {}
+            Some(_) => return Err(ErrorInfo::new("not_owned", format!("#{organism} is not yours"))),
+            None => return Err(ErrorInfo::new("not_found", format!("no living organism #{organism}"))),
+        }
+        // The price before the checks against other players' and the wild's
+        // names: `bad_name` against `insufficient_funds` was a free oracle
+        // of which names pass (playtest 11).
+        self.check_funds(player, economy::ANIMAL_NAME_PRICE)?;
         if self.impersonates(player, &name, names::Kind::Species) {
             return Err(ErrorInfo::new("bad_name", "an animal's name can't look like another player's name"));
         }
@@ -551,11 +563,6 @@ impl Game {
         }
         if self.rival_name(player, &name) || self.holds_rival_name(player, &name) {
             return Err(ErrorInfo::new("name_taken", "another player's lineage or species has that name"));
-        }
-        match self.world.organism(organism) {
-            Some(o) if o.owner == player => {}
-            Some(_) => return Err(ErrorInfo::new("not_owned", format!("#{organism} is not yours"))),
-            None => return Err(ErrorInfo::new("not_found", format!("no living organism #{organism}"))),
         }
         if self.economy.animal_names.get(&organism) == Some(&name) {
             return Err(ErrorInfo::new("same_name", format!("#{organism} is already called {name}")));
@@ -583,6 +590,14 @@ impl Game {
         }
         let title = names::check(title, economy::MAX_TITLE_LEN, names::Kind::Title)
             .map_err(|why| ErrorInfo::new("bad_title", format!("that title can't be used: {why}")))?;
+        let price = if self.economy.nameplates.contains_key(&player) {
+            economy::NAMEPLATE_CHANGE_PRICE
+        } else {
+            economy::NAMEPLATE_PRICE
+        };
+        // The price first: `bad_title` against `insufficient_funds` was a
+        // free oracle of which titles pass (playtest 11).
+        self.check_funds(player, price)?;
         // Nor another player's name, or one inside it (it shows beside the
         // owner's: "Herdmaster4 (alt)").
         if self.wild_name(&title) {
@@ -594,11 +609,6 @@ impl Game {
         if self.rival_name(player, &title) || self.holds_rival_name(player, &title) {
             return Err(ErrorInfo::new("bad_title", "that title can't be used: it is another player's lineage name"));
         }
-        let price = if self.economy.nameplates.contains_key(&player) {
-            economy::NAMEPLATE_CHANGE_PRICE
-        } else {
-            economy::NAMEPLATE_PRICE
-        };
         self.spend(player, price, format!("Nameplate: {color} \"{title}\""))?;
         let plate = economy::Nameplate { color: color.to_string(), title };
         self.economy.nameplates.insert(player, plate.clone());
@@ -609,15 +619,6 @@ impl Game {
     pub(super) fn name_species(&mut self, player: PlayerId, species: u32, name: &str) -> Result<String, ErrorInfo> {
         let name = names::check(name, crate::design::MAX_NAME_LEN, names::Kind::Species)
             .map_err(|why| ErrorInfo::new("bad_name", format!("that species name can't be used: {why}")))?;
-        if self.wild_name(&name) {
-            return Err(ErrorInfo::new("bad_name", "that species name can't be used: it is a wild species' name"));
-        }
-        if self.rival_name(player, &name) {
-            return Err(ErrorInfo::new("name_taken", "another player's lineage or species has that name"));
-        }
-        if self.impersonates(player, &name, names::Kind::Species) {
-            return Err(ErrorInfo::new("bad_name", "a species name can't look like another player's name"));
-        }
         let tracker = &self.world.chronicle.species;
         let s =
             tracker.get(species).ok_or_else(|| ErrorInfo::new("unknown_species", format!("no species {species}")))?;
@@ -634,6 +635,23 @@ impl Game {
         if let Some(&by) = self.economy.named_species.get(&species) {
             return Err(ErrorInfo::new("already_named", format!("{} has already named this species", self.name(by))));
         }
+        // Whether it can be named, and paid for, before the checks against
+        // other players' and the wild's names: they were a free oracle
+        // (playtest 11).
+        self.check_funds(player, economy::SPECIES_NAME_PRICE)?;
+        if self.wild_name(&name) {
+            return Err(ErrorInfo::new("bad_name", "that species name can't be used: it is a wild species' name"));
+        }
+        // Nor a near copy of a rival's lineage name (playtest 11: "Skyglass
+        // Swarn" beside "Skyglass Swarm").
+        if self.rival_name(player, &name) || self.holds_rival_name(player, &name) {
+            return Err(ErrorInfo::new("name_taken", "another player's lineage or species has that name"));
+        }
+        if self.impersonates(player, &name, names::Kind::Species) {
+            return Err(ErrorInfo::new("bad_name", "a species name can't look like another player's name"));
+        }
+        let tracker = &self.world.chronicle.species;
+        let s = tracker.get(species).expect("checked above");
         // Its own name again would charge for nothing (playtest 5: 300).
         if names::fold(&s.name) == names::fold(&name) {
             return Err(ErrorInfo::new("same_name", format!("the species is already called {}", s.name)));

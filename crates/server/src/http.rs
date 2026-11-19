@@ -632,14 +632,17 @@ async fn metrics(State(app): State<AppState>, World(w): World, headers: HeaderMa
     // password hashes (logins), commands applied (and `apply_ms.n`), state
     // pushes, messages and bytes (one per connection), per-command counts.
     // Logged out (playtests 7 and 9) or logged in (playtest 10), a rival
-    // watched them to see players come, go and start a hunt. Timings and
-    // saves stay public.
+    // watched them to see players come, go and start a hunt. Tick and state
+    // timings stay public.
     if !is_admin(&app, &headers) {
         (m.conns, m.players_online, m.delta_conns, m.dropped_conns) = (0, 0, 0, 0);
         (m.ws_opened, m.ws_closed, m.applied) = (0, 0, 0);
         (m.state_pushes, m.states_out, m.keyframes_out, m.msgs_out) = (0, 0, 0, 0);
         (m.bytes_out, m.state_bytes) = (0, 0);
-        m.apply_ms.n = 0;
+        // Command and save timings too (playtest 11: they rose with a
+        // rival's activity and its lineage's size).
+        m.apply_ms = Default::default();
+        (m.save_capture_ms, m.save_encode_ms, m.save_write_ms, m.save_bytes) = (0.0, 0.0, 0.0, 0);
         m.hashing = crate::metrics::HashStats {
             concurrency: m.hashing.concurrency,
             queue: m.hashing.queue,
@@ -659,9 +662,10 @@ fn is_admin(app: &AppState, headers: &HeaderMap) -> bool {
 
 /// `GET /api/worlds`: every hosted world with its clock and population
 /// (no login needed: the start screen picks from it), and players online
-/// for a logged-in caller.
+/// for the operator only (playtests 9 and 11: logged out, then logged in,
+/// a rival watched players come and go).
 async fn world_list(State(app): State<AppState>, headers: HeaderMap) -> Json<WorldList> {
-    let logged_in = authed(&app, &headers).is_ok();
+    let operator = is_admin(&app, &headers);
     let worlds = app
         .worlds
         .iter()
@@ -677,7 +681,7 @@ async fn world_list(State(app): State<AppState>, headers: HeaderMap) -> Json<Wor
                 season: s.clock.season,
                 population: s.organisms,
                 lineages: s.lineages,
-                players_online: logged_in.then(|| w.metrics.lock().unwrap().players),
+                players_online: operator.then(|| w.metrics.lock().unwrap().players),
             }
         })
         .collect();
@@ -736,7 +740,8 @@ async fn assign(
         world: w.id.to_string(),
         name: w.name.to_string(),
         reason,
-        players_online: loads[i].players_online,
+        // The operator (the lobby) only (playtest 11: anyone read it here).
+        players_online: if is_admin(&app, &headers) { loads[i].players_online } else { 0 },
         capacity: loads[i].capacity,
         // Only a logged-in caller learns it (playtest 8: `?name=` told anyone
         // whether an account existed).
