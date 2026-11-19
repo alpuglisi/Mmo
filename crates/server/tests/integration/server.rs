@@ -189,6 +189,14 @@ async fn play_over_websocket() {
     let (s, v) = json_req(addr, Method::POST, "/api/lineage", Some(&ann), Some(design("Again"))).await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert_eq!(v["code"], "already_founded");
+    // A name already shown (here a lineage's) that would read as a new
+    // account's makes that account name taken (playtest 10).
+    let cay = register(addr, "cay").await;
+    let (s, v) = json_req(addr, Method::POST, "/api/lineage", Some(&cay), Some(design("Latecomer herd"))).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let body = json!({"name": "Latecomer", "password": "a long password"});
+    let (s, v) = json_req(addr, Method::POST, "/api/register", None, Some(body)).await;
+    assert_eq!((s, v["code"].as_str()), (StatusCode::CONFLICT, Some("name_taken")), "{v}");
 
     // WebSocket: welcome, then state with our organisms only in `organisms`.
     let (s, _) = http(addr, Method::GET, "/ws?token=bogus", None, None).await;

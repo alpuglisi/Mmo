@@ -462,7 +462,18 @@ async fn register(
     Json(c): Json<Credentials>,
 ) -> Result<(StatusCode, Json<AuthResponse>), ApiError> {
     app.limiters.logins.check(&client_ip(&app, &info, &headers)).map_err(ApiError::rate_limited)?;
-    let (token, s) = app.accounts.register(c.name.trim(), &c.password).await?;
+    // Taken, too, when a name players already show (a title, an animal's or
+    // a lineage's name) would read as this account's (playtest 10:
+    // "LateComer10s pet" named before LateComer10 joined).
+    let name = c.name.trim();
+    let shown = app.worlds.iter().any(|w| {
+        let names = w.published.borrow().public_names.clone();
+        names.iter().any(|n| crate::names::impersonates(n, [name], crate::names::Kind::Lineage))
+    });
+    if shown {
+        return Err(AuthError::NameTaken.into());
+    }
+    let (token, s) = app.accounts.register(name, &c.password).await?;
     Ok((StatusCode::CREATED, Json(AuthResponse { token, player: s.player, name: s.name })))
 }
 

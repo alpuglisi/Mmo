@@ -8,15 +8,19 @@
 const SAFE = 'bfhjkpqstvxyz';
 let counter = 0;
 
-/** A fresh letter-only suffix (10 letters at most, so "m_iphone13_"
+/** A fresh letter-only suffix (10 letters, so "m_iphone13_"
  * plus a suffix stays under the 24-character account limit), unique per
  * call within a run and across runs some milliseconds apart. */
 export function stamp() {
-  let n = (Date.now() % 1e9) * 100 + (counter++ % 100);
+  // Scrambled (a multiply modulo 13^10, one to one): consecutive stamps
+  // differ in most letters, not one, which the server's one-edit look-alike
+  // rule would refuse (playtest 10).
+  const M = 13n ** 10n;
+  let n = ((BigInt(Date.now() % 1e9) * 100n + BigInt(counter++ % 100)) * 2654435761n + 977n) % M;
   let out = '';
-  while (n > 0) {
-    out = SAFE[n % SAFE.length] + out;
-    n = Math.floor(n / SAFE.length);
+  for (let i = 0; i < 10; i++) {
+    out = SAFE[Number(n % 13n)] + out;
+    n /= 13n;
   }
   return out;
 }

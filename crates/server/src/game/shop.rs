@@ -511,7 +511,7 @@ impl Game {
         if self.wild_name(&name) {
             return Err(ErrorInfo::new("bad_name", "that name can't be used: it is a wild species' name"));
         }
-        if self.rival_name(player, &name) {
+        if self.rival_name(player, &name) || self.holds_rival_name(player, &name) {
             return Err(ErrorInfo::new("name_taken", "another player's lineage or species has that name"));
         }
         match self.world.organism(organism) {
@@ -553,7 +553,7 @@ impl Game {
         if self.impersonates(player, &title, names::Kind::Title) {
             return Err(ErrorInfo::new("bad_title", "that title can't be used: it looks like another player's name"));
         }
-        if self.rival_name(player, &title) {
+        if self.rival_name(player, &title) || self.holds_rival_name(player, &title) {
             return Err(ErrorInfo::new("bad_title", "that title can't be used: it is another player's lineage name"));
         }
         let price = if self.economy.nameplates.contains_key(&player) {
@@ -644,6 +644,37 @@ impl Game {
             .filter(|s| s.dominant != WILD && s.dominant != player && s.is_alive())
             .map(|s| s.name.as_str());
         lineages.chain(species).any(|n| names::copies(text, n))
+    }
+
+    /// Whether `text` (a nameplate title or an animal's name) holds another
+    /// player's living lineage's name, its decorations dropped, anywhere
+    /// (`names::holds_name`: "Ironfang chief" for "Ironfang Pack", playtest
+    /// 10).
+    pub(crate) fn holds_rival_name(&self, player: PlayerId, text: &str) -> bool {
+        let counts = self.world.lineage_counts();
+        (self.world.lineages.iter().enumerate())
+            .filter(|(l, x)| x.owner != WILD && x.owner != player && counts.get(*l).is_some_and(|c| c.alive > 0))
+            .any(|(_, x)| names::holds_name(text, &x.name))
+    }
+
+    /// The names players chose that others see: nameplate titles, animal
+    /// names, players' current lineage names and player-named species,
+    /// sorted (`runner::Published::public_names`).
+    pub fn public_names(&self) -> Vec<String> {
+        // Each player's current lineage (no count of the living each tick).
+        let lineages =
+            (self.lineage_of.values()).filter_map(|&l| self.world.lineages.get(l as usize)).map(|x| x.name.clone());
+        let species = (self.world.chronicle.species.species.iter())
+            .filter(|s| self.economy.named_species.contains_key(&s.id))
+            .map(|s| s.name.clone());
+        let mut v: Vec<String> = (self.economy.nameplates.values().map(|n| n.title.clone()))
+            .chain(self.economy.animal_names.values().cloned())
+            .chain(lineages)
+            .chain(species)
+            .collect();
+        v.sort();
+        v.dedup();
+        v
     }
 
     /// Who may name species `s`: the player credited with a split, or for a

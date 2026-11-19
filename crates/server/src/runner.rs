@@ -154,6 +154,11 @@ pub struct Published {
     /// when they change (`Game::live_season_key`), the same `Arc` otherwise
     /// (`crate::standings`).
     pub season: Arc<LiveSeason>,
+    /// The names players chose that others see (`Game::public_names`): a
+    /// new account may not be one a live name already impersonates
+    /// (playtest 10: "LateComer10s pet" named before LateComer10 joined).
+    /// The same `Arc` while they don't change.
+    pub public_names: Arc<Vec<String>>,
 }
 
 /// Least wall time between two `season` pushes to the watchers (a busy
@@ -222,6 +227,8 @@ pub struct Runner {
     notifier: Option<WorldNotifier>,
     /// The published ranked-season standings (see [`Published::season`]).
     season: Arc<LiveSeason>,
+    /// The published public names (see [`Published::public_names`]).
+    public_names: Arc<Vec<String>>,
     /// Connections that sent `watch_season`, with their rows per category.
     season_watchers: BTreeMap<ConnId, usize>,
     /// The spectator view and the day it was taken: spectators see the
@@ -245,8 +252,13 @@ impl Runner {
         game.defer_offline();
         let (tx, rx) = std::sync::mpsc::sync_channel(REQUEST_QUEUE);
         let season = Arc::new(game.live_season());
-        let initial =
-            Arc::new(Published { summary: game.summary(), leaderboard: game.leaderboard(), season: season.clone() });
+        let public_names = Arc::new(game.public_names());
+        let initial = Arc::new(Published {
+            summary: game.summary(),
+            leaderboard: game.leaderboard(),
+            season: season.clone(),
+            public_names: public_names.clone(),
+        });
         let (published, published_rx) = watch::channel(initial);
         let (persist, persist_rx) = mpsc::unbounded_channel();
         let saved_day = game.world.day();
@@ -267,6 +279,7 @@ impl Runner {
             metrics: metrics.clone(),
             notifier: None,
             season,
+            public_names,
             season_watchers: BTreeMap::new(),
             spectate: None,
             season_dirty: false,
@@ -417,10 +430,15 @@ impl Runner {
             let _ = self.persist.send(ev);
         }
         self.refresh_season();
+        let names = self.game.public_names();
+        if *self.public_names != names {
+            self.public_names = Arc::new(names);
+        }
         self.published.send_replace(Arc::new(Published {
             summary: self.game.summary(),
             leaderboard: self.game.leaderboard(),
             season: self.season.clone(),
+            public_names: self.public_names.clone(),
         }));
         self.push_season();
         let tick_ms = ms_since(started);
@@ -693,9 +711,16 @@ impl Runner {
     /// [`Self::refresh_season`], and publish them if they changed (between
     /// ticks; a tick publishes everything anyway).
     fn republish_season(&mut self) {
-        if self.refresh_season() {
-            let season = self.season.clone();
-            self.published.send_modify(|p| *p = Arc::new(Published { season, ..(**p).clone() }));
+        // The public names too: a name given by a command is checked
+        // against by the next registration, not only after the next tick.
+        let names = self.game.public_names();
+        let names_changed = *self.public_names != names;
+        if names_changed {
+            self.public_names = Arc::new(names);
+        }
+        if self.refresh_season() || names_changed {
+            let (season, public_names) = (self.season.clone(), self.public_names.clone());
+            self.published.send_modify(|p| *p = Arc::new(Published { season, public_names, ..(**p).clone() }));
         }
     }
 
