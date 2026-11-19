@@ -10050,6 +10050,86 @@ before then." Without hunters near, only the first sentence.
   instead of spreading over the map and thinning every prey species at
   once. That run had cohesion on; the shipped default has it off.
 
+### Playtest 10: landings and alerts
+
+Round 11 for `docs/playtest-10.md` findings M9, M12 and M14. Snapshot version
+90 (provisional; main is at 85). It adds `Balance::reinforce_clear` and
+`Balance::founding_together`, off at 0, which is what snapshots of version 89
+and before read (`serde_util::before_v90`).
+
+**M9: reinforcements landed inside a rival territory** where the pack lived,
+with no hint that the rule was relaxed, and 2 tiles from a territory's edge.
+- **Never inside** (`Balance::reinforce_clear` 1). Round 10's search rejected
+  spots in a rival territory, but when nothing near the group was clear it
+  fell back to the group's own spot, inside. Now, when nothing within 12
+  tiles is clear, it searches outward ring by ring, 2 tiles apart, to
+  `World::REINFORCE_REACH` (60) tiles. The reinforcements land on the
+  nearest clear ring, at its best-fed spot.
+- **The margin counts their scatter.** The reinforcements scatter up to 3
+  tiles from where they land, so a spot must clear the territory by its
+  margin (4) plus 3.
+- **Said in the reply.** `World::reinforce_lineage_report` returns where the
+  group stood and how far they landed. The `reinforce` reply carries a
+  `note`: "your group stands in or beside another player's territory, so
+  they landed on the nearest clear ground, 26 tiles from it". The toast
+  shows it.
+- Tested with an 18-tile rival territory right over the herd
+  (`reinforcements_leave_a_rival_territory_the_group_lives_in`): every
+  newcomer lands beyond the territory and its margin, and the move is
+  reported. Under the old rule they land inside it.
+
+**M14: landings and long moves.**
+- **A split founding stays together** (`Balance::founding_together` 1). A
+  founding big enough to spread over several homes (`founding_food`, 48 a
+  home) keeps its later homes within `FOUNDING_TOGETHER` (20) tiles of the
+  first, in the strict picks. In `a_split_founding_stays_together` a
+  140-founder founding on a 128-tile map keeps every founder within 36
+  tiles of the first home. Under the old rule the farthest is further out
+  (playtest 10: two clusters 110 tiles apart). The landing text's single
+  point is then the founding's real place.
+- **Far claims and rallies warn of the way** (`Game::way_warnings`). For a
+  claim or rally 12 or more tiles from the group, the group walks straight
+  there. It is told of other players' hunters within 10 tiles of that way
+  ("The way (28 tiles) passes 9 of bob's hunters within 10 tiles: the group
+  walks it in the open.") and of a rival territory it crosses. A claim or
+  rally inside another player's territory says so at any distance ("That
+  ground lies inside bo's territory: its holders harass intruders …").
+  Tested by `a_rally_into_a_rival_territory_warns`.
+
+**M12: alert floods.**
+- **One territory alert every 3 days per group** (`Game::territory_alert_due`,
+  `TERRITORY_ALERT_DAYS`). "Grazed bare", "outgrown", "no longer feeds it"
+  and "has recovered" share one cool-down per group, so a territory on the
+  edge no longer swings through all four within days. "Still grazed bare"
+  while animals starve keeps its own every-3-days repeat. The sim's
+  loosen/restore shares (15% and 5%) already had hysteresis; the swing was
+  between the alert kinds.
+- **Folded while most of the lineage sleeps.** With half or more of a
+  player's animals deep asleep, the day's loss warnings (starving, hunted,
+  decline, cold, heat, eggs) fold into one line, said at most every 3 days:
+  "While most of your lineage sleeps (70% asleep): Your lineage is being
+  hunted; … Sleepers can't be moved or fed; the daily summary counts the
+  losses …". Tested by
+  `warnings_fold_while_the_lineage_sleeps_and_territory_alerts_cool_down`.
+- **Eggs.**
+  - A lineage that abandons its eggs by design gets no "Your eggs are
+    failing".
+  - The advice to lay fewer eggs, and "a sitting parent keeps 4 eggs
+    warm", come only for clutches bigger than 4.
+
+**Checks** (main f16a54f at version 85, against this round):
+
+| Check | Result |
+| --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.87 (± 0.16); every lineage 12 of 12 (round 10: 11.87) |
+| `predlong 6` on seeds 31–38 and 41–48 | fox 16/16 (16 viable), pack hunters 16/16 (16); no seed lost a prey species (round 10, its rules on: 1) |
+| workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (470), build | pass |
+| e2e (16 scripts, `E2E_JOBS=2`) | 15 of 16: panels timed out on its search row under load (as in round 9) and passed 3 of 3 alone |
+
+- **Neither study is moved by these rules.** A world's first foundings and
+  the wild don't use them: they apply to a player's founding in a running
+  world, to reinforcements and to the server's alerts.
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
