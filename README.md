@@ -9951,6 +9951,105 @@ means of each player's final and peak head count):
 - `pack_prey` stays at 40. The other levers were measured with their
   global tunables, which move the wild predators too; none is changed.
 
+### Playtest 9: placement and packs
+
+Round 10 for `docs/playtest-9.md` findings H2, M12, M16 and M15's grace
+warning. Snapshot version 85 (main is at 83; 84 unused). It adds
+`Balance::rival_clear` and `Balance::pack_cohesion`, off at 0, which is what
+snapshots of version 84 and before read (`serde_util::before_v85`).
+
+**H2: foundings landed beside rival packs and herds.** Re-founded and late
+lineages landed 1–2 tiles from ApexHunter9's pack (three players, with no
+grace), inside a rival herd, and once 9 tiles from water (21 of 60 dead of
+thirst). The founding search (rounds 7–9) kept out of rival territories and
+group circles, and only marked homes down by the rival animals near; a pack
+scattered over the map has no circle where its hunters are.
+- **Clear of the animals themselves** (`Balance::rival_clear` 1). A
+  player's founding in a running world now keeps `PACK_CLEAR` (25) tiles
+  from every other player's predator (carnivory over 0.6) and
+  `ANIMAL_CLEAR` (8) from every other player's animal, wherever its
+  group's centre is. On small maps the pack distance is at most a fifth of
+  the shorter side.
+- **Water near.** The home has drinkable water within `FOUND_WATER_NEAR`
+  (6) steps (`Map::water_dist`).
+- **Retired lineages' homes** are avoided as died-out ones are.
+- **Kept out, then marked down.** These are hard rules for the first 150
+  of the 200 strict picks. After that a spot that breaks them is marked
+  down hard instead (4 for a pack near, 2 for an animal, 2 for water far),
+  so a crowded map still gets a home that keeps the other strict rules
+  (room, drought water). The first version made them hard for every
+  strict pick: on a crowded 64-tile map nothing passed, the search fell
+  back to the old unchecked round, and a drought founding lost its
+  lasting-water rule (caught by `drought_foundings_land_by_lasting_water`).
+- **Tested with a scattered pack** (`foundings_keep_clear_of_a_scattered_pack_and_near_water`):
+  12 hunters strung across a 128-tile map. Under the old rules some of 12
+  foundings land within 25 tiles of a hunter; with the rule none of 4 do,
+  and all have water within 6 steps.
+- **One test turned off.** `a_refounding_avoids_where_the_last_founding_died`
+  runs on a crowded 64-tile map where nearly every spot has a rival animal
+  near. There the clearance outweighs the fatal spot, and the re-founding
+  landed 7 tiles from it. The test now runs with `rival_clear` 0.
+
+**M12: reinforcements** use the same rules (`World::reinforce_lineage`):
+never in or at the edge of another player's territory, nor within 6 tiles
+of the map's edge, and a rival predator within `PACK_CLEAR` costs more than
+any food is worth. When nothing near the group is clear of rival predators,
+a second search reaches 12 tiles out. Tested with a rival territory right
+over the herd (`reinforcements_keep_out_of_rival_territory`).
+
+**M16: packs scattered over the map** (36 founders with pack instinct 1.0
+over 63 tiles in 8 days).
+- **The pack's home** (`World::refresh_pack_homes`, as each tick starts): for
+  each player's group, the middle of its pack hunters in and around the
+  12-tile cell that holds most of them. The mean of a scattered pack falls
+  between its parts.
+- **Strays head back** (`Balance::pack_cohesion`; **off by default**, see below). A player's pack hunter
+  more than `PACK_STRAY` (10) tiles from it takes the Group action toward
+  it. The pull is `0.35 + 0.45 × pack instinct`, fading with the cube of
+  hunger, so a starving hunter still hunts. Any standing order, possession,
+  rendezvous, migration, rally, territory or settle circle comes first.
+- **Measured** with `examples/packspread.rs` (a 36-founder pure-carnivore
+  pack founded into grown 128-tile worlds, 3 seeds, 60 days). With
+  cohesion, the farthest 10% of the pack sits within 18 tiles of its
+  thickest cluster instead of 43 (median 10 against 18). But the pack ends
+  24% smaller: 57 against 75.
+- **Shipped off.** In the six-player study
+  (`predators --playtest4 --seeds 3 --days 360`, New arm, the pack on its
+  own instinct), the Apex Stalkers peaked at 59 and ended at 43 with
+  cohesion, against 117 and 81 without. Kept together they compete for the
+  same kills. The coordinator's rule was to keep it on only within ~15% of
+  the off arm, so `pack_cohesion` defaults to 0. Set it to 1 to get it.
+  It also broke `parallel_apply_is_independent_of_thread_count`, whose
+  8-day world then saw no kills; with it off by default that test passes
+  unchanged.
+- Tighter settings were tried. At 7 tiles the 90th percentile was 7 tiles,
+  but the pack ended 16% smaller (46 against 55 at day 40, 2 seeds): kept
+  together, it competes for the same kills. 10 tiles kept most of the
+  cohesion for less of the cost.
+
+**M15: the grace warning.** Once per lineage, 3 game days before its
+newcomer grace ends, the owner is told: "Your newcomer grace ends in about
+3 days (about 4 real minutes): then other players' animals can attack yours.
+12 of ann's hunters are within 30 tiles of your animals: keep them
+together, move them away from the hunters, or claim ground far from them
+before then." Without hunters near, only the first sentence.
+
+**Checks** (main 2a31710 at version 83, against this round):
+
+| Check | `rival_clear` and `pack_cohesion` 0 | Round 10 rules (both at 1) |
+| --- | --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | | 11.87 (± 0.16); every lineage 12 of 12 |
+| `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 10/16 (9), 16/16 (16); 4 | 16/16 (16), 16/16 (16); 1 |
+| workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (468), build | | pass (shipped defaults: `rival_clear` 1, `pack_cohesion` 0) |
+| e2e (16 scripts, `E2E_JOBS=2`, beside the studies) | | 14 of 16: smoke and mobile timed out under load; both passed alone |
+
+- The studies ran on the build before main's merge (427fc30 and 2a31710).
+- **predlong improved with the round's rules.** The wild fox survived
+  every seed, and one seed lost a prey species instead of four. predlong
+  includes a player pack lineage: kept together it hunts one patch,
+  instead of spreading over the map and thinning every prey species at
+  once. That run had cohesion on; the shipped default has it off.
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
