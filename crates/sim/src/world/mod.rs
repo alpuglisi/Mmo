@@ -82,6 +82,7 @@ use crate::terrain::{Map, Season, Traverse, Weather};
 
 pub use chronicle::{biome_niche, diet_niche};
 use density::SpeciesDensity;
+pub use environment::CLUTCH_COVERED;
 pub use lod::{Cohort, LodStats, PoolEntry};
 #[cfg(feature = "serde")]
 pub use snapshot::{SnapshotError, SnapshotHeader, SNAPSHOT_VERSION, TERRAIN_VERSION};
@@ -687,6 +688,13 @@ pub struct World {
     /// saved.
     #[cfg_attr(feature = "serde", serde(skip))]
     rendezvous: BTreeMap<OrgId, (OrgId, Vec2)>,
+    /// Organisms barred from natural mating with another player's animals
+    /// until a tick (`World::bar_cross_mating`): set by the server while one
+    /// is possessed and a while after, so a player can't walk a male into a
+    /// rival's herd to sire its young without consent or a fee (playtest 8's
+    /// "stud raid"). Not saved, like rendezvous.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    cross_mate_bar: BTreeMap<OrgId, u64>,
     /// Attack orders of possessed organisms, attacker → target
     /// (`World::possess_attack`; version 36).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36::list"))]
@@ -829,6 +837,7 @@ impl World {
             bonus_slots: BTreeMap::new(),
             attack_orders: BTreeMap::new(),
             rendezvous: BTreeMap::new(),
+            cross_mate_bar: BTreeMap::new(),
             lineage_founded: Vec::new(),
             lineage_homes: Vec::new(),
             group_plans: groups::GroupPlans::default(),
@@ -1060,7 +1069,11 @@ impl World {
                 *hunters.entry(o.owner).or_default() += 1;
             }
         }
-        let (full, none) = (apply::PREY_FULL, apply::PREY_NONE);
+        let (full, none) = if bal.pack_prey > 0.0 {
+            (bal.pack_prey, bal.pack_prey * 0.5)
+        } else {
+            (apply::PREY_FULL, apply::PREY_NONE)
+        };
         for (p, h) in hunters {
             let prey = grazers - grazers_of.get(&p).copied().unwrap_or(0);
             let per = prey as f32 / h.max(1) as f32;

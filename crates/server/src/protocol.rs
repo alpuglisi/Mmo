@@ -943,6 +943,7 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             BadRadius => "bad_radius",
             OwnTarget(_) => "own_target",
             NotAHunter(_) => "not_a_hunter",
+            Asleep(_) => "asleep",
             OutOfSight(_) => "target_out_of_sight",
             TooBig { .. } => "too_big",
             Sheltered(_) => "sheltered",
@@ -1338,6 +1339,12 @@ pub struct GroupView {
     pub last_outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub territory: Option<TerritoryView>,
+    /// The territory the group left on its migration and still holds: no
+    /// rival may claim over it, it is held again if the order is cleared,
+    /// and given up when the group claims elsewhere (playtest 8: not shown
+    /// to its owner). Absent: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub territory_kept: Option<TerritoryView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rally: Option<RallyView>,
     /// Largest territory radius the group could claim now.
@@ -1379,6 +1386,7 @@ impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
             home: g.settle.map(|s| HomeView { x: s.center.x, y: s.center.y, radius: s.radius }),
             last_outcome: None,
             territory: g.territory.map(TerritoryView::from),
+            territory_kept: g.territory_away.map(TerritoryView::from),
             rally: g.rally.map(RallyView::from),
             max_radius: g.max_radius,
             claim_ready_tick: g.claim_ready_tick,
@@ -1889,6 +1897,9 @@ pub struct CrowdingView {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ShopView {
     pub balance: u64,
+    /// Renown still owed on a re-founding fee, taken from the next income (absent: none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refound_debt: Option<u64>,
     /// Directed-mating slots left this weather season, bought ones included.
     pub slots_left: u32,
     /// Extra slots bought this weather season.
@@ -2078,10 +2089,17 @@ pub struct RefoundView {
     /// about how many wall-clock minutes until then.
     pub until_day: u64,
     pub minutes_left: u64,
-    /// Renown the re-founding costs now (after a retirement: doubling with
-    /// each re-founding in the window; at most the balance).
+    /// Renown the re-founding costs (after a retirement: doubling with each
+    /// re-founding in the window), in full.
     #[serde(default)]
     pub fee: u64,
+    /// The part of `fee` paid now (at most the balance); the rest is owed
+    /// and taken from the next renown (playtest 8: the fee showed as the
+    /// balance, the debt never).
+    #[serde(default)]
+    pub fee_now: u64,
+    #[serde(default)]
+    pub fee_owed: u64,
     pub reason: String,
 }
 

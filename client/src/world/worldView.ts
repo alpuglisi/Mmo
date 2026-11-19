@@ -432,9 +432,20 @@ export class WorldView {
     this.cam.y = y;
   }
 
+  /**
+   * The farthest out the camera goes: the whole map in view, filling its
+   * shorter side, not a small square in the dark (playtest 8: a 192-tile map
+   * at one pixel a tile), and never below `MIN_ZOOM`.
+   */
+  minZoom(): number {
+    const { width, height } = this.app.screen;
+    const fit = Math.min(width / Math.max(1, this.worldW), height / Math.max(1, this.worldH));
+    return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, fit));
+  }
+
   zoomBy(factor: number, sx = this.app.screen.width / 2, sy = this.app.screen.height / 2): void {
     const before = this.screenToWorld(sx, sy);
-    this.cam.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, this.cam.zoom * factor));
+    this.cam.zoom = Math.min(MAX_ZOOM, Math.max(this.minZoom(), this.cam.zoom * factor));
     const after = this.screenToWorld(sx, sy);
     this.cam.x += before.x - after.x;
     this.cam.y += before.y - after.y;
@@ -491,7 +502,11 @@ export class WorldView {
     home: number | null;
   } {
     const groups = drawnGroups(this.state);
-    const territories = groups.flatMap((g) => (g.territory ? [{ group: g.id, x: g.territory.x, y: g.territory.y, radius: g.territory.radius }] : []));
+    // A territory kept while its group migrates is still drawn (playtest 8: hidden from its owner).
+    const territories = groups.flatMap((g) => {
+      const t = g.territory ?? g.territory_kept;
+      return t ? [{ group: g.id, x: t.x, y: t.y, radius: t.radius }] : [];
+    });
     const rallies = groups.flatMap((g) => (g.rally ? [{ group: g.id, x: g.rally.x, y: g.rally.y, radius: g.rally.radius }] : []));
     return { territories, rallies, draft: this.territoryDraft, home: homeRangeGroup(groups)?.id ?? null };
   }

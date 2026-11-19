@@ -19,7 +19,7 @@ import { commandLabel } from '../errors';
 import './market.css';
 import {
   auctionText, expiryText, balanceText, bidProblem, buyProblem, COMPAT_CONFIDENCE, compatRowText, DEFAULT_FILTER, shopText, ledgerRows, ledgerTotals, listingCompat,
-  marketQuery, mergePages, ownAdults, pageText, traitSummary, type KindFilter, type MarketFilter, type RoleFilter,
+  marketQuery, mergePages, ownAdults, pageText, restoreText, traitSummary, type KindFilter, type MarketFilter, type RoleFilter,
 } from './marketData';
 
 export interface MarketDeps {
@@ -173,7 +173,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       h('div', { class: 'row' }, h('label', {}, 'As', listKind)),
       h('div', { class: 'row' }, feeLabel, expiryLabel, daysLabel),
       h('div', { class: 'row' }, listBtn),
-      h('p', { class: 'muted small' }, 'Anyone may buy one mating with a listed organism: the listing is your consent. The fee is held in escrow and paid to you when the two meet and mate; it is refunded if they never do. A dam takes one buyer at a time. An auction sells one mating to the highest bid at or above the reserve when it closes; bids are held in escrow and refunded when outbid.')),
+      h('p', { class: 'muted small' }, 'Anyone may buy one mating with a listed organism: the listing is your consent. The fee is held in escrow and paid to you when the two meet and mate; it is refunded if the two never get together before the listing closes. A dam takes one buyer at a time. An auction sells one mating to the highest bid at or above the reserve when it closes; bids are held in escrow and refunded when outbid.')),
     h('h4', {}, 'My listings'), myListingsEl,
     h('h3', {}, 'Renown shop'), shopEl,
     h('h3', {}, 'Ledger'), ledgerEl);
@@ -181,6 +181,16 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   // The two organism pickers: nearest the view first, searchable by id.
   function renderPickers(): void {
     const adults = ownAdults(model.state);
+    {
+      const all = model.state?.organisms ?? [];
+      const c = deps.cam?.() ?? null;
+      namePick.setItems(all.map((o): PickItem => ({
+        id: o.id, label: `#${o.id} ${o.sex}${o.matured ? '' : ' (young)'}`, sex: o.sex,
+        distance: c ? Math.hypot(o.x - c.x, o.y - c.y) : undefined,
+      })));
+      const sel = model.selected;
+      if (namePick.value === null && sel !== null && all.some((o) => o.id === sel)) namePick.set(sel);
+    }
     const listed = new Set(own.map((l) => l.organism));
     const cam = deps.cam?.() ?? null;
     const item = (o: (typeof adults)[number]): PickItem => ({
@@ -198,7 +208,9 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     const slots = s?.slots_left ?? market?.slots_left ?? 0;
     balanceEl.replaceChildren(
       h('strong', { id: 'market-balance-value' }, balanceText(s?.balance ?? market?.balance, s?.escrow ?? market?.escrow)),
-      h('span', { class: 'muted small' }, ` · ${slots} mating slot${slots === 1 ? '' : 's'} left this season`));
+      h('span', { class: 'muted small' }, ` · ${slots} mating slot${slots === 1 ? '' : 's'} left this season`),
+      // A re-founding fee not yet paid is taken from the next income: shown (playtest 8: never was).
+      ...(shop?.refound_debt ? [h('span', { class: 'small market-debt', id: 'market-debt' }, ` · owes ${shop.refound_debt} renown (re-founding fee), taken from your next income`)] : []));
   }
 
   function chosen() {
@@ -423,6 +435,25 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       render();
     }
   });
+  // Restoring the pasture (a sink that grows with the lineage): the dry ground around the main group regrows.
+  const restoreBtn = h('button', { id: 'shop-restore', class: 'secondary' }) as HTMLButtonElement;
+  const restoreNote = h('span', { class: 'muted small', id: 'shop-restore-note' });
+  restoreBtn.addEventListener('click', async () => {
+    // Quoted from a fresh shop: the price follows the lineage's size and doubles with each purchase.
+    const fresh = await deps.send({ type: 'renown_shop' });
+    shop = (fresh.ok && parseShopView(fresh.data)) || shop;
+    const t = shop ? restoreText(shop) : null;
+    if (!shop || !t) return;
+    if (!(await confirmDialog({ id: 'restore-confirm', title: `Restore the pasture for ${shop.restore_price} renown?`, ok: 'Restore', body: t.note }))) return;
+    const r = await deps.send({ type: 'restore_pasture' });
+    if (r.ok) {
+      const d = r.data as { restored?: number; price?: number; shop?: unknown } | undefined;
+      shop = parseShopView(d?.shop) ?? shop;
+      const next = shop?.restore_price;
+      model.toast('info', `Pasture restored around your main group${d?.restored !== undefined ? ` (${Math.round(d.restored)} food regrown)` : ''} for ${d?.price ?? '?'} renown.${next ? ` The next costs ${next}.` : ''}`);
+      render();
+    }
+  });
   // A provision (a sink for small lineages): feeds and waters the neediest adults.
   const provBtn = h('button', { id: 'shop-provision', class: 'secondary' }) as HTMLButtonElement;
   const provNote = h('span', { class: 'muted small' });
@@ -443,12 +474,16 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   });
   // A survey (a sink that scales): rival groups near your main group, now.
   const surveyBtn = h('button', { id: 'shop-survey', class: 'secondary' }) as HTMLButtonElement;
-  const surveyNote = h('span', { class: 'muted small' }, 'Where rivals\' groups and territories are within 64 tiles of your main group, roughly, right now.');
+  // The price follows the lineage's size (server `survey_price`: 30 renown plus 1 per 10 animals alive), said so (playtest 8).
+  const surveyNote = h('span', { class: 'muted small' }, 'Where rivals\' groups and territories are within 64 tiles of your main group, roughly, right now. The price is 30 renown plus 1 for every 10 of your animals alive, so it rises as your lineage grows.');
   const surveyOut = h('ul', { id: 'shop-survey-result', class: 'small', hidden: true });
   // The ledger sequence of the survey shown: a newer one (bought elsewhere) hides it (playtest 7: the first
   // survey's result stayed after later ones).
   let surveySeq = -1;
   surveyBtn.addEventListener('click', async () => {
+    // The price now, not the one shown when the shop last loaded (playtest 8: a stale price in the confirm).
+    const fresh = await deps.send({ type: 'renown_shop' });
+    if (fresh.ok) shop = parseShopView(fresh.data) ?? shop;
     const s = shop;
     // The app's dialog, as every other shop button (playtest 7: the last native confirm).
     // (Always asked: before the shop loaded it bought without asking.)
@@ -470,13 +505,15 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     render();
   });
   // Naming an animal (cosmetic): shown on its listings.
-  const nameOrg = h('input', { id: 'shop-name-animal-id', type: 'number', min: 1, placeholder: 'Animal #' }) as HTMLInputElement;
+  // Picked, not typed by number (playtest 8): the selected animal by default.
+  const namePick = createPicker({ id: 'shop-name-animal-id', label: 'Animal to name', placeholder: 'Search your animals: id or words', filters: ['sex'], noneLabel: 'Choose one of your animals…' });
+  const nameOrg = namePick.el;
   const nameText = h('input', { id: 'shop-name-animal-name', maxlength: 32, placeholder: 'Name' }) as HTMLInputElement;
   const nameBtn = h('button', { id: 'shop-name-animal', class: 'secondary' }) as HTMLButtonElement;
   nameBtn.addEventListener('click', async () => {
     const organism = Math.floor(Number(nameOrg.value));
     const name = nameText.value.trim();
-    if (!organism || !name) return model.toast('error', 'Name an animal: give its # and a name.');
+    if (!organism || !name) return model.toast('error', 'Name an animal: pick it and type a name.');
     const s = shop;
     if (!s || !(await confirmDialog({ id: 'name-animal-confirm', title: `Name #${organism} “${name}” for ${s.animal_name_price ?? '?'} renown?`, ok: 'Name it',
       body: 'Cosmetic: the name shows on its listings. Renaming costs the same again.' }))) return;
@@ -525,8 +562,9 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     setText(plateNote, `Cosmetic: shown with your name.${s.species_name_price ? ` Naming a species your lineage founded costs ${s.species_name_price}.` : ''}`);
   }
   const provRow = h('div', { class: 'row', hidden: true }, provBtn, provNote);
+  const restoreRow = h('div', { class: 'row', hidden: true, id: 'shop-restore-row' }, restoreBtn, restoreNote);
   const surveyRow = h('div', { hidden: true }, h('div', { class: 'row' }, surveyBtn, surveyNote), surveyOut);
-  const shopBody = h('div', { hidden: true }, shopText_, h('div', { class: 'row' }, slotBtn, slotNote), h('div', { class: 'row' }, reinBtn, reinNote), provRow, surveyRow, nameRow, plateRow);
+  const shopBody = h('div', { hidden: true }, shopText_, h('div', { class: 'row' }, slotBtn, slotNote), h('div', { class: 'row' }, reinBtn, reinNote), provRow, restoreRow, surveyRow, nameRow, plateRow);
   const shopLoading = h('p', { class: 'muted small' }, 'Loading…');
   shopEl.replaceChildren(shopLoading, shopBody);
 
@@ -545,6 +583,13 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     // Blocked, the next price would mislead (playtest 7: "600" while the real one was 150).
     setText(reinBtn, blocked ? `Reinforcements (${s.reinforce_size} adults): not now` : `Reinforcements (${s.reinforce_size} adults): ${s.reinforce_price} renown`);
     setText(reinNote, blocked ?? `For lineages of at most ${s.reinforce_max_alive}; the price doubles with each, at most ${s.reinforcements_max ?? '?'} a ranked season (${s.reinforcements_bought ?? 0} bought).`);
+    const rt = restoreText(s);
+    restoreRow.hidden = !rt;
+    if (rt) {
+      restoreBtn.disabled = !rt.can;
+      setText(restoreBtn, rt.label);
+      setText(restoreNote, rt.note);
+    }
     provRow.hidden = s.provision_price === undefined;
     if (s.provision_price !== undefined) {
       provBtn.disabled = s.provision_blocked !== undefined || s.balance < s.provision_price;

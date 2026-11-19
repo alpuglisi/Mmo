@@ -69,7 +69,9 @@ export async function designScreen(cb: DesignCallbacks): Promise<HTMLElement> {
     return h('div', { class: 'screen center' }, h('div', { class: 'card' }, h('p', { class: 'error' }, `Could not load the gene list: ${(e as Error).message}`)));
   }
   const ended = (await stats)?.ended;
-  const last = cb.refound ? loadLastDesign(cb.player, cat) ?? fromServerDesign((await stored)?.design, cat) : null;
+  // The server's record of the last founding first: this browser's copy can be older (playtest 8:
+  // a stale local design prefilled over the server's); the local one when the server has none.
+  const last = cb.refound ? fromServerDesign((await stored)?.design, cat) ?? loadLastDesign(cb.player, cat) : null;
   return buildEditor(cat, { ...cb, retired: cb.retired || ended === 'retired', lastDesign: last }, await world, await species);
 }
 
@@ -91,7 +93,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   showSeason();
 
   // --- basics
-  const name = h('input', { id: 'design-name', maxlength: 40, placeholder: 'e.g. Marsh striders', value: '' });
+  const name = h('input', { id: 'design-name', maxlength: 40, placeholder: 'e.g. Marsh striders', value: spec.name });
   name.addEventListener('input', () => { spec.name = name.value; update(); });
 
   const thermoRadios = (['warm', 'cold'] as ThermoSpec[]).map((t) => {
@@ -409,10 +411,14 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   }
 
   let waterTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The first check goes at once (playtest 8: the first load lagged one check). */
+  let firstCheck = true;
   let waterSeq = 0;
   /** Ask the server (a moment after the last change) whether the founders can reach most water. */
   function checkWater(): void {
     clearTimeout(waterTimer);
+    const delay = firstCheck ? 0 : 600;
+    firstCheck = false;
     waterTimer = setTimeout(async () => {
       const seq = ++waterSeq;
       // Before a name is typed the server would refuse the design (400 bad_name): check it under a placeholder.
@@ -456,10 +462,10 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       refoundBox.hidden = !rf;
       if (rf) {
         refoundBox.replaceChildren(h('h2', {}, 'Re-founding soon'),
-          h('p', { class: 'hybrid-headline' }, '⚠ ', `Founding now gives ${rf.founders} of your ${rf.requested} founders, costing ${rf.cost.toFixed(1)} points${rf.fee ? ` and ${rf.fee} renown` : ''}.`),
+          h('p', { class: 'hybrid-headline' }, '⚠ ', `Founding now gives ${rf.founders} of your ${rf.requested} founders, costing ${rf.cost.toFixed(1)} points${feeText(rf)}.`),
           h('p', { class: 'small', id: 'design-refound-reason' }, `${serverText(rf.reason)}. The full design founds again from day ${rf.until_day + 1} (about ${rf.minutes_left} real minute${rf.minutes_left === 1 ? '' : 's'}).`));
       }
-    }, 600);
+    }, delay);
   }
 
   /** The body's points in words: cold blood and body size (smaller than the default or past the free size). */
@@ -494,7 +500,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     dockTotal.textContent = `${c.total.toFixed(1)} / ${cat.budget} points${rf ? ` · ${rf.founders} of ${rf.requested} founders land now` : ''} · founding with points left is fine`;
     refoundNowEl.hidden = !rf;
     refoundNowEl.textContent = rf
-      ? `Re-founding now: ${rf.founders < rf.requested ? `${rf.founders} of your ${rf.requested} founders land` : `all ${rf.founders} founders land`}, at the re-founding price of ${rf.cost.toFixed(1)} points${rf.fee ? ` and ${rf.fee} renown` : ''}.`
+      ? `Re-founding now: ${rf.founders < rf.requested ? `${rf.founders} of your ${rf.requested} founders land` : `all ${rf.founders} founders land`}, at the re-founding price of ${rf.cost.toFixed(1)} points${feeText(rf)}.`
       : '';
     const frac = c.total / cat.budget;
     bar.style.width = `${Math.min(100, frac * 100)}%`;
@@ -640,6 +646,16 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     update();
   }, DESIGN_WORLD_REFRESH_MS);
   return page;
+}
+
+/**
+ * " and a 100-renown fee (14 now, 86 owed from your next renown)": the whole
+ * fee and how it is paid (playtest 8: the fee showed as the balance, the debt never).
+ */
+export function feeText(rf: { fee?: number; fee_now?: number; fee_owed?: number }): string {
+  if (!rf.fee) return '';
+  const owed = rf.fee_owed ?? 0;
+  return owed > 0 ? ` and a ${rf.fee}-renown fee (${rf.fee_now ?? rf.fee - owed} now, ${owed} owed from your next renown)` : ` and a ${rf.fee}-renown fee`;
 }
 
 /** Most founders a founding may have for its newcomer grace to last through its first winter (the server's `GRACE_WINTER_FOUNDERS`). */

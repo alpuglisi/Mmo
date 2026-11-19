@@ -420,7 +420,7 @@ async function main() {
     pages.push(bob);
     bob.on('pageerror', (e) => pageErrors.push(`bob: ${e.message}`));
     await bob.goto(`${base}/?tour=off`);
-    await bob.fill('#login-name', `${name}_b`);
+    await bob.fill('#login-name', `bob_${stamp()}`);
     await bob.fill('#login-password', 'a long password');
     await bob.click('#register-submit');
     await bob.waitForSelector('#design-name', { timeout: 45000 });

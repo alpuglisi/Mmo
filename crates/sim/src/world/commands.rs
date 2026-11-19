@@ -197,6 +197,10 @@ pub enum CommandError {
     },
     /// `end_grace` with no grace to end.
     NoGrace,
+    /// The possessed animal is hibernating, brumating or estivating: it
+    /// can't be ordered to attack until it wakes (playtest 8: an order was
+    /// accepted for a hibernating animal).
+    Asleep(OrgId),
 }
 
 impl fmt::Display for CommandError {
@@ -248,6 +252,9 @@ impl fmt::Display for CommandError {
                 share * 100.0
             ),
             CommandError::OwnTarget(id) => write!(f, "organism {id} is yours; you can't attack your own animals"),
+            CommandError::Asleep(id) => {
+                write!(f, "organism {id} is in its deep sleep (hibernating, brumating or estivating): it can't attack until it wakes")
+            }
             CommandError::NotAHunter(id) => {
                 write!(f, "organism {id} is a plant eater: it doesn't hunt (it fights back only when attacked)")
             }
@@ -558,6 +565,9 @@ impl World {
         // fox on orders); they fight back when attacked, by the strike rules.
         if o.traits.carnivory < HERBIVORE_ATTACK {
             return Err(CommandError::NotAHunter(id));
+        }
+        if o.dormancy.is_deep() {
+            return Err(CommandError::Asleep(id));
         }
         // As far as a standing order is kept (`World::settle_orders`): the
         // player's view lags the world by a second or two, and in a chase

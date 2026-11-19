@@ -228,6 +228,11 @@ fn an_attack_order_alerts_the_targets_owner() {
     // A plant eater doesn't hunt (playtest 6: a possessed grazer one-shot a fox).
     assert_eq!(run(&mut g, msg.clone()), Err("not_a_hunter".into()));
     hunters(&mut g, 1);
+    // Not in its deep sleep (playtest 8: accepted for a hibernating animal).
+    let k = g.world.organisms.iter().position(|o| o.id == a[0]).unwrap();
+    g.world.organisms[k].dormancy = evo_sim::organism::Dormancy::Winter;
+    assert_eq!(run(&mut g, msg.clone()), Err("asleep".into()));
+    g.world.organisms[k].dormancy = evo_sim::organism::Dormancy::Awake;
     // A newcomer's grace, with the days left.
     g.world.config.balance.attack_grace = 1e6;
     // Shown: bo's lineage is listed as protected, and bo's stats give the days left.
@@ -552,6 +557,15 @@ fn drownings_and_slow_die_offs_are_warned() {
         w.iter().any(|(k, t)| k == "decline" && t.contains("63 → 33 alive over the last 10 days, 30 of them")),
         "{w:?}"
     );
+    // The same deaths in a lineage that grows meanwhile: not a die-off (playtest 8: "954 → 1251").
+    {
+        let mut grown = g.history.clone();
+        let len = grown.len();
+        grown.back_mut().unwrap().lineages.iter_mut().find(|e| e.owner == 1).unwrap().alive = 90;
+        let saved = std::mem::replace(&mut g.history, grown);
+        assert!(!kinds(&g).iter().any(|(k, _)| k == "decline"), "{:?} ({len} days)", kinds(&g));
+        g.history = saved;
+    }
     // One day's drownings.
     g.history
         .back_mut()
@@ -729,7 +743,21 @@ fn the_daily_check_alerts_a_dry_territory_and_a_drifted_herd_once() {
     let texts = alerts(&g, AlertKind::Group);
     let dry_alerts: Vec<&String> = texts.iter().filter(|t| t.contains("no drinking water left")).collect();
     assert_eq!(dry_alerts.len(), 1, "once: {texts:?}");
-    assert!(dry_alerts[0].contains("7 of your animals died of thirst"), "{}", dry_alerts[0]);
+    assert!(dry_alerts[0].contains("7 of the group died of thirst"), "{}", dry_alerts[0]);
+    // Counted by group (playtest 8: a 6-animal group was told the whole
+    // lineage's deaths): the group's own, not the lineage's 7.
+    {
+        let (mut g, _) = game();
+        let home = g.world.group_middle(1, 0).unwrap();
+        run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 4.0 }).unwrap();
+        dry(&mut g);
+        g.group_deaths = Some([((1, 0), (0, 2))].into_iter().collect());
+        let mut out = Outbox::new();
+        g.daily_group_checks(&record, &mut out);
+        let texts = alerts(&g, AlertKind::Group);
+        let t = texts.iter().find(|t| t.contains("no drinking water left")).expect("dry alert");
+        assert!(t.contains("2 of the group died of thirst"), "{t}");
+    }
     // A herd that drifted from the home its migration gave it.
     run(&mut g, ClientMsg::AbandonTerritory { group: 0 }).unwrap();
     let target = land_away(&g, home, 10.0);
@@ -872,7 +900,7 @@ fn far_claims_and_rallies_share_the_travel_warnings_and_migrate_checks_the_desti
     }
     let d = run(&mut g, ClientMsg::Migrate { x: far.x, y: far.y, group: None }).unwrap();
     assert!(d["destination"]["drinkable_tiles"].is_number(), "{d}");
-    assert!(d["warning"].as_str().unwrap().contains("At the destination: Little or no drinking water"), "{d}");
+    assert!(d["warning"].as_str().unwrap().contains("Destination: Little or no drinking water"), "{d}");
     // A half-tile nudge onto a tile's centre is no news.
     let p = g.world.map.clamp(home + Vec2::new(0.3, 0.2));
     let d = run(&mut g, ClientMsg::Migrate { x: p.x, y: p.y, group: None }).unwrap();
@@ -1064,7 +1092,7 @@ fn a_long_migration_warns_of_the_journey() {
     if j["days"].as_f64().unwrap() >= JOURNEY_WARN_DAYS as f64 {
         assert!(warning.contains("days on the way") && warning.contains("heavy losses"), "{d}");
     }
-    assert!(!warning.contains("At the destination: It is"), "no distance warning for the destination: {d}");
+    assert!(!warning.contains("Destination: It is"), "no distance warning for the destination: {d}");
 }
 
 #[test]
@@ -1339,8 +1367,8 @@ fn migrate_warns_of_sleep_rival_ground_and_drying_water() {
     g.world.claim_territory(2, 0, near, 5.0).unwrap();
     let d = run(&mut g, ClientMsg::Migrate { x: near.x, y: near.y, group: None }).unwrap();
     let w = d["warning"].as_str().unwrap_or_default().to_string();
-    assert!(w.contains("At the destination: it is inside bob's territory"), "{d}");
-    assert_eq!(w.matches("At the destination").count(), 1, "said once: {w}");
+    assert!(w.contains("Destination: it is inside bob's territory"), "{d}");
+    assert_eq!(w.matches("Destination:").count(), 1, "said once: {w}");
     // Estivators in a parched land bed down within days (spring drought
     // estivation): warned, though none sleeps yet.
     for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {

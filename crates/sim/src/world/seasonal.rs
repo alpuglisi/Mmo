@@ -56,6 +56,9 @@ const AROUSAL_HUNGER: f32 = 90.0;
 /// below which it settles into a dormancy.
 const AROUSAL_THIRST: f32 = 80.0;
 const THIRST_LIMIT: f32 = 50.0;
+/// Thirst from which an estivator counts a drought out of summer as a dry
+/// spell to sleep through (`Balance::dry_spell`), with no water beside it.
+pub(crate) const DRY_SPELL_THIRST: f32 = 30.0;
 /// Thirst below which a winter sleeper beds down (`Balance::winter_toll`).
 const WINTER_THIRST_LIMIT: f32 = 30.0;
 /// Tiles around an animal searched for a dry bed (`World::nearest_dry_bed`)
@@ -421,7 +424,12 @@ impl World {
             && bal.founding_rivals > 0.0
             && season != Season::Winter
             && self.map.dryness_at(o.pos) > ESTIVATION_DRYNESS
+            && (bal.dry_spell <= 0.0 || (o.needs.thirst >= DRY_SPELL_THIRST && !self.map.can_drink_at(o.pos)))
         {
+            // With `Balance::dry_spell`, only in a real dry spell where it
+            // stands: no water beside it and already going thirsty
+            // (playtest 8: an estivator slept through spring by water,
+            // bred nothing and starved its second winter).
             // A drought in spring or autumn too (`Balance::founding_rivals`):
             // playtest 7's drought founding with estivation never slept in
             // an autumn drought, and starved.
@@ -1527,6 +1535,12 @@ mod tests {
         w.map.tiles.iter_mut().for_each(|t| t.wetness = 0.05);
         let est = add(&mut w, &design(Thermo::Warm).with(Gene::Estivation, 0.9), 4);
         let asleep = |w: &World| est.iter().filter(|&&k| w.organisms[k].dormancy == Dormancy::Summer).count();
+        // Not thirsty yet: no dry spell for it (`dry_spell`).
+        w.step();
+        assert_eq!(asleep(&w), 0, "not going thirsty: awake");
+        for &k in &est {
+            w.organisms[k].needs.thirst = 35.0;
+        }
         let mut old = w.clone();
         old.config.balance.founding_rivals = 0.0;
         w.step();

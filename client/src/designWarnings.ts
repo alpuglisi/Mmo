@@ -11,8 +11,11 @@ import { catastropheBanner, catastropheEffect, catastropheLabel } from './ui/chr
 /** Drought from which the warning says it is extreme. */
 export const DROUGHT_EXTREME = 0.75;
 
+/** Eggs a brooding parent keeps warm (the server's `CLUTCH_COVERED`); the rest of a bigger clutch chill on a cool nest. */
+export const EGGS_WARMED = 4;
+
 export interface DesignWarning {
-  id: 'drought' | 'catastrophe' | 'wings' | 'eggs' | 'carnivore_eggs';
+  id: 'drought' | 'catastrophe' | 'wings' | 'eggs' | 'carnivore_eggs' | 'clutch' | 'egg_chill';
   level: 'warn' | 'bad';
   text: string;
 }
@@ -63,6 +66,25 @@ export function designWarnings(d: DesignSpec, world: Pick<WorldSummary, 'weather
       id: 'eggs',
       level: 'bad',
       text: 'Warm-blooded eggs left unattended chill and die unless the weather is hot: this lineage would hardly ever hatch young. Choose incubated eggs (a parent broods them) or live birth, or make it cold-blooded.',
+    });
+  }
+  // A parent warms a few eggs at a time (playtest 8: litter 8 hatched
+  // nothing in ~140 days while litter 4 bred well).
+  if (d.birth === 'incubated_eggs' && d.litter_size > EGGS_WARMED) {
+    const extra = d.litter_size - EGGS_WARMED;
+    out.push({
+      id: 'clutch',
+      level: 'warn',
+      text: `A brooding parent warms ${EGGS_WARMED} eggs at most: of each clutch of ${d.litter_size}, the other ${extra} chill whenever the nest is cool, so about ${EGGS_WARMED} hatch. The extra eggs still cost points; a clutch of ${EGGS_WARMED} or fewer hatches whole.`,
+    });
+  }
+  // Incubated eggs chill in the cold too (playtest 8: 392 lost, spring cold).
+  const season = world?.clock.season?.toLowerCase();
+  if (d.birth === 'incubated_eggs' && (season === 'winter' || season === 'spring')) {
+    out.push({
+      id: 'egg_chill',
+      level: 'warn',
+      text: `Incubated eggs still chill on cold nights: a parent lifts them only so far, so clutches laid in winter, early spring or a cold climate often chill.${d.thermo === 'warm' ? ' Warm-blooded eggs need the most heat; cold-blooded eggs or live birth chill less.' : ' Live birth avoids it.'}`,
     });
   }
   const wings = geneValue(d, 'wings');

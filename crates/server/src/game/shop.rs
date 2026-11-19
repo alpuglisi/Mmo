@@ -109,9 +109,11 @@ pub const DROUGHT_TRAIT: f32 = evo_sim::stats::STRATEGY_THRESHOLD + 0.1;
 /// [`DesignCompatView::drought_warning`]'s text.
 pub fn drought_design_text(drought: f32) -> String {
     format!(
-        "Drought: {:.0}% of the land is dry. Founders without a drought trait die of thirst within days, even \
-         inside their grace. Add estivation ({DROUGHT_TRAIT:.1} or more) so they sleep \
-         through the dry spell, or wait for the drought to ease.",
+        "Drought: {:.0}% of the land is dry. Founders far from water can die of thirst within days, even inside \
+         their grace. Keeping them by lasting water (the Food layer) is the surest answer, or wait for the drought \
+         to ease. Estivation ({DROUGHT_TRAIT:.1} or more) lets them sleep through a real dry spell where no water is \
+         near, but it has costs: a sleeping lineage doesn't breed, so a dry spring can cost a season's young, and \
+         it wakes needing food.",
         drought * 100.0
     )
 }
@@ -180,6 +182,7 @@ impl Game {
         let reinforced = self.reinforcements_this_season(player);
         let max_alive = self.reinforce_max_alive();
         ShopView {
+            refound_debt: self.economy.refound_debt.get(&player).copied().filter(|&d| d > 0),
             balance: self.balance(player),
             slots_left: self.world.mating_slots_left(player),
             slots_bought: bought,
@@ -345,19 +348,20 @@ impl Game {
     }
 
     /// `survey`: rivals' groups and territories near the player's main
-    /// group, coarsely, for renown scaled by their lineage's size.
+    /// group (or its biggest group when the main one is empty), coarsely, for renown scaled by their lineage's size.
     pub(super) fn survey(&mut self, player: PlayerId) -> Result<crate::protocol::SurveyView, ErrorInfo> {
         if self.lineage_of(player).is_none() || self.is_extinct(player) {
             return Err(ErrorInfo::new("no_lineage", "you have no living lineage to survey from"));
         }
-        // From the main group, or the largest one if it has emptied
-        // (playtest 8: refused with 88 alive in other groups).
-        let largest = || {
+        // From the main group, else the biggest group with animals
+        // (playtest 8: refused with 88 alive because the main group was
+        // empty).
+        let from = self.world.group_middle(player, 0).or_else(|| {
             let groups = self.world.groups(player);
-            let g = groups.iter().filter(|g| g.members > 0).max_by_key(|g| (g.members, std::cmp::Reverse(g.id)))?;
-            self.world.group_middle(player, g.id)
-        };
-        let Some(from) = self.world.group_middle(player, 0).or_else(largest) else {
+            let big = groups.iter().filter(|g| g.members > 0).max_by_key(|g| (g.members, std::cmp::Reverse(g.id)))?;
+            self.world.group_middle(player, big.id)
+        });
+        let Some(from) = from else {
             return Err(ErrorInfo::new("no_lineage", "none of your groups has animals to survey from"));
         };
         let price = economy::survey_price(self.owner_population(player));
@@ -417,6 +421,14 @@ impl Game {
         if self.impersonates(player, &name, names::Kind::Species) {
             return Err(ErrorInfo::new("bad_name", "an animal's name can't look like another player's name"));
         }
+        // Nor a wild species' or a rival's lineage name (playtest 8: a stud
+        // listed under a rival's lineage name).
+        if self.wild_name(&name) {
+            return Err(ErrorInfo::new("bad_name", "that name can't be used: it is a wild species' name"));
+        }
+        if self.rival_name(player, &name) {
+            return Err(ErrorInfo::new("name_taken", "another player's lineage or species has that name"));
+        }
         match self.world.organism(organism) {
             Some(o) if o.owner == player => {}
             Some(_) => return Err(ErrorInfo::new("not_owned", format!("#{organism} is not yours"))),
@@ -455,6 +467,9 @@ impl Game {
         }
         if self.impersonates(player, &title, names::Kind::Title) {
             return Err(ErrorInfo::new("bad_title", "that title can't be used: it looks like another player's name"));
+        }
+        if self.rival_name(player, &title) {
+            return Err(ErrorInfo::new("bad_title", "that title can't be used: it is another player's lineage name"));
         }
         let price = if self.economy.nameplates.contains_key(&player) {
             economy::NAMEPLATE_CHANGE_PRICE
@@ -522,24 +537,20 @@ impl Game {
     /// lineage "Meadow vole" would found a second species of that name
     /// (playtest 6).
     pub(crate) fn wild_name(&self, text: &str) -> bool {
-        // Articles and digits don't make it another name ("The Meadow vole",
-        // "Meadow vole 2": playtest 7).
-        let k = names::name_key(text);
+        // Articles, digits and decorations don't make it another name ("The
+        // Meadow vole", "Meadow vole 2", "Meadow vole II", "Red Foxes":
+        // playtests 7 and 8).
         let wild_lineages = self.world.lineages.iter().filter(|l| l.owner == WILD).map(|l| l.name.as_str());
         let wild_species =
             (self.world.chronicle.species.species.iter()).filter(|s| s.dominant == WILD).map(|s| s.name.as_str());
-        k.len() >= 4 && wild_lineages.chain(wild_species).any(|n| names::name_key(n) == k)
+        wild_lineages.chain(wild_species).any(|n| names::copies(text, n))
     }
 
     /// Whether `text` copies the name of another player's living lineage or
-    /// species (`names::name_key` alike): playtest 7 founded a second "Ash
-    /// Fang Pack" beside its owner's.
+    /// species (`names::copies`: "Sunbright Drove II", "New Sunbright Drove"
+    /// too): playtest 7 founded a second "Ash Fang Pack" beside its owner's.
     pub(crate) fn rival_name(&self, player: PlayerId, text: &str) -> bool {
-        let k = names::name_key(text);
-        // At least 4 letters left: "L1" and "L2" aren't copies.
-        if k.len() < 4 {
-            return false;
-        }
+        // At least 4 letters left: "L1" and "L2" aren't copies (`copies`).
         let counts = self.world.lineage_counts();
         let lineages = (self.world.lineages.iter().enumerate())
             .filter(|(l, x)| x.owner != WILD && x.owner != player && counts.get(*l).is_some_and(|c| c.alive > 0))
@@ -547,7 +558,7 @@ impl Game {
         let species = (self.world.chronicle.species.species.iter())
             .filter(|s| s.dominant != WILD && s.dominant != player && s.is_alive())
             .map(|s| s.name.as_str());
-        lineages.chain(species).any(|n| names::name_key(n) == k)
+        lineages.chain(species).any(|n| names::copies(text, n))
     }
 
     /// Who may name species `s`: the player credited with a split, or for a
@@ -828,7 +839,9 @@ impl Game {
                     cost: crate::game::RefoundTerms::cost(design, n),
                     until_day: t.until_day,
                     minutes_left: t.minutes_left,
-                    fee: t.fee.min(self.balance(player)),
+                    fee: t.fee,
+                    fee_now: t.fee.min(self.balance(player)),
+                    fee_owed: t.fee.saturating_sub(self.balance(player)),
                     reason: t.reason,
                 }
             }),
@@ -862,7 +875,9 @@ impl Game {
             let scale = evo_sim::mating::wild_gap_scale(&self.world.config.balance, player, o.owner);
             if let Some(s) = spread(&own, &[&*o.genome], relief, scale) {
                 v.compatible = Some(compatible(&s));
-                v.body_plan_fertility = Some(s.mean);
+                // Tenths: exact means over a rival's animal solved its body
+                // plan (playtest 8).
+                v.body_plan_fertility = Some((s.mean * 10.0).round() / 10.0);
             }
         }
     }
