@@ -10583,6 +10583,91 @@ water: the advice it had been given.
 | workspace tests (459 sim), both clippy runs, fixtures, serde lib tests, client typecheck, `vitest` (476), build | pass |
 | e2e (16 scripts, `E2E_JOBS=2`) | 16 of 16 pass |
 
+### Playtest 12: packs
+
+Round 13 for `docs/playtest-12.md` finding M6: the pack stayed near 100
+(playtest 11: 250), with a lasting adult sex-ratio skew (31 of 89 female),
+scattering without a rally at `pack_cohesion` 0.3, and one unordered bite
+ending its grace 76 days early. Snapshot version 95 (main is at 93; 94 is
+balance's if it needs one). It adds `Balance::pack_nursing` and
+`Balance::instinct_grace`, off at 0, which is what older snapshots read
+(`serde_util::before_v95`).
+
+**(a) The sex-ratio skew: not reproduced, cause not found.**
+- **Measured two ways.**
+  - `examples/packsex.rs` founds playtest 4's Apex Stalkers into grown
+    128-tile worlds (sim only) and tallies by sex: adults every 30 days,
+    deaths by cause and breeding state, and newborns.
+  - The six-player `predators --playtest4` study, whose `PRED_TRACE` prints
+    the females among the pack's adults every 5 days.
+- **Births are near even** (packsex, 3 seeds, 150 days: 107 male, 120
+  female).
+- **Adult starvation per birth is about equal:** 72 male deaths against
+  82 female. Females are 40–50% of the adults most of the time in both
+  studies, with short dips (12 of 37 once), and no lasting skew like the
+  playtest's.
+- **The one female-only excess is pregnant females starving** (10 of the
+  82). The sex-specific rules are pregnancy, the breeding territory, mating
+  and a father's provisioning. The breeding territory allows one litter
+  per territory at a time: that is what holds births to a few a day, not a
+  skew.
+- **Pack nursing** (`Balance::pack_nursing` 1). A pregnant pack hunter gets
+  at least this much of the larder room whatever the prey per hunter
+  (`apply::player_pack_larder`): the pack feeds its breeding females first.
+  In packsex, adult females still starved somewhat more than males with it
+  on (129 against 94, 4 seeds, 180 days) and off (115 against 95). Neither
+  matches the playtest's 31 of 89. The playtest's skew may be one game's
+  drift, or come from what a player does (possessing and leading
+  particular animals), which no study here plays.
+
+**(b) The pack scattered with cohesion at 0.3.**
+- **Cohesion was off for most packs.** Round 10's rule held off whenever
+  the group had a home circle (after any migration) or a territory, which
+  playtest 12's pack had. Now only an order, a possession, a rendezvous, a
+  migration under way or a rally stops it.
+
+**(c) An unordered bite ended the grace, and the alert gave no reason.**
+- **Instinct grace** (`Balance::instinct_grace` 1). A graced player's
+  animals don't attack other players' animals, nor raid their clutches, on
+  instinct (`World::instinct_grace_spares`). Only an attack order lets
+  them, and with balance's `graced_hunting` that ordered attack ends the
+  grace. The hunger warning says so: "on their own your hunters leave
+  rivals' animals alone. An attack order (possess a hunter) on one lets
+  them hunt it, and that first attack ends your grace."
+- **Warned before.** The attack order's reply warns: "attacking another
+  player's animal ends your newcomer grace (N days left) as soon as it
+  strikes".
+- **Said after.** When an attack does end it, the alert says whose animal
+  it was (`World::take_grace_attack`): "Your animals attacked bob's animal,
+  which ends your newcomer grace early …". It no longer reuses the
+  natural-expiry text.
+- Tested in `a_graced_hunter_may_hunt_and_its_first_attack_ends_its_grace`:
+  an instinct bite keeps the grace; the ordered one ends it and names the
+  victim.
+
+**The pack's size** (`predators --playtest4 --seeds 3 --days 360`, New arm,
+the pack on its own instinct):
+
+| Rules | Apex Stalkers peak / final | Toxic herd final |
+| --- | --- | --- |
+| `pack_nursing`, `instinct_grace` and `pack_cohesion` 0 | 106 / 87 | 480 |
+| This round (all three on, cohesion 0.3) | 133 / 95 | 360 |
+
+- **Better, not ~200.** A quarter more at the peak. The coordinator's aim
+  of ~200 beside the herds is not reached. Starvation is still most of the
+  pack's deaths (160 a world against 24 of old age): the limit is prey it
+  can eat, as round 9's study found.
+
+**Checks** (main 26eb4b4 at version 93 with this round merged; the studies
+ran on the round before that merge):
+
+| Check | Result |
+| --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.87 (± 0.16); every lineage 12 of 12 |
+| `predlong 6` on seeds 31–38 and 41–48 | fox 16/16 (16 viable), pack hunters 16/16 (16); 1 seed lost a prey species (round 12: none) |
+| workspace tests (461 sim), both clippy runs, fixtures, serde lib tests, client typecheck, `vitest` (476), build | pass |
+| e2e (16 scripts, `E2E_JOBS=2`) | 16 of 16 pass |
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
