@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { STARTER_FOUNDERS } from './designMorph';
 import { fromServerDesign, restoreDesign } from './lastDesign';
 import type { GeneCatalog } from './protocol';
 
@@ -23,7 +24,8 @@ describe('last design', () => {
     const d = restoreDesign({ thermo: 'lukewarm', litter_size: 99, founders: 1 }, cat)!;
     expect(d.thermo).toBe('warm');
     expect(d.litter_size).toBeLessThanOrEqual(8);
-    expect(d.founders).toBe(20);
+    // The starter's founders (round 12: 30).
+    expect(d.founders).toBe(STARTER_FOUNDERS);
   });
   it('rebuilds the stored design from the server: omitted genes at their default', () => {
     const d = fromServerDesign({ name: 'Old', thermo: 'warm', birth: 'live', litter_size: 2, founders: 24, traits: { muscle: 0.4 }, morph: { eye_count: 4 } } as never, cat)!;
