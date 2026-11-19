@@ -8554,6 +8554,35 @@ impl Game {
                 && s.founder.is_none()
                 && s.main_lineage().and_then(|l| w.lineages.get(l as usize)).is_some_and(|l| l.owner != WILD)
         };
+        let history_only = |s: &evo_sim::species::Species| {
+            let ended = |l: u32| {
+                w.lineages.get(l as usize).is_some_and(|x| {
+                    x.owner != WILD && (self.lineage_of(x.owner) != Some(l) || self.is_extinct(x.owner))
+                })
+            };
+            let parent_of_another = t.species.iter().any(|o| o.parent == Some(s.id) && !founding_split(o));
+            !(s.extinct_day.is_none()
+                || s.lineages.is_empty()
+                || parent_of_another
+                || !s.lineages.iter().all(|&(l, _)| ended(l)))
+        };
+        let ended: Vec<EndedSpeciesView> = t
+            .species
+            .iter()
+            .filter(|s| species_listed(s, season_days) && history_only(s))
+            .map(|s| {
+                let owner = s.main_lineage().map(|l| lineage_name(l).1).unwrap_or(WILD);
+                EndedSpeciesView {
+                    id: s.id,
+                    name: s.name.clone(),
+                    owner,
+                    owner_name: self.name(owner),
+                    founded_day: s.founded_day,
+                    extinct_day: s.extinct_day.unwrap_or(s.founded_day),
+                    retired_day: s.main_lineage().and_then(|l| self.economy.retired_lineages.get(&l).copied()),
+                }
+            })
+            .collect();
         let mut species: Vec<SpeciesView> = t
             .species
             .iter()
@@ -8561,19 +8590,9 @@ impl Game {
             // An extinct species made only of player lineages that have
             // ended (retired or died out) and that no species descends
             // from is that lineage's history, not the world's: left out
-            // (playtest 11: a retired lineage still listed as a species).
-            .filter(|s| {
-                let ended = |l: u32| {
-                    w.lineages.get(l as usize).is_some_and(|x| {
-                        x.owner != WILD && (self.lineage_of(x.owner) != Some(l) || self.is_extinct(x.owner))
-                    })
-                };
-                let parent_of_another = t.species.iter().any(|o| o.parent == Some(s.id) && !founding_split(o));
-                s.extinct_day.is_none()
-                    || s.lineages.is_empty()
-                    || parent_of_another
-                    || !s.lineages.iter().all(|&(l, _)| ended(l))
-            })
+            // (playtest 11: a retired lineage still listed as a species),
+            // and listed as a history line in `ended` (playtest 12).
+            .filter(|s| !history_only(s))
             .map(|s| SpeciesView {
                 id: s.id,
                 name: s.name.clone(),
@@ -8627,6 +8646,7 @@ impl Game {
                     .collect(),
                 // A player's species: quarters, as the leaderboard history
                 // gives rivals' genes (exact means were a design recipe).
+                diet: crate::appearance::diet_band(s.carnivory).into(),
                 carnivory: coarse(s.dominant, s.carnivory),
                 body_size: coarse(s.dominant, s.body_size),
                 endothermy: family::rep_mean(s.reps(), Gene::Endothermy).map(|v| coarse(s.dominant, v)),
@@ -8759,6 +8779,7 @@ impl Game {
                 samples: t.last_samples,
                 alive: species.iter().filter(|s| s.extinct_day.is_none()).count(),
                 species,
+                ended,
                 founded: t
                     .founded
                     .iter()
@@ -12535,6 +12556,30 @@ mod tests {
         let out = g.command(10, 1, None, ClientMsg::NameSpecies { species: id, name: "Ann's runners".into() });
         assert_eq!(result(&out), (true, None));
         assert_eq!(g.chronicle().species.species.iter().find(|s| s.id == id).unwrap().name, "Ann's runners");
+    }
+
+    /// A retired lineage's founding species leaves the species list and
+    /// gets a history line in `ended`, with the retire day (playtest 12).
+    #[test]
+    fn a_retired_lineages_species_gets_a_history_line() {
+        let (mut g, _, _) = game();
+        run_days(&mut g, 10);
+        let id = g
+            .chronicle()
+            .species
+            .species
+            .iter()
+            .find(|s| s.origin != "split" && s.lineages.first().is_some_and(|l| l.owner == 1))
+            .expect("the species player 1's founding started")
+            .id;
+        let lineage = g.lineage_of(1).unwrap();
+        let day = g.world.day();
+        g.retire(1, lineage).unwrap();
+        run_days(&mut g, 20);
+        let ch = g.chronicle();
+        assert!(!ch.species.species.iter().any(|s| s.id == id), "listed as a species still");
+        let ended = ch.species.ended.iter().find(|e| e.id == id).expect("a history line");
+        assert_eq!((ended.owner, ended.retired_day), (1, Some(day)));
     }
 
     /// An initial species that holds a wild lineage can't be named by a

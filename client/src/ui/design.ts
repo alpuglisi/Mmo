@@ -78,7 +78,9 @@ export async function designScreen(cb: DesignCallbacks): Promise<HTMLElement> {
 /** How often the editor re-reads the world (season notice, founding hint, species): a game day is seconds. */
 export const DESIGN_WORLD_REFRESH_MS = 5000;
 /** An unchanged design is checked with the server again after this long. */
-export const RECHECK_IDLE_MS = 60000;
+// 20 s (4 game days at the usual clock): the grace preview turns on the winter rule as the date moves
+// (playtest 12: "60 days" in the designer, 130 at founding a minute later).
+export const RECHECK_IDLE_MS = 20000;
 
 export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldSummary | null = null, species: SpeciesList | null = null): HTMLElement {
   // The one design both modes edit: traits plus the whole body plan.
@@ -423,7 +425,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   let waterSeq = 0;
   /** Ask the server (a moment after the last change) whether the founders can reach most water. */
   function checkWater(): void {
-    // Only for a changed design, or a minute on (the world moves: drought,
+    // Only for a changed design, or 20 s on (the world moves: drought,
     // the re-founding window); not on every redraw (playtest 9: 19 checks in
     // three idle minutes, from the 10 s world refresh).
     const asked = JSON.stringify(payload());
@@ -511,10 +513,14 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     // checks); a re-founding's price and the founders that land are told
     // apart, under it (playtest 7: "54.5 points unspent" and "40 founders"
     // when 20 land).
-    total.textContent = `${c.total.toFixed(1)} / ${cat.budget} points`;
-    // Both figures, each named (playtest 11: the box's 79.4 beside the dock's 95.5 read as two prices).
+    // A re-founding leads with what lands and what it costs; the full design's
+    // total (checked against the cap) second (playtest 12: the budget counted
+    // all 40 requested founders when 10 land).
+    total.textContent = rf
+      ? `${rf.cost.toFixed(1)} points for the ${rf.founders} founders that land (full design of ${rf.requested}: ${c.total.toFixed(1)} / ${cat.budget})`
+      : `${c.total.toFixed(1)} / ${cat.budget} points`;
     dockTotal.textContent = rf
-      ? `Design ${c.total.toFixed(1)} / ${cat.budget} points · ${rf.founders} of ${rf.requested} founders land now, costing ${rf.cost.toFixed(1)} points · founding with points left is fine`
+      ? `${rf.founders} of ${rf.requested} founders land now, costing ${rf.cost.toFixed(1)} points (full design ${c.total.toFixed(1)} / ${cat.budget}) · founding with points left is fine`
       : `${c.total.toFixed(1)} / ${cat.budget} points · founding with points left is fine`;
     refoundNowEl.hidden = !rf;
     refoundNowEl.textContent = rf
@@ -534,11 +540,15 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     // Most of the budget unspent (the starting design): say so before the player founds a bare-minimum animal.
     // The same figure as the total above.
     const left = cat.budget - c.total;
+    const armed = () => ['muscle', 'fangs', 'claws', 'leg_length', 'speed'].some((g) => (spec.traits[g] ?? spec.morphology?.[g as keyof typeof spec.morphology] ?? 0) as number >= 0.6);
     unspent.textContent = left > cat.budget / 2
       ? `${left.toFixed(1)} points still unspent. ${(spec.traits.carnivory ?? 0) < 0.34
         // Round 12: the starter is a safe first lineage, said plainly, not a winner.
         ? 'The starting design is a safe first lineage (mildly toxic and brightly coloured, so hunters learn to leave it alone; 30 founders), not the strongest: spend the rest on what suits the world, or try a preset in Builder mode.'
-        : 'A hunter needs speed, strength or bite to catch prey: raise the traits that suit it, or try a preset in Builder mode.'}`
+        // Already armed (playtest 12: told to add bite with muscle and fangs at 0.9): what else helps.
+        : armed()
+          ? 'It is armed to hunt: the rest could buy more founders, keener senses, stamina or a bigger litter, or try a preset in Builder mode.'
+          : 'A hunter needs speed, strength or bite to catch prey: raise the traits that suit it, or try a preset in Builder mode.'}`
       : left > 0.05 ? `${left.toFixed(1)} points left to spend.` : left >= -1e-3 ? 'Every point spent.' : '';
     // (Wings a heavy body can't use: one warning, in #design-warnings.)
     renderHybrid();

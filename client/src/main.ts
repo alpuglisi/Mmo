@@ -117,11 +117,17 @@ async function showDesign(r: Running, refound = false): Promise<void> {
       void showGame(r);
       // Where the founders landed, said in the game itself, not only in the feed behind the tour (playtest 10).
       const said = [res?.landing, res?.watered].filter((t): t is string => !!t);
-      // The server also sends each as an alert: toast only what no toast already says (playtest 11: shown 2–3 times).
-      if (said.length) setTimeout(() => {
+      // Said exactly once, on the map (playtest 12: the alert toasted while the
+      // designer was up and nothing drew it, then this skipped it as seen).
+      if (said.length) r.model.sayOnce(said);
+      const started = Date.now();
+      const show = () => {
         if (running !== r) return;
-        for (const text of said) if (!r.model.toasts.some((t) => t.text === text)) r.model.toast('info', text);
-      }, 1500);
+        const ready = document.querySelector('.game:not(.starting)') && !document.querySelector('.confirm-backdrop');
+        if (!ready && Date.now() - started < 60000) return void setTimeout(show, 400);
+        for (const text of said) r.model.toastFresh('info', text);
+      };
+      if (said.length) setTimeout(show, 800);
     },
     onUnauthorized: sessionExpired,
     onLogout: logout,

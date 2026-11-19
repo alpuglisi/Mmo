@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CatastropheView, EraList, SpeciesView } from '../protocol';
-import { catastropheBanner, catastropheLabel, dietLabel, myEraRanks, nicheLabel, speciesTree } from './chronicle';
+import { catastropheBanner, catastropheLabel, dietLabel, endedText, myEraRanks, nicheLabel, speciesTree } from './chronicle';
 
 function sp(id: number, name: string, extra: Partial<SpeciesView> = {}): SpeciesView {
   return {
@@ -89,5 +89,14 @@ describe('labels and ranks', () => {
       ],
     };
     expect(myEraRanks(eras, 1)).toEqual([{ era: 1, rank: 2, share: 0.15 }, { era: 0, rank: null, share: 0 }]);
+  });
+});
+
+describe('endedText', () => {
+  it('gives each ended lineage species one history line, retired or died out, newest first', () => {
+    expect(endedText([
+      { id: 1, name: 'Pocket Wayfarers', owner: 2, owner_name: 'PocketNomad12', founded_day: 16, extinct_day: 131, retired_day: 133 },
+      { id: 2, name: 'Old herd', owner: 3, owner_name: 'Rulebender12', founded_day: 20, extinct_day: 137 },
+    ])).toBe('Old herd (Rulebender12, days 21–138, died out) · Pocket Wayfarers (PocketNomad12, days 17–134, retired)');
   });
 });
