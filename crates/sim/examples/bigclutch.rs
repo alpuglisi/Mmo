@@ -44,6 +44,9 @@ fn main() {
         }
     }
     for ((litter, split), s) in &sum {
-        println!("litter {litter} clutch_split {split}: laid {} hatched {} chilled {} alive {}", s[0], s[1], s[2], s[3]);
+        println!(
+            "litter {litter} clutch_split {split}: laid {} hatched {} chilled {} alive {}",
+            s[0], s[1], s[2], s[3]
+        );
     }
 }

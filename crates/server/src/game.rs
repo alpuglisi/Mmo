@@ -7982,7 +7982,7 @@ mod tests {
             .find(|x| x.kind == AlertKind::DailySummary)
             .expect("a day with lost eggs is summarised");
         assert!(
-            summary.text.contains("6 eggs lost (5 chilled: no parent was brooding them (it strayed too far from the nest, or died), 1 eaten by egg raiders)"),
+            summary.text.contains("6 eggs lost (5 chilled: the nest was too cold for them (a cold night or season), or the parent left it, 1 eaten by egg raiders)"),
             "{}",
             summary.text
         );
@@ -10065,8 +10065,8 @@ mod tests {
         assert_eq!(g.design_compatibility(9, &plain).drought_warning, None);
         g.world.map.drought = 0.45;
         let w = g.design_compatibility(9, &plain).drought_warning.expect("warned");
-        assert!(w.contains("45%") && w.contains("estivation"), "{w}");
-        assert!(w.contains("estivation (0.6 or more)"), "{w}");
+        assert!(w.contains("45%") && w.contains("Estivation"), "{w}");
+        assert!(w.contains("Estivation (0.6 or more)") && w.contains("doesn't breed"), "{w}");
         // Below the gene's strategy threshold estivation does nothing
         // (playtest 7: 0.4 never slept): still warned.
         let weak = plain.clone().with(Gene::Estivation, 0.4);
