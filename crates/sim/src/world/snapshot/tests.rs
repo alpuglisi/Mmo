@@ -567,7 +567,13 @@ fn balance73_off(b: &mut crate::Balance) {
 /// read them.
 fn playtest8_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v77::OLD_VALUE;
-    (b.clutch_split, b.dry_spell, b.pack_prey) = (old, old, old);
+    (b.clutch_split, b.dry_spell) = (old, old);
+    playtest8_predators_off(b);
+}
+
+/// The playtest 8 predator tunable as snapshots before version 82 read it.
+fn playtest8_predators_off(b: &mut crate::Balance) {
+    b.pack_prey = crate::serde_util::before_v82::OLD_VALUE;
 }
 
 /// Version 72 snapshots (before the playtest 7 balance rules) restore with
@@ -2024,4 +2030,24 @@ fn version_73_snapshots_restore_without_clutch_split() {
     let w = fixture_world();
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!((r.config.balance.clutch_split, r.config.balance.dry_spell), (1.0, 1.0));
+}
+
+/// Version 77 snapshots (before the playtest 8 predator tunable) restore
+/// with it at 0 (the constants), and are otherwise the same world.
+#[test]
+fn version_77_snapshots_restore_without_pack_prey() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v77();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 77);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.pack_prey, 0.0);
+    assert!(r.snapshot_v77() == old);
+    playtest8_predators_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert!(r.config.balance.pack_prey > 0.0);
 }

@@ -1383,8 +1383,9 @@ pub struct Balance {
     /// Prey per hunter from which a player pack's larder is full
     /// (`prey_larder`; gone at half of it), in place of `apply::PREY_FULL`
     /// (40) and `apply::PREY_NONE` (20): playtest 8's best pack peaked at
-    /// 190–240 beside herds of 2,000 (M12). 0: the constants.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v77"))]
+    /// 190–240 beside herds of 2,000 (M12). 0: the constants. Version 82
+    /// (`serde_util::before_v82`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v82"))]
     pub pack_prey: f32,
 }
 
