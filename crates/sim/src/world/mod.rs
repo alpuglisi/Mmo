@@ -96,6 +96,11 @@ const LASTING_WATER: f32 = 1.0;
 /// Drought (share of land) from which a founding home must have water in
 /// reach that lasts a drought (`Balance::founding_drought`).
 pub const FOUNDING_DROUGHT: f32 = 0.3;
+/// Founders' ages: maturity plus up to this share of their lifespan, or
+/// [`FOUNDER_AGE_YOUNG`] for a player's founding in a running world with
+/// `Balance::founder_youth`.
+const FOUNDER_AGE_SPREAD: f32 = 0.3;
+const FOUNDER_AGE_YOUNG: f32 = 0.1;
 /// Radius (tiles) within which other players' animals count against a
 /// founding home (`Balance::founding_rivals`).
 const RIVAL_RANGE: f32 = 35.0;
@@ -1329,7 +1334,15 @@ impl World {
             // Founders start as adults of mixed ages.
             o.growth = 1.0;
             o.matured = true;
-            o.age_ticks = ((o.traits.maturity_days + rng.gen_range(0.0..o.traits.lifespan_days * 0.3))
+            // Young adults for a player's founding in a running world
+            // (`Balance::founder_youth`; playtest 8: founders died of old age
+            // 69 days after landing). The same draw either way.
+            let spread = if self.config.balance.founder_youth > 0.0 && owner != crate::WILD && self.tick > 0 {
+                FOUNDER_AGE_YOUNG
+            } else {
+                FOUNDER_AGE_SPREAD
+            };
+            o.age_ticks = ((o.traits.maturity_days + rng.gen_range(0.0..o.traits.lifespan_days * spread))
                 * self.config.ticks_per_day as f32) as u32;
             o.needs.breeding = rng.gen_range(0.0..40.0);
             // Players' founders start watered (`Balance::founding_drought`).
@@ -2363,6 +2376,34 @@ mod winter_tests {
             }
         }
         assert!(on < off, "rival animals within 35 tiles of the homes: {on} with the rule, {off} without");
+    }
+
+    /// Playtest 8: founders landed old (85 days 11 days after landing).
+    /// With `Balance::founder_youth` a player's founding in a running world
+    /// lands at most 10% of the lifespan past maturity.
+    #[test]
+    fn founders_land_as_young_adults() {
+        let mut w = small_world(4);
+        w.run_days(1);
+        let design =
+            crate::design::FounderDesign::new("y", crate::design::Thermo::Warm, crate::design::BirthType::Live, 2)
+                .founders(30);
+        let ages = |w: &mut World, owner: PlayerId| -> Vec<f32> {
+            let tpd = w.config.ticks_per_day as f32;
+            w.found_lineage_unchecked(owner, &design)
+                .iter()
+                .map(|&id| {
+                    let o = w.organism(id).unwrap();
+                    (o.age_ticks as f32 / tpd - o.traits.maturity_days) / o.traits.lifespan_days
+                })
+                .collect()
+        };
+        let young = ages(&mut w.clone(), 70);
+        assert!(young.iter().all(|&a| (0.0..=FOUNDER_AGE_YOUNG + 1e-3).contains(&a)), "{young:?}");
+        let mut old = w.clone();
+        old.config.balance.founder_youth = 0.0;
+        let old = ages(&mut old, 70);
+        assert!(old.iter().any(|&a| a > FOUNDER_AGE_YOUNG), "{old:?}");
     }
 
     #[test]

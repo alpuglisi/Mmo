@@ -321,6 +321,9 @@ pub struct Economy {
     pub nameplates: BTreeMap<PlayerId, Nameplate>,
     /// Species named by a player (`name_species`): species id → player.
     pub named_species: BTreeMap<u32, PlayerId>,
+    /// Each player's renown by kind since their first entry counted
+    /// (`LedgerView::totals`; saves from before it count from the restart).
+    pub totals: BTreeMap<PlayerId, crate::protocol::LedgerTotals>,
 }
 
 /// A player's bought nameplate: cosmetic only.
@@ -363,6 +366,10 @@ impl Economy {
     }
 
     fn push(&mut self, entry: LedgerEntry) {
+        self.totals
+            .entry(entry.player)
+            .or_insert(crate::protocol::LedgerTotals { since_day: entry.day, ..Default::default() })
+            .add(&entry);
         let list = self.ledger.entry(entry.player).or_default();
         list.push_back(entry);
         while list.len() > LEDGER_KEPT {

@@ -169,6 +169,13 @@ impl SpecError {
             SpecError::DuplicateGene(g) => format!("{g} is given twice (under two spellings)"),
             SpecError::BadName(why) => format!("that lineage name can't be used: {why}"),
             SpecError::BadMorph(field) => format!("unknown {}", field.replace('_', " ")),
+            // Says by how much and what to do (playtest 8: the designer's
+            // check of an over-budget design got a bare 400).
+            SpecError::Design(DesignError::OverBudget { cost, budget }) => format!(
+                "this design costs {cost:.1} points, {:.1} over the {budget:.0}-point budget: lower a trait, the young \
+                 per birth or the founders",
+                (cost - budget).max(0.05)
+            ),
             SpecError::Design(e) => e.to_string(),
         }
     }

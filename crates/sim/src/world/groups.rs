@@ -130,6 +130,9 @@ pub const SQUAT_RATIO: usize = 10;
 /// Margin on a group's daily plant need for what [`World::food_check`]
 /// leaves out (activity, pregnancy, the cold).
 pub const FOOD_NEED_MARGIN: f32 = 1.15;
+/// Least share of the time a hungry hunter takes a prey animal for
+/// [`World::prey_check`] to count it.
+const PREY_TAKEN_MIN: f32 = 0.05;
 /// How far beyond a circle's edge prey still counts ([`World::prey_check`]).
 pub const PREY_REACH: f32 = 8.0;
 /// Hunger (0–1) a migrant that stopped to eat grazes down to before it
@@ -410,8 +413,9 @@ pub struct WaterCheck {
     /// Share of the circle's tiles in water the group can't stand in.
     pub water_share: f32,
     /// Drinking spots in the circle or within [`WATER_REACH`] of its edge:
-    /// tiles the group can stand on beside water or snow
-    /// (`Map::can_drink_at`).
+    /// tiles the group can stand on beside drinkable water (snow aside: in
+    /// winter it made nearly every tile a "drinking spot", playtest 8's
+    /// 912 in a 17-tile circle, and it melts).
     pub drinkable: usize,
 }
 
@@ -879,7 +883,13 @@ impl World {
                 // (or snow). Water behind a cliff or deep in the sea doesn't
                 // count (playtest 6: 758 "drinkable" coastal tiles, and the
                 // herd walked 15-20 tiles to a river).
-                if stands && self.map.can_drink_at(crate::terrain::Map::tile_center(x as usize, y as usize)) {
+                let beside_water = || {
+                    ((y - 1).max(0)..=(y + 1).min(h - 1)).any(|ny| {
+                        ((x - 1).max(0)..=(x + 1).min(w - 1))
+                            .any(|nx| self.map.tiles[self.map.idx(nx as usize, ny as usize)].has_drinkable_water())
+                    })
+                };
+                if stands && beside_water() {
                     drinkable += 1;
                 }
                 if d <= radius.max(0.5) {
@@ -1343,17 +1353,26 @@ impl World {
             sample.get_or_insert(o);
         }
         let hunter = sample.filter(|_| members > 0 && carnivory / members as f32 > 0.6)?;
+        // Poisonous or bright prey counts as far as a hungry hunter takes it
+        // (`World::hunter_avoidance` at full hunger, `Balance::hungry_hunters`):
+        // playtest 8's pack lived on a toxic herd while every check said
+        // "feeds 0–2".
+        let mut hungry = hunter.clone();
+        hungry.needs.hunger = 100.0;
         let reach = radius + PREY_REACH;
         let (mut prey, mut mass) = (0usize, 0.0f32);
         for q in self.organisms.iter().filter(|q| q.alive && q.owner != player && q.pos.dist(center) <= reach) {
-            let edible = q.traits.carnivory <= super::decide::HUNTER_CARNIVORY
+            let catchable = q.traits.carnivory <= super::decide::HUNTER_CARNIVORY
                 && !q.sheltered
                 && q.mass() < cap
-                && !self.grace_spares(hunter, q)
-                && self.toxic_avoidance(hunter.lineage, q) < 0.5;
-            if edible {
+                && !self.grace_spares(hunter, q);
+            if !catchable {
+                continue;
+            }
+            let taken = 1.0 - self.hunter_avoidance(&hungry, q).clamp(0.0, 1.0);
+            if taken > PREY_TAKEN_MIN {
                 prey += 1;
-                mass += q.mass();
+                mass += q.mass() * taken;
             }
         }
         let per_member = need / members as f32;

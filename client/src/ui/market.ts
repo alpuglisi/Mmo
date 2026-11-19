@@ -383,7 +383,10 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     if (ledgerEl.dataset.key === key) return;
     ledgerEl.dataset.key = key;
     ledgerEl.replaceChildren(
-      h('p', { class: 'muted small' }, `Recent: earned ${t.earned} (royalties ${t.royalties}), paid into escrow ${t.spent}, sales ${t.sold}, refunds ${t.refunded}, spent in the shop ${t.shop}.`),
+      h('p', { class: 'muted small' }, ledger.totals
+        // Every entry since the day counting began (playtest 8: the recent entries alone said "spent in the shop 0").
+        ? `Since day ${ledger.totals.since_day + 1}: earned ${ledger.totals.earned} (royalties ${ledger.totals.royalties}), paid into escrow ${ledger.totals.escrow}, sales ${ledger.totals.sales}, refunds ${ledger.totals.refunds}, spent in the shop ${ledger.totals.shop}.`
+        : `Recent: earned ${t.earned} (royalties ${t.royalties}), paid into escrow ${t.spent}, sales ${t.sold}, refunds ${t.refunded}, spent in the shop ${t.shop}.`),
       rows.length === 0 ? h('p', { class: 'muted small' }, 'No entries yet.')
         : h('table', { class: 'board ledger' },
           h('thead', {}, h('tr', {}, h('th', {}, 'Day'), h('th', {}, ''), h('th', {}, 'Renown'), h('th', {}, 'What'), h('th', {}, 'Balance'))),

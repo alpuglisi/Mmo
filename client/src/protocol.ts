@@ -523,6 +523,8 @@ export interface MatingRequestMsg {
 
 export interface MatingUpdateMsg {
   type: 'mating_update';
+  /** The day it changed (0-based; absent from older servers). */
+  day?: number;
   offer: OfferView;
   outcome?: MatingOutcome;
   error?: ErrorInfo;
@@ -646,11 +648,24 @@ export interface LedgerEntry {
   listing?: number;
 }
 
+/** `LedgerView.totals`. */
+export interface LedgerTotals {
+  since_day: number;
+  earned: number;
+  royalties: number;
+  escrow: number;
+  sales: number;
+  refunds: number;
+  shop: number;
+}
+
 export interface LedgerView {
   balance: number;
   escrow: number;
   /** Newest first. */
   entries: LedgerEntry[];
+  /** Renown by kind since `since_day` (every entry, not only those listed). */
+  totals?: LedgerTotals;
 }
 
 export interface TraitView {

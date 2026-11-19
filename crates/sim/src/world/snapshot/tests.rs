@@ -560,6 +560,12 @@ fn playtest7_off(b: &mut crate::Balance) {
 fn balance73_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v73::OLD_VALUE;
     (b.honest_signals, b.wild_isolation) = (old, old);
+    founder_youth_off(b);
+}
+
+/// The playtest 8 founder tunable as snapshots before version 81 read it.
+fn founder_youth_off(b: &mut crate::Balance) {
+    b.founder_youth = crate::serde_util::before_v81::OLD_VALUE;
 }
 
 /// Version 72 snapshots (before the playtest 7 balance rules) restore with
@@ -1995,4 +2001,24 @@ fn version_70_snapshots_restore_without_winter_larder() {
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.winter_larder, 1.0);
     assert_eq!(r.config.balance.prey_floor, 40.0);
+}
+
+/// Version 73 snapshots (before the playtest 8 founder rule) restore with
+/// that tunable off, and are otherwise the same world.
+#[test]
+fn version_73_snapshots_restore_without_founder_youth() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v73();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 73);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.founder_youth, crate::serde_util::before_v81::OLD_VALUE);
+    assert!(r.snapshot_v73() == old);
+    founder_youth_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.founder_youth, 1.0);
 }

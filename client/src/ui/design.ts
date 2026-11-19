@@ -422,6 +422,9 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       // rest of the check runs under a placeholder.
       // (A name the editor already rejects, empty or too long, isn't sent.)
       const typed = validateDesign(p, cat)?.code === 'bad_name' ? '' : p.name.trim();
+      // Over budget: the server would refuse it (400 over_budget, playtest 8's
+      // console error) and the editor already says so; check it once it fits.
+      if (validateDesign(p, cat)?.code === 'over_budget') return;
       let warnName: string | null = null;
       let r = await api.designCompatibility(cb.token, { ...p, name: typed || 'Unnamed design' }).catch((e: unknown) => {
         if (e instanceof ApiError && e.code === 'bad_name' && typed) warnName = e.message;

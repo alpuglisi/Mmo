@@ -1361,6 +1361,14 @@ pub struct Balance {
     /// of most sizes aren't diluted by a wild species. 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v73"))]
     pub wild_isolation: f32,
+    /// Playtest 8 founders (version 81; off at 0, what snapshots before
+    /// version 81 read, `serde_util::before_v81`). A player's founders in a
+    /// running world land as young adults: at most 10% of their lifespan
+    /// past maturity instead of 30% (playtest 8: a founder 85 days old 11
+    /// days after landing; the first died of old age 69 days after the
+    /// founding). Reinforcements already land at most 5% past it. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v81"))]
+    pub founder_youth: f32,
 }
 
 impl Balance {
@@ -1664,12 +1672,13 @@ impl Default for Balance {
             prey_floor: 40.0,
             honest_signals: 1.0,
             wild_isolation: 0.6,
+            founder_youth: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 173;
+    pub const FIELD_COUNT: usize = 174;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1852,6 +1861,7 @@ impl Balance {
             ("prey_floor", &mut self.prey_floor),
             ("honest_signals", &mut self.honest_signals),
             ("wild_isolation", &mut self.wild_isolation),
+            ("founder_youth", &mut self.founder_youth),
         ]
     }
 

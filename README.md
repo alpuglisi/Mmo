@@ -1070,6 +1070,8 @@ square MP4s and GIFs, with a manifest of titles, captions and hashtags. See
 
 ### HTTP API (JSON)
 
+Every `day` field in the API (and in WebSocket messages) counts from 0: day 0 is the world's first. The client and every text the server writes count from 1, so `founded_day` 56 is "founded on day 57" on the Lineage tab, and `reinforce_next_day` 165 is "day 166" in the refusal.
+
 | Method and path | Auth | What it does |
 | --- | --- | --- |
 | `POST /api/register` `{name, password}` | | Create an account (name 3–24 of `[A-Za-z0-9_-]`, password ≥ 8 characters and ≤ 1024 bytes). `201 {token, player, name}`; `409 name_taken` |

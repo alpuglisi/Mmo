@@ -802,6 +802,10 @@ pub struct Game {
     /// Egg counts per lineage at the last day boundary (egg losses of the day).
     prev_eggs: BTreeMap<u32, evo_sim::world::EggCounts>,
     alerts: BTreeMap<PlayerId, VecDeque<AlertView>>,
+    /// The last alert id issued to each player: ids never repeat, even when
+    /// the alert that held the highest id was dropped from the list
+    /// (playtest 8: two alerts with id 174).
+    alert_ids: BTreeMap<PlayerId, u64>,
     /// Each player's recent finished matings, newest first (memory only:
     /// `GET /api/matings/history`).
     mating_log: BTreeMap<PlayerId, VecDeque<MatingRecord>>,
@@ -941,6 +945,11 @@ pub struct Game {
     old_age_told: BTreeSet<u32>,
     /// Players whose next death alert says that once (`announce_deaths`).
     old_age_note: BTreeSet<PlayerId>,
+    /// (Lineage, cause) of founder hardship deaths already told
+    /// (`announce_deaths`): the rest go to the daily summary.
+    hardship_told: BTreeSet<(u32, DeathCause)>,
+    /// Players whose next death alert says so.
+    hardship_note: BTreeSet<PlayerId>,
     /// How each group's last order ended on its own (arrived, stalled,
     /// claimed on arrival), shown on its card until its next order: alerts
     /// scroll away (playtest 4: a migration "silently did nothing"). Not
@@ -1002,6 +1011,9 @@ pub struct SavedGame {
     #[serde(default)]
     prev_eggs: Vec<(u32, evo_sim::world::EggCounts)>,
     alerts: BTreeMap<PlayerId, VecDeque<AlertView>>,
+    /// `Game::alert_ids` (saves from before it: the highest kept id).
+    #[serde(default)]
+    alert_ids: BTreeMap<PlayerId, u64>,
     watched: BTreeMap<OrgId, (PlayerId, Watch)>,
     progress: BTreeMap<PlayerId, Progress>,
     need_alerted: BTreeMap<OrgId, u64>,
@@ -1185,6 +1197,7 @@ impl Game {
             prev_deaths: BTreeMap::new(),
             prev_eggs: BTreeMap::new(),
             alerts: BTreeMap::new(),
+            alert_ids: BTreeMap::new(),
             mating_log: BTreeMap::new(),
             watched: BTreeMap::new(),
             progress: BTreeMap::new(),
@@ -1233,6 +1246,8 @@ impl Game {
             poison_known: None,
             old_age_told: BTreeSet::new(),
             old_age_note: BTreeSet::new(),
+            hardship_told: BTreeSet::new(),
+            hardship_note: BTreeSet::new(),
             outcomes: BTreeMap::new(),
             hosts,
             pending_out,
@@ -1370,6 +1385,7 @@ impl Game {
             prev_deaths: self.prev_deaths.iter().map(|(&k, &v)| (k, v)).collect(),
             prev_eggs: self.prev_eggs.iter().map(|(&k, &v)| (k, v)).collect(),
             alerts: self.alerts.clone(),
+            alert_ids: self.alert_ids.clone(),
             watched: self.watched.clone(),
             progress: self.progress.clone(),
             need_alerted: self.need_alerted.clone(),
@@ -1444,6 +1460,7 @@ impl Game {
             g.prev_eggs = g.world.counters.eggs.clone();
         }
         g.alerts = saved.alerts;
+        g.alert_ids = saved.alert_ids;
         g.watched = saved.watched;
         g.progress = saved.progress;
         g.need_alerted = saved.need_alerted;
@@ -2546,6 +2563,7 @@ impl Game {
                     balance: self.balance(player),
                     escrow: self.escrow(player),
                     entries: self.ledger(player, limit.unwrap_or(LEDGER_DEFAULT).min(economy::LEDGER_KEPT)),
+                    totals: self.economy.totals.get(&player).copied(),
                 };
                 Ok(Some(serde_json::to_value(view).unwrap()))
             }
@@ -3780,7 +3798,12 @@ impl Game {
                 for p in [o.from, o.to] {
                     out.push((
                         Target::Player(p),
-                        ServerMsg::MatingUpdate { offer: view.clone(), outcome: None, error: None },
+                        ServerMsg::MatingUpdate {
+                            day: self.world.day(),
+                            offer: view.clone(),
+                            outcome: None,
+                            error: None,
+                        },
                     ));
                 }
                 Err(info)
@@ -4115,7 +4138,7 @@ impl Game {
             let error = error_for(p);
             out.push((
                 Target::Player(p),
-                ServerMsg::MatingUpdate { offer: view.clone(), outcome, error: error.clone() },
+                ServerMsg::MatingUpdate { day: self.world.day(), offer: view.clone(), outcome, error: error.clone() },
             ));
             let (mine, partner) = if p == o.from { (o.mine, o.partner) } else { (o.partner, o.mine) };
             let record = MatingRecord { tick, offer: Some(view.clone()), mine, partner, outcome, error };
@@ -4278,7 +4301,7 @@ impl Game {
             for p in [o.from, o.to] {
                 out.push((
                     Target::Player(p),
-                    ServerMsg::MatingUpdate { offer: view.clone(), outcome: None, error: None },
+                    ServerMsg::MatingUpdate { day: self.world.day(), offer: view.clone(), outcome: None, error: None },
                 ));
             }
         }
@@ -4567,7 +4590,12 @@ impl Game {
                 for p in [from, to] {
                     out.push((
                         Target::Player(p),
-                        ServerMsg::MatingUpdate { offer: view.clone(), outcome: None, error: None },
+                        ServerMsg::MatingUpdate {
+                            day: self.world.day(),
+                            offer: view.clone(),
+                            outcome: None,
+                            error: None,
+                        },
                     ));
                 }
             }
@@ -4844,7 +4872,10 @@ impl Game {
         day: u64,
         out: &mut Outbox,
     ) {
-        let id = self.alerts.get(&player).and_then(|l| l.iter().map(|a| a.id).max()).unwrap_or(0) + 1;
+        let kept = self.alerts.get(&player).and_then(|l| l.iter().map(|a| a.id).max()).unwrap_or(0);
+        let last = self.alert_ids.entry(player).or_insert(0);
+        *last = (*last).max(kept) + 1;
+        let id = *last;
         let alert = AlertView { id, tick: self.world.tick(), day, kind, text, organism };
         let list = self.alerts.entry(player).or_default();
         list.push_back(alert.clone());
@@ -5180,12 +5211,22 @@ impl Game {
                 continue;
             }
             // Founders dying of old age: the first is said, the rest are left
-            // to the daily summary.
-            if watch == Watch::Founder && o.death == Some(DeathCause::OldAge) {
-                if !self.old_age_told.insert(o.lineage) {
-                    continue;
+            // to the daily summary. Likewise the first of each hardship
+            // (hunger, thirst, cold, heat, winter sleep) per lineage
+            // (playtest 8: "Founder #33634 starved." about 14 times in 20
+            // days; the lineage warnings cover a die-off).
+            if watch == Watch::Founder {
+                if o.death == Some(DeathCause::OldAge) {
+                    if !self.old_age_told.insert(o.lineage) {
+                        continue;
+                    }
+                    self.old_age_note.insert(player);
+                } else if let Some(cause) = o.death.filter(|c| founder_hardship(*c)) {
+                    if !self.hardship_told.insert((o.lineage, cause)) {
+                        continue;
+                    }
+                    self.hardship_note.insert(player);
                 }
-                self.old_age_note.insert(player);
             }
             if let Some(by) = (o.death == Some(DeathCause::Predation)).then_some(o.killer).flatten() {
                 let words = self.hunter_words(by, player);
@@ -5204,6 +5245,11 @@ impl Game {
             let mut text = with_hunters(text, &deaths, &killers.remove(&player).unwrap_or_default());
             if self.old_age_note.remove(&player) {
                 text.push_str(" Your founders are reaching old age: the daily summary counts the rest.");
+            }
+            if self.hardship_note.remove(&player) {
+                text.push_str(
+                    " Further founders lost to hunger, thirst or the weather are counted in the daily summary.",
+                );
             }
             self.alert(player, AlertKind::Death, text, organism, out);
         }
@@ -5435,15 +5481,39 @@ impl Game {
         // A slow die-off (playtest 7: a pack went 63 → 23 over 40 days at 1–4
         // a day, never enough for one day's warning).
         if let Some((lost, then, now)) = self.slow_decline(lineage) {
-            out.push(LineageWarning {
-                kind: "decline".into(),
-                text: format!(
+            let pct = 100.0 * lost as f64 / then.max(1) as f64;
+            // Mostly asleep (playtest 8: "find better ground ... or fatten
+            // them" for a herd asleep in midwinter, which can do neither).
+            let (mut mine, mut asleep) = (0usize, 0usize);
+            for o in self.world.organisms.iter().filter(|o| o.alive && o.owner == player) {
+                mine += 1;
+                asleep += usize::from(o.dormancy.is_deep());
+            }
+            let advice = if mine > 0 && asleep * 2 >= mine {
+                format!(
+                    "{:.0}% of your animals are asleep and can't be moved: the sleepers die as their fat runs out, the \
+                     awake ones of hunger or cold. Keep the awake ones by food and water now, and fatten the herd on rich \
+                     ground before its next sleep.",
+                    100.0 * asleep as f64 / mine as f64
+                )
+            } else {
+                "Find better ground or water, or fatten them before the cold.".to_string()
+            };
+            // Births can hide the losses (playtest 8: "dying off slowly:
+            // 954 → 1251").
+            let text = if now >= then {
+                format!(
+                    "Your lineage is losing animals faster than it looks: {lost} died of hunger, thirst or cold over the \
+                     last {DECLINE_DAYS} days ({pct:.0}% of the {then} it had), though births kept the count up ({then} → \
+                     {now}). {advice}"
+                )
+            } else {
+                format!(
                     "Your lineage is dying off slowly: {then} → {now} alive over the last {DECLINE_DAYS} days, {lost} of \
-                     them of hunger, thirst or cold ({:.0}% of the lineage). Day by day it looks small; find better ground \
-                     or water, or fatten them before the cold.",
-                    100.0 * lost as f64 / then.max(1) as f64
-                ),
-            });
+                     them of hunger, thirst or cold ({pct:.0}% of the lineage). Day by day it looks small. {advice}"
+                )
+            };
+            out.push(LineageWarning { kind: "decline".into(), text });
         }
         // Being hunted (playtest 5: 5–21 eaten a day, and one alert all game).
         if let Some((day, by)) = self.hunted.get(&player) {
@@ -5632,7 +5702,12 @@ impl Game {
         let winter = if end > start + w.grace_length() {
             format!(" It lasts through your first winter: a founding of {max} or fewer whose grace would end in late autumn or winter {rule}.")
         } else if founders <= max {
-            format!(" (A founding of {max} or fewer whose grace would end in late autumn or winter {rule}; this one ends before then.)")
+            // Its own end day: the preview changes as the date or the
+            // founders do (playtest 8: 91 days, then 60, unexplained).
+            format!(
+                " (A founding of {max} or fewer whose grace would end in late autumn or winter {rule}; this one's ends on day {}, before then.)",
+                end / w.config.ticks_per_day.max(1) as u64 + 1
+            )
         } else {
             format!(" (Only a founding of {max} or fewer keeps its grace through its first winter; this one has {founders}.)")
         };
@@ -5917,8 +5992,9 @@ impl Game {
             data["prey_feeds"] = p.feeds.into();
             if p.feeds < p.members {
                 warnings.push(format!(
-                    "The prey your hunters can take in or near this circle ({} animals: no burrowers, poisonous kinds or \
-                     other hunters) feeds about {} of the group's {} for good; expect hunger.",
+                    "The prey your hunters can take in or near this circle ({} animals: no burrowers or other hunters, \
+                     poisonous kinds only as often as hungry hunters take them) feeds about {} of the group's {} for good; \
+                     expect hunger.",
                     p.prey, p.feeds, p.members
                 ));
             }
@@ -6208,7 +6284,14 @@ impl Game {
                     .filter(|o| o.alive && o.owner == p && o.group == g.id)
                     .fold((0usize, 0.0f32), |(n, c), o| (n + 1, c + o.traits.carnivory));
                 let roams = pack.0 > 0 && pack.1 / pack.0 as f32 > 0.6;
-                let home = g.settle.filter(|_| g.territory.is_none() && g.rally.is_none() && g.migration.is_none());
+                // Nor after a migration that ended short of its goal (timed
+                // out, stalled, asleep): that was told, and the group is away
+                // from its old home by the player's order (playtest 8: "has
+                // drifted from its home" during a migration).
+                let stopped = self.outcomes.get(&key).is_some_and(|o| !o.starts_with("reached"));
+                let home = g
+                    .settle
+                    .filter(|_| g.territory.is_none() && g.rally.is_none() && g.migration.is_none() && !stopped);
                 let dist = home.and_then(|s| self.world.group_median_dist(p, g.id, s.center).map(|m| (s, m)));
                 match dist {
                     Some((s, m)) if m > DRIFT_FACTOR * s.radius && !roams => {
@@ -7232,6 +7315,15 @@ fn death_count_words(why: Why, n: usize) -> String {
         Why::Of(None) => "of an unrecorded cause",
     };
     format!("{n} {what}")
+}
+
+/// Founder deaths told once per lineage and cause (`Game::announce_deaths`):
+/// hardships a lineage-wide warning covers.
+fn founder_hardship(cause: DeathCause) -> bool {
+    matches!(
+        cause,
+        DeathCause::Starvation | DeathCause::Thirst | DeathCause::Exposure | DeathCause::Heat | DeathCause::WinterSleep
+    )
 }
 
 /// One alert for a player's deaths in the last hour, and the organism it
@@ -8882,7 +8974,7 @@ mod tests {
         let updates = |out: &Outbox| -> Vec<_> {
             out.iter()
                 .filter_map(|(t, m)| match (t, m) {
-                    (Target::Player(1), ServerMsg::MatingUpdate { offer, outcome, error }) => {
+                    (Target::Player(1), ServerMsg::MatingUpdate { offer, outcome, error, .. }) => {
                         Some((offer.status, *outcome, error.clone()))
                     }
                     _ => None,
@@ -9390,7 +9482,9 @@ mod tests {
         g.retire(1, l).unwrap();
         g.found(1, &design("A2")).unwrap();
         let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
-        assert_eq!(shop.reinforce_price, economy::reinforce_price(economy::MAX_REINFORCEMENTS_PER_SEASON));
+        // Blocked: the quote is the next one's price, once both bought on
+        // one day lapse together (playtest 8: it quoted 600, charged 150).
+        assert_eq!(shop.reinforce_price, economy::reinforce_price(0));
         assert!(shop.reinforce_blocked.unwrap().contains("retired lineages count"));
         assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)).1.as_deref(), Some("limit_reached"));
     }
@@ -9411,7 +9505,9 @@ mod tests {
         assert_eq!(result(&out).1.as_deref(), Some("limit_reached"));
         assert!(format!("{out:?}").contains("the next is possible on day"), "{out:?}");
         let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
-        assert_eq!(shop.reinforce_price, economy::reinforce_price(2), "the price doesn't reset either");
+        // Both were bought on one day and lapse together: the next costs the base price.
+        assert_eq!(shop.reinforce_price, economy::reinforce_price(0), "the next one's price");
+        assert_eq!(shop.reinforcements_bought, 2, "the cap doesn't reset");
         assert!(shop.reinforce_next_day.is_some() && shop.reinforce_next_minutes.is_some());
         run_days(&mut g, 3);
         let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
