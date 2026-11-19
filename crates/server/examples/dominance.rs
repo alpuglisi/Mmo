@@ -12,6 +12,8 @@
 //! species' numbers, the players', and the wild's births, deaths by cause
 //! and who ate them (playtest 9: why the wild shrank), and each player's
 //! legacy share. `--megadrought DAY` schedules a megadrought on that day.
+//! `--cold-mod nowings,warm,notox,eggs,nobrum` changes Cold's design (to
+//! find which trait carries it).
 //!
 //! Ten players through the server's own rules (`Game`: founding with the
 //! winter provision, the renown shop, seasons) on the standard world with
@@ -41,8 +43,8 @@
 //! - **Loophole** founds Rulebender5's small egg-incubating cold flier as a
 //!   half-size re-found (22 founders) on `--loophole-day` (default 334).
 //!
-//! Two arms on the same seeds. **Playtest 11 rules**: the version 92
-//! tunables off (`graced_hunting`, `share_memory`, `wild_rebound`), or with `--baseline playtest2`
+//! Two arms on the same seeds. **Playtest 12 rules**: the version 94
+//! tunables off (`share_peak`, `share_cap`, `niche_cap`, `sleeper_cover`), or with `--baseline playtest2`
 //! playtest 2's (the balance rules since version 43 off, the old soft cap),
 //! each founded at any price. **New rules**:
 //! today's defaults, each design fitted to today's prices by dropping
@@ -100,6 +102,9 @@ struct Args {
     trace: bool,
     /// Schedule a megadrought on this day (its usual length).
     megadrought: Option<u64>,
+    /// Change Cold's design to find its edge: `nowings`, `warm`, `notox`,
+    /// `eggs`, `nobrum` (comma-separated).
+    cold_mod: Vec<String>,
 }
 
 fn args() -> Args {
@@ -119,6 +124,7 @@ fn args() -> Args {
         only: None,
         trace: false,
         megadrought: None,
+        cold_mod: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -141,6 +147,7 @@ fn args() -> Args {
             }
             "--new-only" => a.new_only = true,
             "--trace" => a.trace = true,
+            "--cold-mod" => a.cold_mod = v().split(',').map(|x| x.trim().to_string()).collect(),
             "--megadrought" => a.megadrought = Some(v().parse().expect("--megadrought")),
             "--only" => a.only = Some(v().split(',').map(|x| x.trim().to_string()).collect()),
             _ => panic!("unknown argument {k}"),
@@ -398,12 +405,13 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         }
     }
     if !new_rules {
-        // Default: playtest 11's rules (the version 92 tunables off: grace
-        // spares a graced hunter's prey, the share counts against today's
-        // world, no wild rebound).
+        // Default: playtest 12's rules (the version 94 tunables off: the
+        // remembered world a running mean, no share cap, no niche cap,
+        // sleepers found as easily as the awake).
         let b = &mut g.world.config.balance;
-        (b.graced_hunting, b.share_memory, b.wild_rebound) = (0.0, 0.0, 0.0);
+        (b.share_peak, b.share_cap, b.niche_cap, b.sleeper_cover) = (0.0, 0.0, 0.0, 0.0);
         if a.playtest2_baseline {
+            (b.graced_hunting, b.share_memory, b.wild_rebound) = (0.0, 0.0, 0.0);
             (b.nest_raids, b.share_litters, b.refuge_ramp) = (0.0, 0.0, 0.0);
             (b.wild_barrier, b.world_crowding, b.wild_refuge) = (0.0, 0.0, 0.0);
             (b.honest_signals, b.wild_isolation) = (0.0, 0.0);
@@ -451,7 +459,7 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
             found(&mut g, FLIER, flier(), &mut o);
         }
         if day == a.cold_day {
-            found(&mut g, COLD, cold_flier(), &mut o);
+            found(&mut g, COLD, modded(cold_flier(), &a.cold_mod), &mut o);
         }
         if day == a.loophole_day {
             found(&mut g, LOOPHOLE, loophole(), &mut o);
@@ -620,7 +628,7 @@ fn main() {
         }
     });
     let results = results.into_inner().unwrap();
-    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 11 rules" };
+    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 12 rules" };
     for (new, title) in [(false, old_title), (true, "New rules")] {
         if a.new_only && !new {
             continue;
@@ -688,6 +696,9 @@ struct TracePrev {
     deaths: BTreeMap<evo_sim::organism::DeathCause, u64>,
     kills: BTreeMap<PlayerId, u64>,
     born: u64,
+    /// Players' deaths by cause, and births.
+    player_deaths: BTreeMap<(PlayerId, evo_sim::organism::DeathCause), u64>,
+    player_born: BTreeMap<PlayerId, u64>,
 }
 
 /// One season's line for `--trace`: the wild species' numbers, the
@@ -747,5 +758,55 @@ fn trace_season(g: &Game, day: u64, prev: &mut TracePrev) {
         d.join(" "),
         k.join(" ")
     );
-    *prev = TracePrev { deaths, kills, born };
+    // Each player's season: births and its three biggest causes of death.
+    let mut pd: BTreeMap<(PlayerId, evo_sim::organism::DeathCause), u64> = BTreeMap::new();
+    for (&(l, c), &n) in &w.counters.deaths_by_lineage {
+        if let Some(x) = w.lineages.get(l as usize).filter(|x| x.owner != evo_sim::WILD) {
+            *pd.entry((x.owner, c)).or_default() += n;
+        }
+    }
+    let mut pb: BTreeMap<PlayerId, u64> = BTreeMap::new();
+    for (&l, &n) in &w.counters.born {
+        if let Some(x) = w.lineages.get(l as usize).filter(|x| x.owner != evo_sim::WILD) {
+            *pb.entry(x.owner).or_default() += n;
+        }
+    }
+    for p in 1..=PLAYERS {
+        if w.owner_count(p) == 0 {
+            continue;
+        }
+        let mut causes: Vec<(u64, evo_sim::organism::DeathCause)> = pd
+            .iter()
+            .filter(|((q, _), _)| *q == p)
+            .map(|(&(_, c), &n)| (n - prev.player_deaths.get(&(p, c)).copied().unwrap_or(0), c))
+            .filter(|&(n, _)| n > 0)
+            .collect();
+        causes.sort_by_key(|b| std::cmp::Reverse(b.0));
+        let born = pb.get(&p).copied().unwrap_or(0) - prev.player_born.get(&p).copied().unwrap_or(0);
+        let c: Vec<String> = causes.iter().take(4).map(|(n, c)| format!("{c:?}:{n}")).collect();
+        println!("    {}: born {born}, died [{}]", NAMES[p as usize - 1], c.join(" "));
+    }
+    *prev = TracePrev { deaths, kills, born, player_deaths: pd, player_born: pb };
+}
+
+/// `d` with `--cold-mod`'s changes: without wings, warm-blooded, without
+/// toxins and colour, laying incubated eggs, or without brumation.
+fn modded(mut d: FounderDesign, mods: &[String]) -> FounderDesign {
+    for m in mods {
+        d = match m.as_str() {
+            "nowings" => d.with(Gene::Wings, 0.0),
+            "warm" => {
+                d.thermo = Thermo::Warm;
+                d.with(Gene::Hibernation, 0.6).with(Gene::Brumation, 0.0)
+            }
+            "notox" => d.with(Gene::Toxins, 0.0).with(Gene::Coloration, 0.0),
+            "eggs" => {
+                d.birth = BirthType::IncubatedEggs;
+                d
+            }
+            "nobrum" => d.with(Gene::Brumation, 0.0),
+            other => panic!("unknown --cold-mod {other}"),
+        };
+    }
+    d
 }
