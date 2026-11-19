@@ -1,6 +1,6 @@
 # What changed since playtest 1
 
-A summary of six AI playtests (`docs/playtest-1.md` to `-6.md`)
+A summary of seven AI playtests (`docs/playtest-1.md` to `-7.md`)
 and the fixes between them. Each ran four to six AI players on one
 server at playtest speed (a game day ≈ 5 s, a year ≈ 10 min) for about an
 hour. Current rules: `docs/game-design.md`; details and measurements:
@@ -8,19 +8,19 @@ README (*Playtest 1: ecology fixes*, *Founders, the soft cap and the market*,
 *Predators against players*, *Playtest 2: competitive balance*, *Playtest 2:
 predators, toxins and drowning*, *Playtest 3: balance*, *Playtest 3: founding
 spots, steep banks and winter eggs*, the three *Playtest 4* sections, and
-the three *Playtest 5* sections, and the economy's *Playtest 3/4/5 changes*).
+the *Playtest 5* and *Playtest 6* sections, and the economy's *Playtest 3–6 changes*).
 
 ## At a glance
 
-| | Playtest 1 | Playtest 2 | Playtest 3 | Playtest 4 | Playtest 5 | Playtest 6 |
-| --- | --- | --- | --- | --- | --- | --- |
-| Players | 4 | 6 (with a late joiner and an exploit tester) | 6 (same roles) | 6 (same roles) | 6 (same roles) | 6 (same roles) |
-| Winner's build | Big swimming, hibernating grazer (a second lineage of 124 founders) | Egg-laying, toxic-but-drab, hibernating burrower founded late in winter | Cold-blooded, brumating, toxic 4 kg flier with extra eyes | The same kind of flier, live-bearing and honestly coloured, founded by the late joiner on day 320 | The same class: cold, brumating, toxic, bright fliers, played by 4 of 6 players | Warm, small, incubated-egg, hibernating, toxic bright herd; a late cold flier first by share at the end |
-| Winner's head count | 1,500 (the hard cap) | ~3,000 (the 2× ceiling) | 2,100 (the 1.4× ceiling) | 2,076 (the hard cap); runner-up 2,006 | 2,090 and 2,100 (two at the cap); third 1,600 | the hard cap from ~day 200; late flier 1,719 |
-| Winner's share | 18.7% | 26–40% | 22–31% | 25.9%; runner-up 21–26% | 22.6–24.6%; fliers held 56–72% of player alleles | 28.6–58.8%, every legacy crown; late flier 18–29.5% |
-| Player trades | 0 | some (rivals accepted paid offers) | 0 of 21 cross-player matings completed | matings completed (6 for the broker) | 0 completed sales (most players sterile with each other) | sales, purchases and a substitute completed; few listings |
-| Player predators | couldn't hunt players at all | starved or were poisoned | collapsed in minutes; never out of grace | hunted (46 attack-order kills) but 4 of 5 lineages starved | packs held 60–223 animals without orders; 63 attack kills | a pure carnivore held 60–100 but couldn't grow; 69 kills from 185 orders |
-| Server | stayed up | stayed up | the container restarted mid-test; restored from its save with no game data lost | stayed up | stayed up | stayed up |
+| | Playtest 1 | Playtest 2 | Playtest 3 | Playtest 4 | Playtest 5 | Playtest 6 | Playtest 7 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Players | 4 | 6 (with a late joiner and an exploit tester) | 6 (same roles) | 6 (same roles) | 6 (same roles) | 6 (same roles) | 6 (same roles) |
+| Winner's build | Big swimming, hibernating grazer (a second lineage of 124 founders) | Egg-laying, toxic-but-drab, hibernating burrower founded late in winter | Cold-blooded, brumating, toxic 4 kg flier with extra eyes | The same kind of flier, live-bearing and honestly coloured, founded by the late joiner on day 320 | The same class: cold, brumating, toxic, bright fliers, played by 4 of 6 players | Warm, small, incubated-egg, hibernating, toxic bright herd; a late cold flier first by share at the end | No runaway; the late cold flier won era 2, a copy of the warm egg-laying herd led at day 654 |
+| Winner's head count | 1,500 (the hard cap) | ~3,000 (the 2× ceiling) | 2,100 (the 1.4× ceiling) | 2,076 (the hard cap); runner-up 2,006 | 2,090 and 2,100 (two at the cap); third 1,600 | the hard cap from ~day 200; late flier 1,719 | 1,130–1,560 and 1,740 |
+| Winner's share | 18.7% | 26–40% | 22–31% | 25.9%; runner-up 21–26% | 22.6–24.6%; fliers held 56–72% of player alleles | 28.6–58.8%, every legacy crown; late flier 18–29.5% | 17.6–27.1%; shares spread 6–27% |
+| Player trades | 0 | some (rivals accepted paid offers) | 0 of 21 cross-player matings completed | matings completed (6 for the broker) | 0 completed sales (most players sterile with each other) | sales, purchases and a substitute completed; few listings | none completed; offers unanswered |
+| Player predators | couldn't hunt players at all | starved or were poisoned | collapsed in minutes; never out of grace | hunted (46 attack-order kills) but 4 of 5 lineages starved | packs held 60–223 animals without orders; 63 attack kills | a pure carnivore held 60–100 but couldn't grow; 69 kills from 185 orders | a live-bearing pack held 63–84 for 300 days; hungry hunters still avoided bright toxic prey |
+| Server | stayed up | stayed up | the container restarted mid-test; restored from its save with no game data lost | stayed up | stayed up | stayed up | stayed up |
 
 ## After playtest 1
 
@@ -181,27 +181,62 @@ Playtest 5 found cold, brumating, toxic, bright fliers dominant as a class, the 
 Playtest 6 confirmed most of these: no sleepers drowned through four floods,
 the market reopened, cold fliers lost animals to drought and predators.
 
-## What playtest 6 found, being worked on in round 7
+## After playtest 6 (round 7)
 
-- **The warm egg-laying hibernator dominates** now that brood care protects
-  its eggs (every legacy crown, the cap from ~day 200, 40–59% of breeding
-  alleles); a late cold flier still reached first by share. Dominance swings
-  between the two classes, and the hard cap is the only brake.
-- **Retire and re-found is free again:** "double" adds founder points only
-  once more (nothing for 20 founders or fewer), so 40 of 40 founders came
-  back four times in 45 minutes.
-- **Long migrations of big herds starve them** (1,112 → 396 over ~75 tiles);
-  the reply rates only the destination.
-- **Founding in a drought wipes a lineage,** and the strong warning only
-  appears at ~77% drought.
-- Medium items: names ("Head G.M.", "Wild herd", copied account names);
-  species credit swapping on copies, and small splits winning the title;
-  the overlap radar with a typed radius; market holes (excused deaths on
-  purpose, one tick of sleep forgiving a hold, lure-and-eat refunds,
-  colluders farming the title); predators still unable to grow; no hunger
-  warning for big lineages; coastal territories counting sea water as
-  drinkable; offline protection timed in real minutes; newcomers' winter
-  troubles; plant eaters attacking small animals; species body plans public;
-  renown still piling up.
+Playtest 6 found the warm egg-laying hibernator dominant, retire and
+re-found free again, long migrations starving big herds, droughts wiping out
+foundings, name and market holes, and predators unable to grow. Round 7:
 
-These are marked **changing** in `docs/game-design.md` until round 7 lands.
+- **Re-founding** in the window founds half the founders whatever the
+  budget, and after a retirement costs 100 renown, doubling.
+- **Balance:** toxins cost food; hungry hunters heed toxin lessons less; a
+  poisoning teaches only about the toxin's own lineage; a sitting parent
+  covers about 3 eggs; species credit only for genuine speciation.
+- **Predators:** the pack larder scales with prey per hunter; the prey check
+  counts only edible, catchable prey; plant eaters take no attack orders; a
+  hunter killed by prey "fought back".
+- **Founding and newcomers:** drought foundings land by lasting water with
+  watered founders; no winter clutches; small foundings keep their grace
+  through their first spring.
+- **Groups:** journey estimates for migrations; drinking spots instead of
+  water tiles; calibrated food checks; public territory outlines; overlap
+  checked at the clamped radius and cheap to refuse; outgrown territories
+  movable at once.
+- **Market:** steered deaths not excused; hold fees prorated by sleep;
+  meeting point on the seller's side; hold fees pay the market fee; no fee
+  below 10; the title needs 2 buyers; a survey to buy.
+- **Warnings and fairness:** size-scaled warnings, thirst told as thirst,
+  cold warning, hunters named; niche prizes by mean; an extinct-lineage
+  banner; offline protection capped at 900 game days and dated from leaving.
+- **Names and leaks:** dotted and CamelCase staff words, "Wild" names and
+  wild species' names refused, strict account names; rivals' body plans and
+  masses only roughly.
+- **Client:** no native dialogs; inline name refusal; one Release; pinned
+  view shown.
+
+Playtest 7 confirmed most of these: no runaway, drought foundings survived,
+re-founding cost something, the territory radar closed.
+
+## What playtest 7 found, being worked on in round 8
+
+- **Hungry hunters still never take warning-coloured toxic prey:** hunger
+  and the 85% cap touch only the learned lesson, not the warning-colour
+  benefit or each animal's lasting aversion, and every player herbivore was
+  toxic and bright.
+- **The same two classes still take the top** (warm small egg-laying toxic
+  hibernators and the late cold toxic flier); a late joiner founding on an
+  era's first day won it for the third playtest in a row; herbivore design
+  space is narrow.
+- **Predators can't compete** (a pure carnivore at 60–84 against herds of
+  500–1,300).
+- Medium items: slow die-offs unflagged (on a build before the size-scaled
+  warnings); territory and destination food 2–5× too high and territories
+  trapping herds; names with digits or run-together lowercase; market holes
+  (refund after a forfeit, steered deaths outside a day, retiring to void a
+  sale, the re-found fee capped at the balance); `preview_mating` leaking
+  gene gaps; late joiners landing in the most crowded corner; designer
+  redraw lags; egg losses in autumn and spring; split groups claiming blind;
+  offline protection up to ~75 real minutes at playtest speed; survivor
+  achievements after near-wipeouts; renown still piling up.
+
+These are marked **changing** in `docs/game-design.md` until round 8 lands.
