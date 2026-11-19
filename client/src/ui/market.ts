@@ -310,7 +310,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     setText(card.querySelector('.traits-line')!, traitSummary(l.traits));
     const parents = l.mother !== undefined || l.father !== undefined ? `of #${l.mother ?? '?'} × #${l.father ?? '?'}` : 'a founder';
     setText(card.querySelector('.info-line')!, `gen ${l.generation}, ${parents} · ${l.age_days.toFixed(0)} days · health ${l.health.toFixed(0)} · raised ${l.offspring_raised}`
-      + ` · at ${l.x.toFixed(0)}, ${l.y.toFixed(0)}${l.sales ? ` · ${l.sales} sold` : ''}${l.busy ? ' · promised' : ''}${l.pregnant ? ' · pregnant' : ''}`);
+      // To the nearest 8 tiles, as the server's listing grid (playtest 9: the exact spot of a rival's herd).
+      + ` · near ${Math.round(l.x / 8) * 8}, ${Math.round(l.y / 8) * 8}${l.sales ? ` · ${l.sales} sold` : ''}${l.busy ? ' · promised' : ''}${l.pregnant ? ' · pregnant' : ''}`);
     const expires = card.querySelector('.expires-line');
     if (expires) setText(expires, expiryText(l, tick, TICKS_PER_DAY, ms) ?? '');
     const bars = card.querySelector<HTMLElement>('.trait-bars')!;
@@ -516,7 +517,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     if (!organism || !name) return model.toast('error', 'Name an animal: pick it and type a name.');
     const s = shop;
     if (!s || !(await confirmDialog({ id: 'name-animal-confirm', title: `Name #${organism} “${name}” for ${s.animal_name_price ?? '?'} renown?`, ok: 'Name it',
-      body: 'Cosmetic: the name shows on its listings. Renaming costs the same again.' }))) return;
+      body: 'Cosmetic: the name shows on its listings and in your own views. It lasts the animal\'s life: when it dies the name goes with it, and the renown is not returned. Renaming costs the same again.' }))) return;
     const r = await deps.send({ type: 'name_animal', organism, name });
     if (r.ok) {
       const d = r.data as { name?: string; shop?: unknown } | undefined;

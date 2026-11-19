@@ -232,7 +232,10 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
 .dot.ring { background: none; border: 2px solid; }
 .dot.square { background: none; border: 1.5px solid; border-radius: 1px; }
-.toasts { position: absolute; top: calc(56px + var(--cat-h, 0px)); left: 10px; display: flex; flex-direction: column; gap: 6px; max-width: min(460px, 80%); pointer-events: none; }
+/* Desktop: the map's lower right, clear of both toolbar rows, the notices and the legend
+   (playtest 9: at 1280×900 the stack lay over the second row of tools and clicks failed). */
+.toasts { position: absolute; bottom: 44px; right: 10px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: min(380px, 40%); pointer-events: none; z-index: 4; }
+.toast { pointer-events: none; }
 .toast { padding: 6px 10px; border-radius: 6px; background: rgba(22, 27, 34, 0.94); border-left: 3px solid var(--accent); }
 .toast.error { border-left-color: var(--bad); }
 .toast.warn { border-left-color: var(--warn); }
@@ -432,7 +435,8 @@ button.danger { background: #b62324; color: #fff; }
   .legends { width: auto; left: 8px; right: 8px; top: 56px; bottom: auto; }
   .stage-wrap.show-legend .toasts { display: none; } /* the open legend takes their place */
   .hint { max-width: none; }
-  .toasts { top: calc(58px + var(--cat-h, 0px)); left: 8px; right: 8px; max-width: none; }
+  /* Phones: under the toolbar and the notices, above an open Tools menu (it hid them, playtest 9). */
+  .toasts { top: calc(58px + var(--cat-h, 0px)); bottom: auto; left: 8px; right: 8px; max-width: none; align-items: stretch; z-index: 8; }
   .toast { font-size: 12px; padding: 4px 8px; }
   .toast:nth-last-child(n+3) { display: none; } /* the two newest only: keep the map visible */
 

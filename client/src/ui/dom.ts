@@ -41,3 +41,9 @@ export function pct(v: number, digits = 1): string {
 export function label(s: string): string {
   return s.replace(/_/g, ' ');
 }
+
+/** "1 tile", "12 tiles": a distance rounded to whole tiles (playtest 9: "1 tiles"). */
+export function tiles(d: number): string {
+  const n = Math.max(0, Math.round(d));
+  return n === 1 ? '1 tile' : `${n} tiles`;
+}

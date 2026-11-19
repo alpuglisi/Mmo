@@ -237,12 +237,13 @@ impl Game {
             }
         }
         let at = format!("Your founders landed around ({:.0}, {:.0})", mid.x, mid.y);
-        let animal = near.map(|(d, p)| format!("the nearest rival animal ({}'s) is {d:.0} tiles away", self.name(p)));
+        let animal =
+            near.map(|(d, p)| format!("the nearest rival animal ({}'s) is {} away", self.name(p), super::tiles(d)));
         let ground = land.map(|(d, p)| {
             if d <= 0.0 {
                 format!("they are on {}'s territory", self.name(p))
             } else {
-                format!("{}'s territory is {d:.0} tiles away", self.name(p))
+                format!("{}'s territory is {} away", self.name(p), super::tiles(d))
             }
         });
         Some(match (animal, ground) {
