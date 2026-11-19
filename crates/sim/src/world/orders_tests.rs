@@ -1167,6 +1167,33 @@ fn a_much_larger_group_claims_over_a_tiny_squat() {
     assert_eq!(w.claim_territory(HERD, 0, at, 4.0), Err(CommandError::Overlaps));
 }
 
+/// Young don't hold ground (playtest 8: a breeding pair grew past
+/// `SQUAT_MEMBERS` with its litters and could never be displaced): a holder
+/// of two adults and many young is still a squat.
+#[test]
+fn a_breeding_pairs_young_dont_make_its_squat_permanent() {
+    use super::groups::SQUAT_MEMBERS;
+    let mut w = standard();
+    let mine = w.group_middle(HERD, 0).unwrap();
+    let theirs: Vec<usize> =
+        (0..w.organisms.len()).filter(|&i| w.organisms[i].alive && w.organisms[i].owner == 1).collect();
+    assert!(theirs.len() > SQUAT_MEMBERS);
+    let holders = (SQUAT_MEMBERS + 1).min(theirs.len());
+    for (k, &i) in theirs.iter().enumerate() {
+        let o = &mut w.organisms[i];
+        o.group = if k < holders { 1 } else { 0 };
+        if k < holders {
+            o.pos = mine;
+            o.matured = k < 2;
+        }
+    }
+    assert!(w.groups(1).iter().find(|g| g.id == 1).unwrap().members > SQUAT_MEMBERS);
+    w.claim_territory(1, 1, mine, 4.0).unwrap();
+    assert!(w.groups(HERD)[0].members >= 20);
+    w.claim_territory(HERD, 0, mine, 5.0).unwrap();
+    assert_eq!(w.territory(1, 1), None, "two adults and their young are displaced");
+}
+
 /// A far claim reports the radius it will get, not the one typed
 /// (playtest 7: "radius 300, food_supports 6,211" for a 31-animal group).
 #[test]

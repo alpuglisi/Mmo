@@ -311,6 +311,22 @@ impl World {
             .collect()
     }
 
+    /// The leading player (the wild ecosystem left out) of each niche with
+    /// enough adults today: who an era's niche prize can go to.
+    pub fn niche_player_leaders(&self) -> Vec<NicheLeader> {
+        self.niche_shares()
+            .into_iter()
+            .filter_map(|(niche, adults, shares)| {
+                let (player, share) =
+                    shares
+                        .iter()
+                        .filter(|(&p, _)| p != WILD)
+                        .fold((WILD, -1.0), |b, (&p, &n)| if n > b.1 { (p, n) } else { b });
+                (player != WILD).then_some(NicheLeader { niche, player, share, adults })
+            })
+            .collect()
+    }
+
     /// Allele shares per niche among breeding adults (agents and cohort
     /// members) today, for each niche with enough adults: (niche, adults,
     /// share per origin).
@@ -376,7 +392,9 @@ impl World {
         // By the era's mean daily share; an era begun before the tallies
         // (an older snapshot) falls back to its final day.
         let tally = std::mem::take(&mut self.chronicle.niche_tally);
-        let niches = if tally.days == 0 { self.niche_leaders() } else { tally.leaders() };
+        // The prize goes to the leading player of each niche (playtest 7:
+        // the wild led every niche, so nobody won one), by the same share.
+        let niches = if tally.days == 0 { self.niche_player_leaders() } else { tally.player_leaders() };
         for n in &niches {
             if n.player != WILD && n.share >= NICHE_MIN_SHARE {
                 self.chronicle.award(

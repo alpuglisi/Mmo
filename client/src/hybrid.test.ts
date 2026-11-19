@@ -53,7 +53,7 @@ describe('the builder’s interbreeding check', () => {
     expect(a.headline).toBe('Interbreeds with Steppe antelope and 1 more');
     expect(a.points[0]).toMatch(/wild genes, which count for the wild ecosystem/);
     // Only changes that get there alone: diet within 0..1, body size, another birth type.
-    expect(a.points[1]).toMatch(/^To keep your genes your own from Steppe antelope, one of these is enough: raise diet \(carnivory\) to 0\.43 or more; .*body size/);
+    expect(a.points[1]).toMatch(/^To keep your genes your own from Steppe antelope, one of these is enough: raise diet \(carnivory\) to 0\.29 or more; .*body size/);
     expect(a.points[1]).not.toMatch(/thermoregulation further|birth mode 0\./);
     // A player's species is the player's, named by them, never "wild".
     expect(a.points.some((p) => p.includes("GeneBroker's Broker voles"))).toBe(true);
@@ -71,7 +71,8 @@ describe('the builder’s interbreeding check', () => {
   });
 
   it('says a distant design keeps its genes, and who it can never breed with', () => {
-    const a = hybridAdvice(design({ carnivory: 0.5 }), species, 3);
+    // Against a wild species the gap counts 1.6 times (sim `wild_isolation`).
+    const a = hybridAdvice(design({ carnivory: 0.66 }), species, 3);
     expect(a.level).toBe('ok');
     expect(a.market).toMatch(/no other player's species is within breeding range of this design's averages/);
     // Never a flat "no one": a species just past the sterile gap reads as possible.
@@ -145,10 +146,14 @@ describe('sterile options', () => {
     const { sterileOptions } = await import('./hybrid');
     const wild = sp(1, 'W', { carnivory: 0.05, body_size: 0.32, birth_mode: 0.85, endothermy: 0.9 });
     const o = sterileOptions(design(), wild);
-    expect(o[0]).toBe('raise diet (carnivory) to 0.43 or more');
-    expect(o.some((x) => x.startsWith('raise body size to 0.70'))).toBe(true);
+    // A wild species: the gap counts 1.6 times (sim `wild_isolation`), so less is enough.
+    expect(o[0]).toBe('raise diet (carnivory) to 0.29 or more');
+    expect(o.some((x) => x.includes('raise body size to 0.56'))).toBe(true);
     expect(o).toContain('choose abandoned eggs');
-    expect(o).not.toContain('choose incubated eggs');
+    expect(o).toContain('choose incubated eggs');
+    // A player's species: the full gap.
+    const theirs = sp(1, 'P', { carnivory: 0.05, body_size: 0.32, birth_mode: 0.85, endothermy: 0.9, dominant: 7, lineages: [{ lineage: 9, name: 'P', owner: 7, adults: 80 }] });
+    expect(sterileOptions(design(), theirs)[0]).toBe('raise diet (carnivory) to 0.43 or more');
     // Already far enough in birth: no birth advice; no thermoregulation ever.
     expect(sterileOptions(design({}, { birth: 'abandoned_eggs' }), wild).some((x) => x.includes('birth') || x.includes('eggs'))).toBe(false);
     expect(o.join(' ')).not.toMatch(/thermo/);

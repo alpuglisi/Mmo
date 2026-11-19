@@ -235,8 +235,10 @@ impl fmt::Display for CommandError {
                     f,
                     "that circle overlaps another player's territory (rival territories near your groups show on the \
                      map); claim ground of your own (the attempt costs a short wait). A group ten times the size of a \
-                     small holder (at most {}) may claim over its ground",
-                    super::groups::SQUAT_MEMBERS
+                     small holder (at most {} adults; young don't count) may claim over its ground, and a group twice \
+                     the size of one holding {} times the food it needs",
+                    super::groups::SQUAT_MEMBERS,
+                    super::groups::OVERCLAIM_FOOD
                 )
             }
             CommandError::BadRadius => write!(f, "a territory's radius must be a positive number of tiles"),
@@ -428,8 +430,10 @@ impl World {
             mating::mismatch(&female.pheno, male.display()).max(mating::mismatch(&male.pheno, female.display()));
         let cost = mating::override_cost(mismatch, self.config.override_k);
         let failure_chance = mating::override_failure_chance(cost);
-        let fertility = mating::fertility_with(&female.genome, &male.genome, mating::Relief::of(&self.config.balance))
-            * self.disease_fertility(f, m);
+        let scale = mating::wild_gap_scale(&self.config.balance, female.owner, male.owner);
+        let fertility =
+            mating::fertility_scaled(&female.genome, &male.genome, mating::Relief::of(&self.config.balance), scale)
+                * self.disease_fertility(f, m);
         (mismatch, cost, failure_chance, fertility)
     }
 
@@ -456,11 +460,10 @@ impl World {
             cost,
             failure_chance,
             fertility,
-            body_plan_fertility: mating::fertility_from_gap(mating::fertility_gap(
-                ga,
-                gb,
-                mating::Relief::of(&self.config.balance),
-            )),
+            body_plan_fertility: mating::fertility_from_gap(
+                mating::fertility_gap(ga, gb, mating::Relief::of(&self.config.balance))
+                    * mating::wild_gap_scale(&self.config.balance, oa.owner, ob.owner),
+            ),
             distance_fertility: mating::distance_fertility(ga.distance(gb)),
             body_plan_gaps,
             distance: oa.pos.dist(ob.pos),
@@ -568,7 +571,11 @@ impl World {
         (lesson >= super::toxic::LOOKS_POISONOUS).then(|| {
             format!(
                 "#{target} looks poisonous to your kind: your animals have been poisoned eating its kind (on their own they pass it up {:.0}% of the time)",
-                100.0 * self.toxic_avoidance(o.lineage, q)
+                100.0 * if self.config.balance.honest_signals > 0.0 {
+                    self.hunter_avoidance(o, q)
+                } else {
+                    self.toxic_avoidance(o.lineage, q)
+                }
             )
         })
     }
@@ -734,8 +741,11 @@ impl World {
     /// grace: twice the grace's whole length (its real-time minimum
     /// included), so a re-founding never starts afresh a grace that would
     /// still be running; the time left carries over.
+    /// At least `World::set_grace_carry_min_ticks` (the server's whole
+    /// re-founding window): small re-foundings chained just past twice the
+    /// grace each got a fresh one (playtest 8).
     fn grace_cooldown(&self) -> u64 {
-        2 * self.grace_length()
+        (2 * self.grace_length()).max(self.grace_carry_min_ticks)
     }
 
     /// Recomputes every lineage's grace start (after founding or restoring).
@@ -748,6 +758,19 @@ impl World {
     /// says (the server's minimum of real minutes; not saved).
     pub fn set_attack_grace_min_ticks(&mut self, ticks: u64) {
         self.grace_min_ticks = ticks;
+        self.rebuild_grace_starts();
+    }
+
+    /// How long after a founding the owner's next one continues its grace.
+    pub fn grace_carry_ticks(&self) -> u64 {
+        self.grace_cooldown()
+    }
+
+    /// A founding within this many ticks of the owner's previous one
+    /// continues its grace, never starts a new one (at least twice the
+    /// grace either way; not saved).
+    pub fn set_grace_carry_min_ticks(&mut self, ticks: u64) {
+        self.grace_carry_min_ticks = ticks;
         self.rebuild_grace_starts();
     }
 

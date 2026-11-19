@@ -849,8 +849,18 @@ impl SpeciesTracker {
             }
             let id = self.species.len() as u32;
             let base = sum.lineages.first().map(|l| name_of(l.0)).unwrap_or_else(|| format!("Species {id}"));
-            let same =
-                self.species.iter().filter(|s| s.name == base || s.name.starts_with(&format!("{base} ("))).count();
+            // Numbered only beside a living namesake (playtest 7: a re-found
+            // was named "(2)" after its own extinct species).
+            let named = |s: &Species| s.name == base || s.name.starts_with(&format!("{base} ("));
+            let same = if p.speciation_credit {
+                if self.species.iter().any(|s| s.is_alive() && named(s)) {
+                    self.species.iter().filter(|s| named(s)).count()
+                } else {
+                    0
+                }
+            } else {
+                self.species.iter().filter(|s| named(s)).count()
+            };
             let name = if same == 0 { base } else { format!("{base} ({})", same + 1) };
             self.species.push(Species {
                 id,

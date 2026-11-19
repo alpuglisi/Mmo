@@ -352,6 +352,10 @@ fn species_listed(s: &evo_sim::species::Species, season_days: u64) -> bool {
     }
 }
 
+/// Eggs lost in a day from which, when more than the day's births, the
+/// lineage is warned with the cause (`Game::lineage_warnings`, kind `eggs`).
+pub const EGG_WARN_MIN: u64 = 6;
+
 /// Share of an animal's alleles that must be one other player's for a
 /// retiring lineage to hand it to them (`Game::retire_sparing`): a quarter,
 /// a grandchild of that player's stud.
@@ -1244,6 +1248,11 @@ impl Game {
         g.world.set_claim_cooldown_min_ticks(claim);
         let cap = (g.cfg.grace_max_days * g.world.config.ticks_per_day as f64).round() as u64;
         g.world.set_attack_grace_min_ticks(minutes(g.cfg.grace_min_minutes).min(cap));
+        // A grace carries over (never starts afresh) through the whole
+        // re-founding window (playtest 8: chained small re-foundings just
+        // past twice the grace each got a fresh one).
+        let carry = g.refound_window_days() * g.world.config.ticks_per_day as u64;
+        g.world.set_grace_carry_min_ticks(carry);
         // Offline protection: real hours, but at most so many game days.
         if g.cfg.offline_max_days > 0.0 {
             let days = |d: f64| (d * g.world.config.ticks_per_day as f64).round() as u64;
@@ -2002,11 +2011,15 @@ impl Game {
                 },
             ));
         }
-        let homes: BTreeMap<PlayerId, u32> = self
+        // Each receiver takes no more than its room under the soft cap
+        // (playtest 8: a feeder account bred ~470 animals off the leader's
+        // studs and retired, handing them all over, to the hard cap).
+        let cap = self.world.config.lineage_cap;
+        let homes: BTreeMap<PlayerId, (u32, usize)> = self
             .lineage_of
             .iter()
             .filter(|&(&p, _)| p != player && !self.is_extinct(p))
-            .map(|(&p, &l)| (p, l))
+            .map(|(&p, &l)| (p, (l, cap.saturating_sub(self.world.owner_count(p)))))
             .collect();
         self.settle_agreements_on_retire(player, out);
         let before: BTreeMap<PlayerId, usize> = homes.keys().map(|&p| (p, self.world.owner_count(p))).collect();
@@ -2019,7 +2032,8 @@ impl Game {
             if got > 0 {
                 let (animals, carry) = if got == 1 { ("animal", "carries") } else { ("animals", "carry") };
                 let text = format!(
-                    "{} retired their lineage: {got} of its {animals}, which {carry} at least {:.0}% of your genes, joined yours.",
+                    "{} retired their lineage: {got} of its {animals}, which {carry} at least {:.0}% of your genes, joined yours \
+                     (as many as fit under your lineage's cap; they bring no legacy share until your herd breeds from them).",
                     self.name(player),
                     RETIRE_TRANSFER_SHARE * 100.0
                 );
@@ -5346,6 +5360,51 @@ impl Game {
                 });
             }
         }
+        // Eggs (playtest 7: clutches laid in late autumn and early spring
+        // chilled, and warm egg layers lost more eggs than hatched in drought
+        // and spring, with no warning naming the cause).
+        if let Some((r, e)) =
+            self.history.back().and_then(|r| r.lineages.iter().find(|e| e.lineage == lineage).map(|e| (r, e)))
+        {
+            let lost: u64 = e.eggs_lost.values().sum();
+            if lost >= EGG_WARN_MIN && lost > e.born {
+                let (cause, n) =
+                    e.eggs_lost.iter().max_by_key(|(_, &n)| n).map(|(c, &n)| (c.as_str(), n)).unwrap_or(("", 0));
+                let season = season_of(w, r.day);
+                let advice = match cause {
+                    "chilled" => {
+                        let when = match season {
+                            evo_sim::terrain::Season::Autumn | evo_sim::terrain::Season::Winter => {
+                                "Clutches laid as the cold comes chill before they hatch; a winter sleeper's last clutches \
+                                 are lost when it beds down. "
+                            }
+                            evo_sim::terrain::Season::Spring => "Spring nights are still cold for eggs. ",
+                            _ => "",
+                        };
+                        format!(
+                            "{when}A sitting parent keeps 4 eggs warm: bigger clutches chill on cool nights. Keep brooding \
+                             parents at their nests (group orders and migrations pull them away), lay fewer eggs per \
+                             clutch, or nest in shelter (forest, near water)."
+                        )
+                    }
+                    "raided" => {
+                        "Egg raiders find clutches left alone: keep the parents near their nests, and nest away \
+                                 from crowds of other clutches."
+                            .to_string()
+                    }
+                    _ => "The nests are too hot: nest in shade (forest) or near water.".to_string(),
+                };
+                out.push(LineageWarning {
+                    kind: "eggs".into(),
+                    text: format!(
+                        "Your eggs are failing: on day {} {lost} eggs were lost ({n} {}) and {} young were born. {advice}",
+                        r.day.max(1),
+                        if cause == "raided" { "eaten by raiders" } else { cause },
+                        e.born
+                    ),
+                });
+            }
+        }
         // Cold (playtest 6: 11–23 a day died of cold in a severe winter with
         // no lineage alert).
         if let Some((r, e)) =
@@ -5501,7 +5560,7 @@ impl Game {
                 // A warning about the day just recorded is stamped with that
                 // day, as the daily summary is (playtest 6: "on day 284" sat
                 // beside day 285 in the feed, a day after the vitals' day).
-                let about = matches!(w.kind.as_str(), "starving" | "heat" | "hunted");
+                let about = matches!(w.kind.as_str(), "starving" | "heat" | "hunted" | "eggs");
                 let stamp = if about { day.saturating_sub(1) } else { self.world.day() };
                 self.alert_on(p, AlertKind::Need, w.text, None, stamp, out);
             }
@@ -5567,7 +5626,7 @@ impl Game {
         }
         let tpd = w.config.ticks_per_day.max(1) as f64;
         let now = w.tick();
-        let soon = (2.0 * w.grace_length() as f64 / tpd).round();
+        let soon = (w.grace_carry_ticks() as f64 / tpd).round();
         let days = |t: u64| t as f64 / tpd;
         let real = |t: u64| {
             let min = t as f64 * self.cfg.tick_ms / 60_000.0;
@@ -6600,7 +6659,17 @@ impl Game {
             .map(|s| SpeciesView {
                 id: s.id,
                 name: s.name.clone(),
-                origin: s.origin.label().into(),
+                // An uncredited split of a player's lineage (a copy of a
+                // rival's design, a fresh founding beside one) reads as a
+                // founding, not a split (playtest 7).
+                origin: if s.origin == evo_sim::species::SpeciesOrigin::Split
+                    && s.founder.is_none()
+                    && s.main_lineage().and_then(|l| w.lineages.get(l as usize)).is_some_and(|l| l.owner != WILD)
+                {
+                    evo_sim::species::SpeciesOrigin::Founding.label().into()
+                } else {
+                    s.origin.label().into()
+                },
                 parent: s.parent,
                 founded_day: s.founded_day,
                 extinct_day: s.extinct_day,
@@ -6613,7 +6682,8 @@ impl Game {
                 dominant: s.dominant,
                 dominant_name: self.name(s.dominant),
                 dominant_share: s.dominant_share,
-                adults: s.adults,
+                // Whole animals: the estimate's fractions read as noise.
+                adults: s.adults.round(),
                 peak_adults: s.peak_adults,
                 lineages: s
                     .lineages
@@ -6621,7 +6691,7 @@ impl Game {
                     .map(|&(l, adults)| {
                         let (name, owner) = lineage_name(l);
                         let owner_name = self.name(owner);
-                        SpeciesLineage { lineage: l, name, owner, owner_name, adults }
+                        SpeciesLineage { lineage: l, name, owner, owner_name, adults: adults.round() }
                     })
                     .collect(),
                 // A player's species: quarters, as the leaderboard history
@@ -7799,6 +7869,29 @@ mod tests {
         g.found(3, &FounderDesign::new("Layers", Thermo::Warm, BirthType::IncubatedEggs, 4).founders(6)).unwrap();
         let e = g.lineage_stats(3).eggs.expect("an egg-laying lineage shows its clutches");
         assert_eq!(e, EggsView::default());
+    }
+
+    /// Playtest 7: egg layers lost more eggs than hatched with no warning
+    /// naming the cause. A day losing 6 or more eggs, more than were born,
+    /// raises a lineage warning that names the main cause and what to do.
+    #[test]
+    fn failing_eggs_raise_a_warning_with_the_cause() {
+        let (mut g, _, _) = game();
+        g.set_name(3, "cat");
+        let ok =
+            g.found(3, &FounderDesign::new("Layers", Thermo::Warm, BirthType::IncubatedEggs, 4).founders(6)).unwrap();
+        run_days(&mut g, 1);
+        let counts = g.world.counters.eggs.entry(ok.lineage).or_default();
+        (counts.laid, counts.chilled, counts.raided) = (20, 8, 1);
+        let out = run_days(&mut g, 1);
+        let w = g.lineage_warnings(3).into_iter().find(|w| w.kind == "eggs").expect("an eggs warning");
+        assert!(w.text.contains("9 eggs were lost (8 chilled)") && w.text.contains("4 eggs warm"), "{}", w.text);
+        assert!(alerts_in(&out, 3)
+            .iter()
+            .any(|a| a.kind == AlertKind::Need && a.text.starts_with("Your eggs are failing")));
+        // A day with few losses: none.
+        run_days(&mut g, 1);
+        assert!(g.lineage_warnings(3).iter().all(|w| w.kind != "eggs"));
     }
 
     /// Playtest 3: a winter founding's clutches vanished with no word. Lost

@@ -950,6 +950,17 @@ fn survivors_keep_a_quarter_of_the_lineage_they_started_with() {
     assert!(!g.survived(2, c));
 }
 
+/// A grace carries over through the whole re-founding window, not only
+/// twice the grace (playtest 8: small re-foundings chained just past that
+/// got a fresh grace each).
+#[test]
+fn grace_carries_over_through_the_refound_window() {
+    let (g, _) = game();
+    let window = g.refound_window_days() * g.world.config.ticks_per_day as u64;
+    assert!(g.world.grace_carry_ticks() >= window);
+    assert!(g.world.grace_carry_ticks() >= 2 * g.world.grace_length());
+}
+
 /// The found reply (and an alert) says whether a lineage has a newcomer
 /// grace and why: a fresh one, or one continued from an earlier lineage,
 /// even when that one has run out (playtest 5).

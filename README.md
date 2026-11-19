@@ -8997,6 +8997,72 @@ around it.
 
 
 
+
+### Playtest 7: balance
+
+Playtest 7 (`docs/playtest-7.md`, findings 1, 2, 12 and the balance Lows here).
+Hungry hunters still never took warning-coloured toxic prey: the hunger
+reduction and the 85% cap applied only to the learned lesson, while the
+warning-colour group benefit and each animal's lifelong `bright_aversion`
+held in full. Every player herbivore lineage was toxic and bright. Herbivore
+design space was narrow, with most body sizes 50–90% fertile with a wild
+species, and egg layers lost more eggs than hatched with no warning.
+
+**Sim rules, on by default from snapshot version 73** (taken as 64 and
+renumbered at merge after versions 64–72), off at 0 for older saves
+(`serde_util::before_v73`):
+
+| Tunable (default) | Rule |
+| --- | --- |
+| `honest_signals` (1) | A hunter's avoidance of a prey is one figure (`World::hunter_avoidance`): its own aversion to bright prey, the warning-colour benefit and its lineage's lesson. Hunger lowers the colour's pull by `honest_signals` of the lesson's, and `avoid_cap` caps the whole. An animal's aversion after a bite fades (half-life 40 days). Coloration from 0.6 counts as warning colours (above 0.6 before; the group-trait carrier test in `group.rs` still uses above 0.6). The attack-order warning shows this hunger-adjusted figure. |
+| `wild_isolation` (0.6) | The fertility gap between a player's animal and a wild one counts 1.6 times (`mating::wild_gap_scale`, in natural matings, directed matings, the mating preview, the server's compatibility estimate and the client's builder check). Body sizes 0.19 apart are now sterile with a wild species instead of 0.3, so player herds of most sizes keep their own genes. |
+| `avoid_cap` (0.95, was 0.85) | The cap now applies to the whole avoidance. At 0.85, the small bright toxic herds were hunted out: playtest 6's herd, PocketNomad7's and Rulebender7's designs, and the toxic flier died out on 1–3 seeds each. |
+
+**Server**:
+- **Egg losses.** A lineage warning (kind `eggs`) fires when a day loses at least 6 eggs, more than were born. It names the main cause (chilled, raided, overheated) with advice; for chilling it adds the season, the 4-egg cover and keeping brooders at their nests.
+- **Niche prizes.** They go to the leading player of each niche, the wild left out: playtest 7's wild led every niche, so nobody won one.
+- **Species labels.** An uncredited split of a player's lineage is shown as a "founding". A re-found is numbered "(2)" only beside a living namesake. Species adult counts are whole numbers.
+
+**Scripted replay** (`dominance`). Ten players; Sleepers and LoopHerd are
+PocketNomad7's design (20 founders, re-found, day 234) and Rulebender7's
+copy of Herdmaster6's herd (40 founders, day 34). Seeds 1–4, 840 days. The
+playtest 7 arm has the two new tunables off and the cap at 0.85.
+
+| Player | Playtest 7 rules: final share, titles*, extinct | New rules: final share, titles*, extinct |
+| --- | --- | --- |
+| Steady | 3.6%, 0, 0 | 4.5%, 3, 0 |
+| Big | 7.4%, 10, 0 | 9.1%, 6, 0 |
+| Broker | 5.5%, 12, 0 | 7.3%, 9, 0 |
+| Eggs | 6.7%, 7, 0 | 11.4%, 4, 0 |
+| Flier | 11.3%, 2, 0 | 5.3%, 0, 0 |
+| Cold | 8.8%, 0, 0 | 16.8%, 9, 0 |
+| Loophole | 3.2%, 0, 0 | 0.9%, 0, 0 |
+| Herd (Herdmaster6) | 6.8%, 2, 0 | 1.9%, 2, 0 |
+| Sleepers (PocketNomad7) | 6.8%, 0, 0 | 0.1%, 0, 0 |
+| LoopHerd (Rulebender7) | 7.3%, 7, 0 | 4.8%, 7, 2 |
+| **Warm egg layers (Eggs, Herd, Sleepers, LoopHerd)** | **16 of 40** | **13 of 40** |
+| **Cold fliers** | **2 of 40** | **9 of 40** |
+
+(* Titles are the legacy titles of the 40 whole seasons after day 210.) No
+design takes more than 9 titles. The bright toxic herds no longer lead:
+hungry predators take them, and players gain from other designs. The cost
+is that they shrink to a few percent, and Rulebender7's copy died out on 2
+of 4 seeds.
+
+How the defaults were found, with the cap at 0.85:
+- **Honest signals at full strength** wiped out four designs on 1–3 seeds each (Flier, Loophole, Sleepers, Rulebender7's copy); Big led with 13 titles.
+- **At 0.5 and 0.25** the bright herds still collapsed.
+- **Without honest signals** (wild isolation alone), Rulebender7's copy took 16 titles.
+- **The cause** was the cap now applying to the colour term. At 0.95, with honest signals at full, no design takes more than 9.
+
+**Checks**:
+
+| Check | Result |
+| --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.91 (± 0.07; 11.87 with the playtest 7 rules). Every lineage survives 12 of 12; toxic frogs average 76 (124): hungry predators take them now. |
+| `predlong 4`, seeds 41–48 | No prey lost; frogs' lowest 7–41, newts' 8–53; fox and pack hunters 7 and 8 of 8. |
+| tests, fmt, both clippy, client typecheck/test/build | pass |
+
 ### Playtest 6: balance
 
 Playtest 6 (`docs/playtest-6.md`, findings 1, 4, 6 and part of 9 here). The
