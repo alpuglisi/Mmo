@@ -103,7 +103,10 @@ export function designPayload(d: EditorDesign, cat: GeneCatalog): DesignSpec {
  * The starting design's departures from the gene defaults: a sturdy, social,
  * cautious herbivore ready for its first winter, mildly toxic and brightly
  * coloured so hunters learn to leave it alone, foraging a little wider, with
- * 30 founders (`STARTER_FOUNDERS`). It costs about 33 of the 100 points.
+ * 30 founders (`STARTER_FOUNDERS`), sleeping deep on ample fat through
+ * the winter (round 13: at hibernation 0.5 and fat 0.6 a big herd starved
+ * in its sleep, losing half or more each winter in playtest 12;
+ * `examples/starter_winters`). It costs about 37 of the 100 points.
  * Round 12: the older starter (no toxins or colours, 20 founders) stalled
  * near 40 animals among rival herds and packs and was retired by every
  * newcomer in playtests 10 and 11; measured with `cargo run --release -p
@@ -111,7 +114,7 @@ export function designPayload(d: EditorDesign, cat: GeneCatalog): DesignSpec {
  * safe first lineage, not the strongest design.
  */
 export const STARTER_TRAITS: Readonly<Record<string, number>> = Object.freeze({
-  body_size: 0.5, group_tolerance: 0.95, boldness: 0.3, fur: 0.6, fat_stores: 0.6, hibernation: 0.5,
+  body_size: 0.5, group_tolerance: 0.95, boldness: 0.3, fur: 0.6, fat_stores: 0.8, hibernation: 0.8,
   toxins: 0.5, coloration: 0.6, foraging_range: 0.6,
 });
 

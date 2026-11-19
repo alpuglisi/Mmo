@@ -75,6 +75,38 @@ cargo run --release -p evo-server --example starter_rivals -- \
   [--seeds N] [--first-seed N] [--size N] [--join DAY] [--days DAYS] [--only NAME,..]
 ```
 
+## Round 13: through the winter
+
+Playtest 12: the round-12 starter held #2–3 for four years (peak 420) but
+lost 55–65% of its herd every winter, mostly to starvation while asleep.
+Its hibernation (0.5) and fat stores (0.6) carried a small herd through,
+not a big one that fattened on crowded autumn ground. The starter now
+sleeps deeper on more fat: hibernation 0.8, fat stores 0.8, about 37 of
+the 100 points (no tunables changed).
+
+`crates/server/examples/starter_winters.rs` founds the same rivals as
+`starter_rivals` and the newcomer on day 60, then follows it for 600 days
+(five 120-day years), recording each winter's herd at its start, its low
+and the next spring, and the deaths in winters. Six seeds each:
+
+| Candidate | Points | Winters kept (median, seeds 1–6) | Herds of 100+ kept (pooled) | Winter starvation deaths | Herd at the end (median) |
+| --- | --- | --- | --- | --- | --- |
+| round-12 starter | 33.0 | 80% | 75% (seeds 7–12: 48%) | 511 (7–12: 235) | 47 (7–12: 30) |
+| fat stores 0.9 | 33.6 | 82% | 71% | 243 | 31 |
+| **hibernation 0.8, fat 0.8** | 37.0 | 84% (7–12: 87%) | 78% (7–12: 88%) | 55 (7–12: 7) | 55 (7–12: 26) |
+| body 0.4, fat 0.8 | 33.4 | 83% | 23% | 191 | 20 |
+| no hibernation, fur 0.8, fat 0.7 | 27.8 | 93% | 63% | 169 | 18 (3 of 6 died out) |
+| caching 0.6 | 36.0 | 76% | 77% | 413 | 33 |
+| fat 0.8, caching 0.5 | 35.9 | 81% | 74% | 273 | 40 |
+| cold-blooded (brumation) | 53.0 | 94% | 91% | 90 (exposure 31, thirst 196) | 43 |
+
+Deeper sleep on more fat all but ends starvation in the winter sleep and
+keeps big herds through it. The herd at the end is about the same: in
+summer, predation and crowded pasture cap it, so the starter stays far
+from the strong designs. The sim's winter sleep needs no change for this:
+a design with modest fat (0.6) starves in a big herd's sleep, but the
+genes that pay for a deep sleep fix it.
+
 ## How it was measured
 
 `crates/server/examples/starter_survival.rs` founds a design through the

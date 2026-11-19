@@ -537,7 +537,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     unspent.textContent = left > cat.budget / 2
       ? `${left.toFixed(1)} points still unspent. ${(spec.traits.carnivory ?? 0) < 0.34
         // Round 12: the starter is a safe first lineage, said plainly, not a winner.
-        ? 'The starting design is a safe first lineage (mildly toxic and brightly coloured, so hunters learn to leave it alone; 30 founders), not the strongest: spend the rest on what suits the world, or try a preset in Builder mode.'
+        ? 'The starting design is a safe first lineage (mildly toxic and brightly coloured, so hunters learn to leave it alone; it sleeps through winter on ample fat; 30 founders), not the strongest: spend the rest on what suits the world, or try a preset in Builder mode.'
         : 'A hunter needs speed, strength or bite to catch prey: raise the traits that suit it, or try a preset in Builder mode.'}`
       : left > 0.05 ? `${left.toFixed(1)} points left to spend.` : left >= -1e-3 ? 'Every point spent.' : '';
     // (Wings a heavy body can't use: one warning, in #design-warnings.)
