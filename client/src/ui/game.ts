@@ -2059,7 +2059,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const listMore = h('p', { class: 'muted small', id: 'organism-list-more' });
   const groupsEl = h('div', { id: 'group-list' });
   const retireBtn = h('button', { type: 'button', id: 'retire-lineage', class: 'danger' }, 'Retire lineage');
-  const retireRule = h('p', { class: 'small', id: 'lineage-retire-rule' }, h('strong', {}, 'Not a free re-roll: '), 'founding again soon after retiring founds fewer founders and costs renown. A quick re-found also continues your last grace instead of starting a new one.');
+  const retireRule = h('p', { class: 'small', id: 'lineage-retire-rule' }, h('strong', {}, 'Not a free re-roll: '), 'founding again soon after retiring founds fewer founders and costs renown. Founding again within that window also continues your last lineage\'s grace (even one that has run out); it never starts a new one.');
   const retireEl = h('details', { id: 'lineage-retire', class: 'retire' },
     h('summary', {}, 'Retire this lineage'),
     h('p', { class: 'muted small' },
@@ -2074,7 +2074,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (!retireEl.open) return;
     void api.world().then((w) => {
       retireRule.replaceChildren(h('strong', {}, 'Not a free re-roll: '), w?.refound_rule ? `after retiring, ${w.refound_rule}.` : 'founding again soon after retiring founds fewer founders and costs renown.',
-        ' A quick re-found also continues your last grace instead of starting a new one.');
+        ' Founding again within that window also continues your last lineage\'s grace (even one that has run out); it never starts a new one.');
     }).catch(() => undefined);
   });
   retireBtn.addEventListener('click', async () => {
