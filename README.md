@@ -9004,6 +9004,137 @@ and 8 of 8 (8 and 8 off; viable 7 and 8 either way).
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.77 (± 0.16; 11.82 with the five tunables off). Every lineage survives 12 of 12. |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
 
+### Playtest 6: predators and warnings
+
+Round 7 for `docs/playtest-6.md` findings M9, M10, M14 and three low items.
+Snapshot version 63 (gated at 58 on its branch, renumbered at merge after
+main's 58 to 62). It adds:
+- `Balance::prey_larder`, off at 0, which is what snapshots of version 62
+  and before read (`serde_util::before_v63`);
+- `DeathCause::FoughtBack`, appended to the enum, so older snapshots
+  decode as before.
+
+**M9: predators still can't compete.**
+- **The finding.** ApexHunter6's live-bearing pure carnivore survives, but
+  plateaus near 100 animals (2% share) and loses 20–35% each winter, while
+  a warning-coloured toxic herd holds the 2,100 cap.
+- **The prey-scaled larder** (`Balance::prey_larder` 1). The pack larder
+  (`player_packs`, round 5) faded between 60 and 100 of the player's
+  animals, whatever the world. It now scales with the prey there is
+  (`World::refresh_pack_room`, counted as each tick starts):
+  - prey per hunter is the plant eaters that are not the player's, per
+    pack hunter of the player's;
+  - the larder is full from `apply::PREY_FULL` prey per hunter and gone
+    at `apply::PREY_NONE`.
+
+  A pack can then grow as far as the prey around it carries it, and no
+  further. A big world full of herds leaves room for a big pack, and a
+  strong pack that thins its prey loses the larder.
+- **The prey warning** (`World::prey_check`, the territory and rally
+  replies and the daily group check).
+  - **Before:** it counted every other animal in reach (burrowed voles,
+    other predators, herds the pack had learned are poisonous) and warned
+    only under half a prey animal per hunter.
+  - **Now:** it counts only prey the pack could take on instinct: other
+    lineages' plant eaters that are not down a burrow, not under a
+    newcomer's grace, not passed up as poisonous (avoidance under 0.5)
+    and lighter than the pack's prey limit.
+  - **Need.** It estimates how many hunters that prey feeds for good: a
+    sustainable take of 3% of the prey's mass a day
+    (`groups::PREY_HARVEST`), against each hunter's daily hunger as meat.
+    It warns when that is fewer than the group. The reply carries
+    `prey_feeds` beside `prey_nearby`.
+
+How the prey-per-hunter bounds were chosen (the six-player study,
+`examples/predators.rs`; New arm, the pack on its own instinct):
+
+| Larder | Apex Stalkers (`--playtest4`, 6 seeds, 180 days) | Apex Wolves (round 3 designs, 4 seeds, 240 days) |
+| --- | --- | --- |
+| Band rule (round 5: full to 60 animals, none from 100) | 62 at the end | 185, 17.9% share |
+| Prey-scaled, full from 20 prey per hunter, none at 8 | 67 (peak 76) | 196, 32.8% share (peak 384): overshoot |
+| **Prey-scaled, full from 40, none at 20 (default)** | **58** | **208, 17.6% share (peak 277)** |
+
+- **No overshoot.** At 40 and 20 the strong wolves stay where the band
+  rule held them.
+- **In the study's 128-tile worlds** the Stalkers end about where they did
+  (58 against 62). Their prey there carries about as many hunters as the
+  band rule allowed.
+- **In richer worlds the cap lifts.** On 192-tile maps (more wild prey),
+  the band rule against the prey-scaled larder, Stalkers at the end:
+
+  | Run | Band rule | Prey-scaled |
+  | --- | --- | --- |
+  | 4 seeds, 180 days | 72 (peak 85) | 86 (peak 99) |
+  | Seed 1, 360 days, on instinct | 149 | 245 |
+  | Seed 1, 360 days, with attack orders | 92 | 268 |
+
+  The 360-day study's other seeds were cut short by a worker restart and
+  are not reported.
+- **What's left.** A pack's numbers stay a small share next to herds that
+  hold the cap (5–7% in these studies). Legacy share counts alleles
+  among breeding adults, and a predator's equilibrium is a fraction of
+  its prey's. This lever removes the fixed ceiling; it doesn't make a
+  pack a herd's equal.
+
+
+**M14: plant eaters on attack orders, and "eaten by" a herbivore.**
+- **No attack orders for plant eaters.** `possess_attack` refuses an
+  attacker with carnivory under 0.3 (`commands::HERBIVORE_ATTACK`, error
+  `not_a_hunter`: "a plant eater: it doesn't hunt (it fights back only
+  when attacked)"). Fighting back is unchanged: the strike rules handle
+  it.
+- **A new death cause.** A hunter killed by plant-eating prey fighting
+  back now dies of `DeathCause::FoughtBack` (wire `killed_by_prey`):
+  "was killed by its prey fighting back".
+  - Before, it was filed as predation by the prey's lineage, so the
+    herbivores were "eating" wolves and showed up in the being-hunted
+    warning.
+  - The prey is remembered (`Organism::killer`) but credited with no kill
+    (`kills_by_lineage`).
+  - A hunter killed by another hunter is still predation.
+  - Like a predation death, it leaves no carcass, so the ecology is
+    unchanged.
+  - The charts show it as its own cause.
+
+**M10: warnings** (server).
+- **Hunger in big lineages.** The hunger warning fires at 2% of the
+  lineage dying of hunger or thirst in a day (was 5%), or at 15 a day
+  whatever its size (`STARVING_FLOOR`), and never under 5.
+- **Thirst said as thirst.** When every such death is thirst it says
+  "Your lineage is dying of thirst …" with advice about water that
+  lasts. Hunger alone and both together are told apart too.
+- **Cold.** 5 or more cold deaths in a day raise a cold warning (`kind`
+  `cold`) with what helps.
+- **Being hunted, scaled.** It fires from 5 eaten a day, or half a percent
+  of a big lineage, whichever is more, or 4% of a small one.
+- **A sleeping herd.** When half or more of a group is asleep, the
+  grazed-bare and outgrown alerts say it moves only when it wakes
+  instead of telling the player to move it.
+
+**Low:**
+- **Hunters named for every death; the attacking player named.** Main's
+  round 7 (morph) did both, so this branch's own versions were dropped at
+  the merge.
+- **One Release.** While possessing, the inspector no longer shows a
+  second Release button. It points to the possession bar's.
+
+**Checks** (the round 6 main at version 57, against this round):
+
+| Check | `prey_larder` 0 (the band rule) | Defaults |
+| --- | --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` (main: 11.90) | | 11.91 (± 0.10); every lineage 12 of 12 |
+| `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 12/16 (11), 16/16 (16); 1 (newts, seed 38) | 13/16 (13), 16/16 (16); 3 (newts, seeds 34, 36 and 38) |
+| workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (456), build, e2e (16 scripts, `E2E_JOBS=2`) | | pass |
+
+- **predlong includes a player pack lineage**, so the larder applies there.
+  The newts were lost on two more seeds, where the larder kept more
+  hunters fed.
+- **The attack e2e** now founds its attacker as a meat eater (carnivory
+  0.9). The founding can land away from the wild herds, so the test walks
+  until a wild animal is within reach. It passed 3 of 3 alone and in the
+  full run. It also accepts "in its burrow" as a reason for a disabled
+  inspector button, and picks another target.
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many

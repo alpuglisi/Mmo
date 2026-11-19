@@ -318,11 +318,21 @@ pub enum ClaimOutcome {
 /// Prey around a meat-eating group's circle ([`World::prey_check`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreyCheck {
-    /// Other lineages' animals (wild or players') in the circle or within
-    /// [`PREY_REACH`] of its edge.
+    /// Prey the group could take on instinct in the circle or within
+    /// [`PREY_REACH`] of its edge: other lineages' plant eaters, not down a
+    /// burrow, not under a newcomer's grace, not passed up as poisonous,
+    /// not too heavy for the pack.
     pub prey: usize,
     pub members: usize,
+    /// About how many of the members that prey feeds for good: a
+    /// sustainable take of [`PREY_HARVEST`] of it a day against each
+    /// member's daily need.
+    pub feeds: usize,
 }
+
+/// Share of a prey population a pack can take a day and still find as much
+/// prey the next ([`World::prey_check`]).
+pub const PREY_HARVEST: f32 = 0.03;
 
 /// Plant food in a circle against a group's needs ([`World::food_check`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1125,22 +1135,43 @@ impl World {
         Ok(ClaimOutcome::Migrating { target, radius })
     }
 
-    /// Prey around a meat-eating group's circle: other lineages' animals in
-    /// it or within [`PREY_REACH`]. `None` for a group that lives mostly on
-    /// plants ([`World::food_check`] weighs those).
+    /// Prey around a meat-eating group's circle, and how many of the group
+    /// it can feed ([`PreyCheck`]; playtest 6: burrowed voles, poisonous
+    /// herds and other predators all counted, and the warning came only
+    /// under half a prey animal per hunter). `None` for a group that lives
+    /// mostly on plants ([`World::food_check`] weighs those).
     pub fn prey_check(&self, player: PlayerId, group: u8, center: Vec2, radius: f32) -> Option<PreyCheck> {
-        let (members, carnivory) = self
-            .organisms
-            .iter()
-            .filter(|o| o.alive && o.owner == player && o.group == group)
-            .fold((0usize, 0.0f32), |(n, c), o| (n + 1, c + o.traits.carnivory));
-        if members == 0 || carnivory / (members as f32) <= 0.6 {
-            return None;
+        let mut members = 0usize;
+        let (mut carnivory, mut need, mut cap) = (0.0f32, 0.0f32, 0.0f32);
+        let mut sample = None;
+        for o in self.organisms.iter().filter(|o| o.alive && o.owner == player && o.group == group) {
+            members += 1;
+            carnivory += o.traits.carnivory;
+            // A day's hunger (`Balance::hunger_rate`) in food, as meat.
+            need += self.config.balance.hunger_rate * o.food_per_hunger() / self.config.balance.meat_per_kg.max(1e-3);
+            cap = cap.max(
+                super::decide::max_prey_mass(o, self.coop_bonus(o))
+                    * super::decide::led_pack_scale(&self.config.balance, o),
+            );
+            sample.get_or_insert(o);
         }
+        let hunter = sample.filter(|_| members > 0 && carnivory / members as f32 > 0.6)?;
         let reach = radius + PREY_REACH;
-        let prey =
-            self.organisms.iter().filter(|o| o.alive && o.owner != player && o.pos.dist(center) <= reach).count();
-        Some(PreyCheck { prey, members })
+        let (mut prey, mut mass) = (0usize, 0.0f32);
+        for q in self.organisms.iter().filter(|q| q.alive && q.owner != player && q.pos.dist(center) <= reach) {
+            let edible = q.traits.carnivory <= super::decide::HUNTER_CARNIVORY
+                && !q.sheltered
+                && q.mass() < cap
+                && !self.grace_spares(hunter, q)
+                && self.toxic_avoidance(hunter.lineage, q) < 0.5;
+            if edible {
+                prey += 1;
+                mass += q.mass();
+            }
+        }
+        let per_member = need / members as f32;
+        let feeds = ((mass * PREY_HARVEST) / per_member.max(1e-6)).floor() as usize;
+        Some(PreyCheck { prey, members, feeds })
     }
 
     /// The rally a group is answering.
