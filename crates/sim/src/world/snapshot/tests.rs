@@ -583,11 +583,38 @@ fn rival_reach_off(b: &mut crate::Balance) {
     playtest9_off(b);
 }
 
+/// The playtest 9 balance tunables as snapshots before version 83 read them.
+fn playtest9_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v83::OLD_VALUE;
+    (b.wild_barrier, b.world_crowding, b.wild_refuge) = (old, old, old);
+    placement_off(b);
+}
+
 /// The playtest 9 placement and pack tunables as snapshots before version
 /// 85 read them.
-fn playtest9_off(b: &mut crate::Balance) {
+fn placement_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v85::OLD_VALUE;
     (b.rival_clear, b.pack_cohesion) = (old, old);
+}
+
+/// Version 82 snapshots (before the playtest 9 balance rules) restore with
+/// them off, and are otherwise the same world.
+#[test]
+fn version_82_snapshots_restore_without_playtest9_balance() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v82();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 82);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.wild_barrier, crate::serde_util::before_v83::OLD_VALUE);
+    assert!(r.snapshot_v82() == old);
+    playtest9_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.wild_barrier, 0.9);
 }
 
 /// Version 81 snapshots (before the farther-sighted founding search)
@@ -2086,19 +2113,19 @@ fn version_77_snapshots_restore_without_founder_youth() {
     assert_eq!(r.config.balance.founder_youth, 1.0);
 }
 
-/// Version 82 snapshots (before the playtest 9 placement and pack rules)
+/// Version 83 snapshots (before the playtest 9 placement and pack rules)
 /// restore with them off, and are otherwise the same world.
 #[test]
-fn version_82_snapshots_restore_without_rival_clear() {
+fn version_83_snapshots_restore_without_rival_clear() {
     let mut w = fixture_world();
-    let old = w.snapshot_v82();
+    let old = w.snapshot_v83();
     let h = SnapshotHeader::read(&old).unwrap();
-    assert_eq!(h.version, 82);
+    assert_eq!(h.version, 83);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!((r.config.balance.rival_clear, r.config.balance.pack_cohesion), (0.0, 0.0));
-    assert!(r.snapshot_v82() == old);
-    playtest9_off(&mut w.config.balance);
+    assert!(r.snapshot_v83() == old);
+    placement_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     let w = fixture_world();

@@ -538,8 +538,18 @@ async function main() {
           if (!swapped && !['already_pregnant', 'not_mature', 'not_found', 'died', 'out_of_sight'].includes(req.error?.code)) throw new Error(`request_mating failed: ${JSON.stringify(req.error)} for ${JSON.stringify(cand)}`);
           // A request names only an animal in sight, on the market or in an
           // offer: the lineages can be founded far apart, so bob lists it.
+          // Every adult male of his (each retry may pick another: listing
+          // one at a time ran out of attempts when the founding search
+          // placed the lineages apart).
           if (req.error?.code === 'out_of_sight') {
-            await bob.evaluate((id) => window.evo.socket.send({ type: 'create_listing', organism: id, fee: 0 }), req.partner);
+            await bob.evaluate(async (first) => {
+              const s = window.evo.model.state;
+              const listed = new Set((s.listings ?? []).map((l) => l.organism));
+              const ids = [first, ...s.organisms.filter((o) => o.sex === 'male' && o.matured).map((o) => o.id)];
+              for (const id of [...new Set(ids)].filter((id) => !listed.has(id))) {
+                await window.evo.socket.send({ type: 'create_listing', organism: id, fee: 0 });
+              }
+            }, req.partner);
           }
           const server = (await (await fetch(`${base}/api/world`)).json()).clock.tick;
           const look = (p, id) => p.evaluate((id) => { const s = window.evo.model.state; const o = s.organisms.find((o) => o.id === id); return `${s.clock.tick}:${o ? `${o.sex[0]}${o.pregnant ? 'P' : ''}${o.matured ? 'A' : ''}` : '-'}`; }, id);

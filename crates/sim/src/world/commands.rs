@@ -238,9 +238,9 @@ impl fmt::Display for CommandError {
                 write!(
                     f,
                     "that circle overlaps another player's territory (rival territories near your groups show on the \
-                     map); claim ground of your own (the attempt costs a short wait). A group ten times the size of a \
-                     small holder (at most {} adults; young don't count) may claim over its ground, and a group twice \
-                     the size of one holding {} times the food it needs",
+                     map); claim ground of your own (the attempt costs a short wait). Two exceptions: a group ten \
+                     times the size of a small holder (at most {} adults; young don't count) may claim over its ground, \
+                     and so may a group twice the size of a holder whose territory has {} times the food it needs",
                     super::groups::SQUAT_MEMBERS,
                     super::groups::OVERCLAIM_FOOD
                 )
@@ -269,7 +269,13 @@ impl fmt::Display for CommandError {
                 )
             }
             CommandError::Sheltered(id) => {
-                write!(f, "organism {id} is down in its burrow, out of reach: wait for it to come out")
+                // The state's `burrowed` flag is the same: one that read
+                // false went down since the last state (playtest 9).
+                write!(
+                    f,
+                    "organism {id} is down in its burrow, out of reach (it went down since your last view if it showed \
+                     above ground): wait for it to come out"
+                )
             }
             CommandError::NewcomerGrace { days_left } => write!(
                 f,
@@ -440,6 +446,7 @@ impl World {
         let scale = mating::wild_gap_scale(&self.config.balance, female.owner, male.owner);
         let fertility =
             mating::fertility_scaled(&female.genome, &male.genome, mating::Relief::of(&self.config.balance), scale)
+                * mating::wild_fertility(&self.config.balance, female.owner, male.owner)
                 * self.disease_fertility(f, m);
         (mismatch, cost, failure_chance, fertility)
     }
@@ -470,21 +477,27 @@ impl World {
             body_plan_fertility: mating::fertility_from_gap(
                 mating::fertility_gap(ga, gb, mating::Relief::of(&self.config.balance))
                     * mating::wild_gap_scale(&self.config.balance, oa.owner, ob.owner),
-            ),
+            ) * mating::wild_fertility(&self.config.balance, oa.owner, ob.owner),
             distance_fertility: mating::distance_fertility(ga.distance(gb)),
             body_plan_gaps,
             distance: oa.pos.dist(ob.pos),
         })
     }
 
-    /// Refill the plants on every dry tile within `radius` of `center` to
-    /// what the tile holds at most (`Tile::veg_max`); the food added. The
+    /// Regrow the plants on every dry tile within `radius` of `center` to
+    /// what the season lets the tile hold now: its most (`Tile::veg_max`)
+    /// times this season's warmth, snow cover and dryness (the terrain's
+    /// own growth terms), so nothing in midwinter and less in a drought
+    /// (playtest 9: it set the tile maximum regardless). The food added;
+    /// with `apply` false only how much it would be (a preview). The
     /// server's pasture restoration, a renown sink (`Game::restore_pasture`).
-    pub fn restore_pasture(&mut self, center: crate::math::Vec2, radius: f32) -> f32 {
+    pub fn restore_pasture(&mut self, center: crate::math::Vec2, radius: f32, apply: bool) -> f32 {
         let r = radius.max(0.0);
         let (w, h) = (self.map.width as i64, self.map.height as i64);
         let (cx, cy) = (center.x.floor() as i64, center.y.floor() as i64);
         let ri = r.ceil() as i64;
+        let bal = &self.config.balance;
+        let (rain, offset) = (bal.rain_growth, self.season_offset);
         let mut added = 0.0;
         for y in (cy - ri).max(0)..=(cy + ri).min(h - 1) {
             for x in (cx - ri).max(0)..=(cx + ri).min(w - 1) {
@@ -492,11 +505,21 @@ impl World {
                 if p.dist(center) > r {
                     continue;
                 }
-                let max = self.map.ground_at(p).veg_max;
+                let g = self.map.ground_at(p);
+                let (max, temp) = (g.veg_max, g.base_temp);
                 let t = self.map.tile_at_mut(p);
-                if t.water_depth <= 0.0 && t.veg < max {
-                    added += max - t.veg;
-                    t.veg = max;
+                if t.water_depth > 0.0 {
+                    continue;
+                }
+                let warmth = crate::terrain::growth_warmth(temp + offset);
+                let cover = (1.0 - t.snow * 3.0).clamp(0.0, 1.0);
+                let wet = (1.0 - rain + rain * (t.wetness / 0.5).clamp(0.0, 1.4)).min(1.0);
+                let cap = max * (warmth * cover * wet).clamp(0.0, 1.0);
+                if t.veg < cap {
+                    added += cap - t.veg;
+                    if apply {
+                        t.veg = cap;
+                    }
                 }
             }
         }
@@ -743,29 +766,43 @@ impl World {
     /// run of foundings each within twice the grace of the next.
     pub(crate) fn grace_start(&self, l: u32) -> Option<u64> {
         let owner = self.lineages.get(l as usize)?.owner;
-        let cooldown = self.grace_cooldown();
-        let mut start = *self.lineage_founded.get(l as usize)?;
-        while let Some(t) = (0..self.lineages.len())
-            .filter(|&k| self.lineages[k].owner == owner)
-            .filter_map(|k| self.lineage_founded.get(k).copied())
-            .filter(|&t| t < start && start - t <= cooldown)
-            .min()
-        {
-            start = t;
-        }
-        Some(start)
+        Some(self.grace_chain(owner, *self.lineage_founded.get(l as usize)?))
     }
 
     /// The grace start a founding by `owner` at tick `at` would get: `at`,
     /// or an earlier founding's whose grace it would continue
     /// ([`World::grace_start`]).
     pub fn grace_start_for(&self, owner: PlayerId, at: u64) -> u64 {
+        self.grace_chain(owner, at)
+    }
+
+    /// Walk back from a founding at `at`: while an earlier lineage of
+    /// `owner` ended within [`World::grace_cooldown`] before it, the
+    /// founding continues that lineage's grace (from its founding). Measured
+    /// from the earlier lineage's END, as the server's re-founding window is
+    /// (playtest 9: a lineage older than the window retired and re-founded
+    /// under re-found terms with a brand-new grace). A lineage with no
+    /// recorded end yet counts as ending now if it has no living members
+    /// (it ended today), at its founding while it lives.
+    fn grace_chain(&self, owner: PlayerId, at: u64) -> u64 {
         let cooldown = self.grace_cooldown();
+        let tpd = self.config.ticks_per_day.max(1) as u64;
         let mut start = at;
         while let Some(t) = (0..self.lineages.len())
             .filter(|&k| self.lineages[k].owner == owner)
-            .filter_map(|k| self.lineage_founded.get(k).copied())
-            .filter(|&t| t < start && start - t <= cooldown)
+            .filter_map(|k| {
+                let founded = *self.lineage_founded.get(k)?;
+                // Its end: recorded; or, with none recorded, its founding while
+                // it still lives (several of one owner's lineages at once: a
+                // host's test worlds), else now (it ended today).
+                let alive = self.lineage_alive.get(k).copied().unwrap_or(0) + self.lod.lineage_count(k as u32).alive;
+                let ended = match self.chronicle.lineages.get(k).and_then(|x| x.extinct_day) {
+                    Some(d) => d * tpd,
+                    None if alive > 0 => founded,
+                    None => start,
+                };
+                (founded < start && start.saturating_sub(ended) <= cooldown).then_some(founded)
+            })
             .min()
         {
             start = t;
@@ -773,7 +810,7 @@ impl World {
         start
     }
 
-    /// How soon after one founding the owner's next still continues its
+    /// How soon after a lineage ends the owner's next founding still continues its
     /// grace: twice the grace's whole length (its real-time minimum
     /// included), so a re-founding never starts afresh a grace that would
     /// still be running; the time left carries over.
@@ -816,7 +853,9 @@ impl World {
     pub(crate) fn grace_spares(&self, a: &crate::organism::Organism, b: &crate::organism::Organism) -> bool {
         a.owner != crate::WILD
             && a.owner != b.owner
-            && (self.attack_grace_left(b).is_some() || (b.owner != crate::WILD && self.attack_grace_left(a).is_some()))
+            && (self.attack_grace_left(b).is_some()
+                || (b.owner != crate::WILD && self.attack_grace_left(a).is_some())
+                || self.market_shield.contains(&b.id))
     }
 
     /// The target of a possessed organism's attack order, if it has one.
@@ -1324,6 +1363,31 @@ mod tests {
             (p.mismatch, p.cost, p.failure_chance, p.fertility),
             (out.mismatch, out.cost, out.failure_chance, out.fertility)
         );
+    }
+
+    /// Playtest 9: a design with a wild species' own body plan (a gap near
+    /// 0, which `wild_isolation`'s scale can't widen) bred true with it.
+    /// `Balance::wild_barrier` cuts a player × wild litter to a tenth; two
+    /// players' animals, or two wild ones, are as fertile as before.
+    #[test]
+    fn wild_barrier_cuts_player_by_wild_litters() {
+        let mut w = World::new(WorldConfig { width: 48, height: 48, ..Default::default() });
+        let d = FounderDesign::new("v", Thermo::Warm, BirthType::Live, 2).founders(2);
+        let mine = w.found_lineage(1, &d).unwrap();
+        let wild = w.found_lineage_unchecked(crate::WILD, &d);
+        let other = w.found_lineage(2, &d).unwrap();
+        let sex = |w: &World, id| w.organism(id).unwrap().sex;
+        let pick = |w: &World, ids: &[OrgId]| *ids.iter().find(|&&c| sex(w, c) != sex(w, mine[0])).unwrap();
+        let (wb, ob) = (pick(&w, &wild), pick(&w, &other));
+        let with_wild = w.mating_preview(mine[0], wb).unwrap();
+        let with_player = w.mating_preview(mine[0], ob).unwrap();
+        assert!((with_player.body_plan_fertility - 1.0).abs() < 1e-6, "{with_player:?}");
+        assert!((with_wild.body_plan_fertility - 0.1).abs() < 1e-4, "{with_wild:?}");
+        assert!((with_wild.fertility - 0.1 * with_player.fertility).abs() < 1e-4, "{with_wild:?}");
+        assert_eq!(mating::wild_fertility(&w.config.balance, crate::WILD, crate::WILD), 1.0);
+        w.config.balance.wild_barrier = 0.0;
+        let off = w.mating_preview(mine[0], wb).unwrap();
+        assert!((off.body_plan_fertility - 1.0).abs() < 1e-6, "{off:?}");
     }
 
     #[test]

@@ -77,6 +77,8 @@ export async function designScreen(cb: DesignCallbacks): Promise<HTMLElement> {
 
 /** How often the editor re-reads the world (season notice, founding hint, species): a game day is seconds. */
 export const DESIGN_WORLD_REFRESH_MS = 10000;
+/** An unchanged design is checked with the server again after this long. */
+export const RECHECK_IDLE_MS = 60000;
 
 export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldSummary | null = null, species: SpeciesList | null = null): HTMLElement {
   // The one design both modes edit: traits plus the whole body plan.
@@ -413,9 +415,19 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   let waterTimer: ReturnType<typeof setTimeout> | undefined;
   /** The first check goes at once (playtest 8: the first load lagged one check). */
   let firstCheck = true;
+  /** The design last sent to the server, and when. */
+  let lastAsked = '';
+  let lastAskedAt = 0;
   let waterSeq = 0;
   /** Ask the server (a moment after the last change) whether the founders can reach most water. */
   function checkWater(): void {
+    // Only for a changed design, or a minute on (the world moves: drought,
+    // the re-founding window); not on every redraw (playtest 9: 19 checks in
+    // three idle minutes, from the 10 s world refresh).
+    const asked = JSON.stringify(payload());
+    if (asked === lastAsked && Date.now() - lastAskedAt < RECHECK_IDLE_MS) return;
+    lastAsked = asked;
+    lastAskedAt = Date.now();
     clearTimeout(waterTimer);
     const delay = firstCheck ? 0 : 600;
     firstCheck = false;
@@ -509,7 +521,10 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       c.morph > 0 ? `body plan ${c.morph.toFixed(1)}` : '',
       ...bodyParts(c.body),
     ].filter(Boolean);
-    breakdown.textContent = [`traits ${c.traits.toFixed(1)}`, `offspring ${c.litter.toFixed(1)}`, `extra founders ${c.founders.toFixed(1)}`, ...extras].join(' · ');
+    // The founders' points are for all the design asks for; a re-founding's price (the server's, for the
+    // founders that land) is on its own line below (playtest 9: "31.9" here and "21.0" there read as a contradiction).
+    const foundersPart = rf && rf.founders < rf.requested ? `extra founders ${c.founders.toFixed(1)} (for all ${rf.requested})` : `extra founders ${c.founders.toFixed(1)}`;
+    breakdown.textContent = [`traits ${c.traits.toFixed(1)}`, `offspring ${c.litter.toFixed(1)}`, foundersPart, ...extras].join(' · ');
     // Most of the budget unspent (the starting design): say so before the player founds a bare-minimum animal.
     // The same figure as the total above.
     const left = cat.budget - c.total;
@@ -595,8 +610,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     h('header', { class: 'topbar' }, h('strong', { class: 'topbar-title' }, cb.refound ? 'Design a new lineage' : 'Design your founders'),
       h('span', { class: 'muted' }, cb.refound
         ? cb.retired
-          ? 'You retired your last lineage. Your renown, records and titles stay; the new founders start fresh. A newcomer grace isn\'t new each time: founding again soon after your last founding continues that grace, even one that has run out (the founding alert says which).'
-          : 'Your last lineage died out. Your renown, records and titles stay; the new founders start fresh. A newcomer grace isn\'t new each time: founding again soon after your last founding continues that grace, even one that has run out (the founding alert says which).'
+          ? 'You retired your last lineage. Your renown, records and titles stay; the new founders start fresh. A newcomer grace isn\'t new each time: founding again within the re-founding window after your last lineage ended continues its grace, even one that has run out (the grace line below says which).'
+          : 'Your last lineage died out. Your renown, records and titles stay; the new founders start fresh. A newcomer grace isn\'t new each time: founding again within the re-founding window after your last lineage ended continues its grace, even one that has run out (the grace line below says which).'
         : 'After launch the design changes only through breeding, mutation and selection.'),
       h('span', { class: 'spacer' }),
       cb.onCancel ? h('button', { class: 'secondary', id: 'design-cancel', onclick: cb.onCancel }, 'Back to the map') : null,
@@ -663,7 +678,7 @@ export const GRACE_WINTER_FOUNDERS = 40;
 
 /** The designer's line on the first-winter grace rule for `founders`. */
 export function graceWinterText(founders: number): string {
-  const rule = `Newcomer grace: a founding of ${GRACE_WINTER_FOUNDERS} or fewer founders whose grace would end in late autumn or winter keeps it through that first winter (and in most worlds the spring after it). A founding soon after your last one continues that one's grace instead.`;
+  const rule = `Newcomer grace: a founding of ${GRACE_WINTER_FOUNDERS} or fewer founders whose grace would end in late autumn or winter keeps it through that first winter (and in most worlds the spring after it). A founding within the re-founding window after your last lineage ended continues that one's grace instead.`;
   return founders <= GRACE_WINTER_FOUNDERS
     ? `${rule} These ${founders} qualify.`
     : `${rule} ${founders} founders don't: their grace ends on time even at winter's start.`;

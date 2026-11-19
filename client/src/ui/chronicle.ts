@@ -64,9 +64,13 @@ export interface SpeciesRow {
  */
 export function speciesTree(list: SpeciesView[]): SpeciesRow[] {
   const byId = new Map(list.map((s) => [s.id, s]));
+  // Only a split hangs under its parent: a player's founding is a root of its
+  // own even when the server names the species it was detected next to
+  // (playtest 9: other players' foundings drawn as "└" splits).
+  const under = (s: SpeciesView) => s.parent !== undefined && byId.has(s.parent) && s.parent !== s.id && (s.origin === undefined || s.origin === 'split');
   const children = new Map<number, SpeciesView[]>();
   for (const s of list) {
-    if (s.parent !== undefined && byId.has(s.parent) && s.parent !== s.id) {
+    if (under(s) && s.parent !== undefined) {
       const c = children.get(s.parent) ?? [];
       c.push(s);
       children.set(s.parent, c);
@@ -81,7 +85,7 @@ export function speciesTree(list: SpeciesView[]): SpeciesRow[] {
     for (const c of children.get(s.id) ?? []) visit(c, depth + 1);
   };
   for (const s of list) {
-    if (s.parent === undefined || !byId.has(s.parent)) visit(s, 0);
+    if (!under(s)) visit(s, 0);
   }
   // Anything left (a cycle should not happen) goes at the top level.
   for (const s of list) visit(s, 0);
@@ -156,7 +160,7 @@ export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, 
             h('tbody', {}, ...e.rows.slice(0, 8).map((r) => h('tr', { class: r.player === me ? 'me' : '' },
               h('td', {}, r.player === 0 ? '—' : String(e.rows.filter((x) => x.player !== 0).indexOf(r) + 1)), h('td', {}, swatch(r.player, me), h('span', { class: 'who', title: r.name }, r.name)),
               byMean(e) ? h('td', {}, pct(r.mean_share ?? 0)) : null, h('td', {}, pct(r.share)), h('td', {}, pct(r.weighted_share)))))),
-          e.niches.length > 0 && h('p', { class: 'muted small' }, 'Niche leaders: ',
+          e.niches.length > 0 && h('p', { class: 'muted small' }, 'Niche prizes (25% or more of a niche): ',
             e.niches.map((n) => `${nicheLabel(n.niche)} ${n.name} ${pct(n.share, 0)}`).join(' · ')));
       })),
     h('h3', {}, `Species (${species.alive} living)`),

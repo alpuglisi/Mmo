@@ -296,12 +296,11 @@ impl World {
             // The retiree's alleles in it become nobody's (the wild's): no
             // royalty or legacy for the retiree from it, and none gifted to
             // the receiver either (playtest 4: re-tagged as the receiver's,
-            // colluding players handed each other legacy share). Nor do the
-            // receiver's own (playtest 8): the animal joins its herd, but its
-            // legacy grows only by what the herd breeds from it.
+            // colluding players handed each other legacy share). The
+            // receiver's own alleles stay theirs (playtest 9: re-tagging them
+            // wild took the receiver's own legacy away).
             let g = std::sync::Arc::make_mut(&mut o.genome);
             g.retag_origin(player, crate::WILD);
-            g.retag_origin(p, crate::WILD);
             o.group = 0;
             o.possessed_by = None;
             o.order = None;
@@ -331,6 +330,12 @@ impl World {
                 }
             }
         }
+    }
+
+    /// The animals in open market offers and agreements: other players'
+    /// animals spare them (`World::grace_spares`).
+    pub fn set_market_shield(&mut self, ids: impl IntoIterator<Item = OrgId>) {
+        self.market_shield = ids.into_iter().collect();
     }
 
     /// Bar `id` from natural mating with another player's animals until
@@ -521,10 +526,11 @@ mod tests {
         let o = w.organism(ids[0]).unwrap();
         assert_eq!(o.owner, 2);
         assert_eq!(share(&o.genome, 1), 0.0, "none of the retiree's alleles left in it");
-        // They went to the wild, not to the receiver, and so did the
-        // receiver's own: a transfer credits no legacy (playtest 8).
-        assert_eq!(share(&o.genome, 2), 0.0);
-        assert!((share(&o.genome, crate::WILD) - 1.0).abs() < 1e-9);
+        // The retiree's went to the wild, not to the receiver (no legacy
+        // gifted); the receiver's own stay theirs (playtest 9).
+        let before = share(&mostly_rival, 2);
+        assert!((share(&o.genome, 2) - before).abs() < 1e-9, "the receiver's own alleles kept");
+        assert!((share(&o.genome, crate::WILD) - (1.0 - before)).abs() < 1e-9);
         assert!(w.organism(ids[1]).is_none());
     }
 
@@ -613,6 +619,22 @@ mod tests {
         // Near it (breaks to eat or drink allowed), never at the possessed one.
         assert!(pa.dist(meet) <= 10.0, "a waits near the meeting point: {:.1} away", pa.dist(meet));
         assert!(pa.dist(away) > 20.0, "a followed: {:.1} from the possessed partner", pa.dist(away));
+    }
+
+    /// Animals in open market offers are spared by other players'
+    /// animals (not by the wild's) until the server lifts the shield.
+    #[test]
+    fn the_market_shield_spares_offered_animals_from_rivals() {
+        let mut w = presets::standard_world(WorldConfig { seed: 8, width: 64, height: 64, ..Default::default() }, 1);
+        w.config.balance.attack_grace = 0.0;
+        let a = w.organisms.iter().position(|o| o.owner == 1).unwrap();
+        let b = w.organisms.iter().position(|o| o.owner == 2).unwrap();
+        assert!(!w.grace_spares(&w.organisms[a], &w.organisms[b]));
+        let id = w.organisms[b].id;
+        w.set_market_shield([id]);
+        assert!(w.grace_spares(&w.organisms[a], &w.organisms[b]), "a rival spares it");
+        w.set_market_shield([]);
+        assert!(!w.grace_spares(&w.organisms[a], &w.organisms[b]));
     }
 
     /// A possessed male (or one barred for a while after) sires no young

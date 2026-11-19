@@ -2035,6 +2035,27 @@ minutes, every purchase failed when the buyer's animal died):
   is told, so the lobby still routes a player to their lineage's server;
   its own public answer says no more).
 
+**Playtest 9 changes** (economy):
+
+- **Market**: a buyer who steered its animal (possessed or ordered it
+  during the agreement) into the seller's pack loses it at its own risk,
+  not the seller's; the deadline pauses for the whole of the seller's
+  animal's sleep (the buyer's sleep only up to 30 days), and a sleeping
+  seller's animal is never "stood up" (the hold fee is discounted by its
+  sleep instead); moving away is the seller's fault only when the seller
+  steered its animal (not when it fled a predator or went to drink).
+  Animals in open offers and agreements are spared by other players'
+  animals until the offer closes (`World::set_market_shield`, not saved;
+  wild predators still hunt them). Listings show a sleeping animal
+  (`dormant`); a listing closed by a death names the killer.
+- **Retiring**: the receiver of a transferred animal keeps its own
+  alleles (only the retiree's become the wild's).
+- **Restore pasture**: see *Restore pasture* (group, preview, seasonal
+  cap, priced by the largest lineage grazing the circle, rounded food).
+- **Owed renown** gets a ledger line when it is recorded and shows in the
+  shop (`owed`); the retire dialog quotes the player's next re-founding
+  fee (`ShopView::next_refound_fee`).
+
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.
 
@@ -9025,6 +9046,79 @@ around it.
 
 
 
+### Playtest 9: balance
+
+Playtest 9 (`docs/playtest-9.md`, findings 1, 6 and part of 12 here).
+Playtest 8's warm, small, incubated-egg, toxic, bright hibernator was held in
+era 1 (5.9% mean share) but won era 2 with a 24% mean. Over the same years
+the wild shrank from 3,800 to 1,250. Some designs near a wild species' body
+plan still bred with it (58% fertile with the Meadow vole). The leader bought
+cheap reinforcements every spring after winter took it under 300.
+
+**Why the wild shrank** (`dominance --trace`: the wild's numbers, deaths by
+cause and who ate them, each season of one seed). With no players, the wild
+stays at its caps for seven years: about 5,000 in autumn, 3,600 in spring.
+Playtest 8's herd alone reaches 2,100 and the wild stays at its caps. With
+ApexHunter8's pack alone (40 founders, live-bearing pure carnivores) the
+antelope fall from 988 to about 30 within two years and the newts are held
+down. In the six-player replay (pack, herd, a copy of it, the copy's
+sleepers, a cold flier, a grazer) the pack ate 1,400–3,600 wild animals a
+season, growing as it went. The antelope fell from 988 to 3 and the newts
+from 1,400 to 49, while several herbivore players took the plants. The wild
+ended at 1,200, and every player's share of a smaller world grew.
+Competition between plant eaters alone did not shrink the wild; a player's
+pack hunting each wild species to its last animals did. The share was then
+the herd's because the cap was a number, not a share.
+
+Three rules, version 83 (each off at 0):
+
+- **Wild refuge** (`Balance::wild_refuge`, 0.3). A player's hunters give up
+  on a wild lineage that falls below 30% of its wild cap. A hunter passes it
+  up for the day with chance `1 − r⁴` (`r` its count over 30% of its cap),
+  whatever its pickiness, and agents and cohorts follow the same rule
+  (`World::wild_refuge_skip`). The wild's own hunters keep prey switching
+  alone.
+- **Crowding by share of the world** (`Balance::world_crowding`, 0.2). A
+  player's lineage crowds as at the soft cap (smaller litters, then hunger)
+  at a fifth of the world's crowding count, the wild included, when that
+  comes before the soft cap. The world's count is taken as at least the soft
+  cap, so a lineage under 300 never crowds by its share. The Lineage tab
+  says when this applies ("past its share of the world").
+- **Wild barrier** (`Balance::wild_barrier`, 0.9). A litter or clutch with
+  one player-owned and one wild-owned parent is a tenth of the size its
+  fertility gives. `wild_isolation` scales the body-plan gap, and a gap near
+  0 (a design with the vole's own body plan) stays fertile however it is
+  scaled. The designer's estimate, listings and the mating preview show the
+  same tenth.
+
+**Verification replay** (`dominance --only Herd,Sleepers,Cold,Pack,LoopHerd,Broker`,
+six players; Herd is Herdmaster6/8/9's herd, LoopHerd its copy, Sleepers
+PocketNomad7's copy of the class, Pack ApexHunter8's pack; 840 days, two
+eras). "Era mean" is the highest mean share over a whole era on any seed.
+
+| Player | Playtest 9 rules (v83 tunables off): era mean, seeds capped | v83 rules: era mean, seeds capped |
+| --- | --- | --- |
+| Herd | 54.7%, 4 of 6 | 24.6%, 0 |
+| LoopHerd | 43.0%, 3 of 6 | 23.3%, 0 |
+| Cold | 25.3%, 1 of 6 | 18.7%, 0 |
+| Broker | 11.3%, 0 | 12.8%, 0 |
+| Pack | 5.6%, 0 | 11.8%, 0 |
+| Sleepers | 9.3%, 1 of 6 | 3.0%, 0 |
+
+(Seeds 1–6, two eras each.) No design holds more than 25% for an era under
+v83 rules, in either era. The wild in the trace (seed 1): antelope hold at 130–220 instead of going
+extinct, newts at 140–620 instead of 49. The wild's spring low is 1,630
+instead of 1,200, and its autumn high 2,600–3,350 in years 4–7. The voles
+still fall from 2,250 to about 1,000 by year 7 as the pack, now 250 strong,
+turns to them. With scarce wild prey spared, more of the pack's pressure
+falls on small player lineages: Sleepers (20 founders, a re-found in spring)
+stays small on every seed. The 12-seed sweep scores 11.88 (11.95 before).
+
+**Reinforcements** go by the season's peak: a lineage is refused if it had
+more than the limit (a fifth of the soft cap) alive at any daily record
+within a ranked season's length, not only today (`Economy::alive_days`,
+`Game::season_peak`).
+
 ### Playtest 8: balance
 
 Playtest 8 (`docs/playtest-8.md`, finding 1 verified, 12 and 13 here) ran
@@ -9064,7 +9158,7 @@ titles in this world. Packs of a few hundred beside herds of 2,000 are not
 reached: the herds no longer get that big next to a pack.
 
 **Server** (finding 13):
-- **Restore pasture** (`restore_pasture`, a renown sink that grows with the lineage). Every dry tile within 12 tiles of the main group regrows its full plant cover. It costs 1 renown per living member (at least 200), doubled for each restoration within a ranked season's length: about 2,000, 4,000 and 8,000 in a row for a capped lineage. The shop shows `restore_price` and `restores_bought`; the client protocol has the command and fields (UI for polish).
+- **Restore pasture** (`restore_pasture {group?, preview?}`, a renown sink that grows with the lineage). Every dry tile within 12 tiles of the chosen group (default the main one) regrows as high as the season allows: its plant maximum times this season's warmth, snow cover and dryness, so nothing in midwinter and less in a drought (playtest 9: it set the maximum regardless). It costs 1 renown per living member of the largest lineage with animals in the circle, the buyer's or another's (at least 200; no cheap purchase by a small ally on a leader's ground), doubled for each restoration within a ranked season's length. `preview: true` answers what it would add and cost without spending; nothing to regrow is refused (`nothing_to_restore`), not charged. The answer (`RestoreView`) gives `restored` rounded in `unit` "food", `price`, `priced_by` and `also_feeds` (other players grazing the circle).
 - **Survivor** now requires keeping half the lineage's size at the catastrophe's start (`SURVIVAL_KEEP`, 0.25 before), through at least a quarter of a ranked season of the catastrophe (`SURVIVAL_HELD`).
 
 **Checks**: sweep 11.91 (± 0.07); tests, fmt, both clippy, client
@@ -9279,6 +9373,65 @@ and 8 of 8 (8 and 8 off; viable 7 and 8 either way).
 | --- | --- |
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.77 (± 0.16; 11.82 with the five tunables off). Every lineage survives 12 of 12. |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
+
+### Playtest 9: server Lows
+
+Server-side Lows from `docs/playtest-9.md`:
+
+- **Megadrought's end.** When a megadrought ends with the land still past
+  the drought line, the end alert says so, and no separate "Drought: 96%
+  dry" follows in the same tick.
+- **Die-off grading.** A lineage down 30% or more in 10 days is "crashing",
+  not "dying off slowly". Both texts give the drop and say whose deaths the
+  percentage counts (hunger, thirst and cold, as a share of the starting
+  count).
+- **Hunters' advice.** A lineage living mostly on meat gets advice about
+  prey (move the pack to prey, split it, order hunts) instead of the Food
+  layer.
+- **Prey count.** The text says animals under a newcomer's grace aren't
+  counted.
+- **Overlap refusal.** Its last clause has its verb back.
+- **Niche prizes.** The era's niche list shows only niches won (at least
+  25% of the niche, `chronicle::NICHE_MIN_SHARE`). A 0.96% desert "leader"
+  read as a prize.
+- **Burrows.** The state's `burrowed` is the same flag the attack refusal
+  checks. The refusal now says the animal went down since the last view.
+- **Rounding.** Mating previews and outcomes, body-plan gaps,
+  compatibility rows, listings' body-plan fertility, migrate and claim
+  replies (`water_share`, `dryness`, `distance`, `standing_days`, journey
+  figures) and pasture restores are rounded as f64 when written, so no
+  `0.30000001192092896`.
+- **Offers to a lineage.** An offer that no grown animal of the other sex
+  in the lineage could conceive with is refused (`incompatible_lineage`).
+- **Founders eaten.** Predation joins round 9's once-per-lineage-and-cause
+  founder death alerts; the hunting warning names the hunters.
+- **Reinforcement wait.** The refusal gives the wait in game days and real
+  minutes instead of a day number, and states the size limit too.
+- **Season crown.** The legacy title's mean share is taken over the days a
+  player had living animals, over at least half the season so far
+  (`league::LEGACY_MIN_PLAYED`). Days before a founding counted as 0, so
+  the first to found won season 1.
+- **Eggs failing.** Eggs past the 4 a sitting parent covers
+  (`CLUTCH_COVERED`) are expected to chill. Only losses beyond that
+  expectation, and beyond the day's births, raise the warning.
+- **Drinking water.** The "little or no drinking water" warning says which
+  water doesn't count (ice, a dried bed, water the group can't get down
+  to).
+- **Rival territory.** The warning gives the distance to a nearby rival
+  territory's centre.
+- **Price quotes.** A survey or pasture restore within 10 real seconds of
+  opening the shop costs no more than the price shown
+  (`shop::QUOTE_SECONDS`).
+- **Possessed animal's need.** A move or attack order restarts the need
+  alert's short wait.
+- **Explained, not changed.**
+  - Survey balance against state: the next day's income arrived in
+    between.
+  - Group membership after a migration (102/102 → 11/170): only merges,
+    births (young join the mother's group) and level-of-detail expansion
+    (off on this server) change membership. The numbers fit deaths in the
+    group that stayed and births in the one that left. Note that with
+    `--lod`, animals rebuilt from a cohort come back in group 0.
 
 ### Playtest 8: server Lows
 

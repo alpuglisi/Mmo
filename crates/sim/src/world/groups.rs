@@ -1277,7 +1277,11 @@ impl World {
                 && self
                     .food_check(p, g, t.center, t.radius)
                     .is_some_and(|f| f.supports >= OVERCLAIM_FOOD * theirs.max(1));
-            if !(squat || overclaimed) {
+            // A newcomer in its grace keeps its ground (playtest 9: a large
+            // group took over a graced newcomer's territory).
+            let graced = (0..self.lineages.len() as u32)
+                .any(|l| self.lineages[l as usize].owner == p && self.lineage_grace_ticks(l).is_some());
+            if graced || !(squat || overclaimed) {
                 return Err(CommandError::Overlaps);
             }
             squats.push((p, g));

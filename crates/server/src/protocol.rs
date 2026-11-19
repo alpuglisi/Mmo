@@ -298,7 +298,14 @@ pub enum ClientMsg {
     /// member (at least 200), doubled for each restoration already bought
     /// within a ranked season's length (a sink that grows with the
     /// lineage). Data: `{restored, price, shop}` (`restored`: food added).
-    RestorePasture,
+    RestorePasture {
+        /// The group whose pasture is restored (default 0, the main one).
+        #[serde(default)]
+        group: Option<u8>,
+        /// Only say what it would do and cost.
+        #[serde(default)]
+        preview: bool,
+    },
     /// Protocol 2 only: the client lost track of the delta states; the
     /// connection's next state is a keyframe. Handled by the connection (no
     /// `result`), never by the world.
@@ -400,7 +407,7 @@ impl ClientMsg {
             ClientMsg::Reinforce => "reinforce",
             ClientMsg::Compatibility => "compatibility",
             ClientMsg::Provision => "provision",
-            ClientMsg::RestorePasture => "restore_pasture",
+            ClientMsg::RestorePasture { .. } => "restore_pasture",
             ClientMsg::SubstituteMating { .. } => "substitute_mating",
             ClientMsg::Survey => "survey",
             ClientMsg::NameAnimal { .. } => "name_animal",
@@ -997,9 +1004,13 @@ pub struct MatingRecord {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct MatingOutcome {
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub mismatch: f32,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub cost: f32,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub failure_chance: f32,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub fertility: f32,
     pub conceived: bool,
 }
@@ -1024,6 +1035,7 @@ pub struct BodyPlanGap {
     pub gene: String,
     /// Difference in expressed value (fertility falls to 0 at
     /// `evo_sim::mating::BODY_PLAN_STERILE`).
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub gap: f32,
 }
 
@@ -1036,19 +1048,27 @@ pub struct MatingPreviewView {
     pub compatible: bool,
     /// Fertility the mating would run with: the lower of the two below,
     /// times the mates' infections.
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub fertility: f32,
     /// 0 for different body plans (thermoregulation, birth mode, body size,
     /// diet).
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub body_plan_fertility: f32,
     /// Outbreeding depression over the whole genome.
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub distance_fertility: f32,
     pub body_plan_gaps: Vec<BodyPlanGap>,
     /// Larger of the two preference mismatches (≤ 1: both would choose it).
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub mismatch: f32,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub cost: f32,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub failure_chance: f32,
     /// Tiles apart (they must meet, within `meeting_distance`).
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub distance: f32,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub meeting_distance: f32,
     /// Why a request for this pair would be refused for incompatibility
     /// (`incompatible_body_plans` or `genetically_incompatible`).
@@ -1891,6 +1911,13 @@ pub struct CrowdingView {
     pub litter: f32,
     /// Hunger is multiplied by this (1 below the soft cap).
     pub hunger: f32,
+    /// The lineage also crowds from this crowding count, its share of the
+    /// world's (`Balance::world_crowding`, the world's taken as at least
+    /// the soft cap), when that is below the soft cap; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub world_cap: Option<f32>,
+    /// That share (0.2: a fifth of the world's crowding count).
+    pub world_share: f32,
 }
 
 /// `renown_shop` (and after a purchase): what renown buys.
@@ -1950,6 +1977,13 @@ pub struct ShopView {
     /// The price of naming one of your animals.
     #[serde(default)]
     pub animal_name_price: u64,
+    /// Renown owed (taken from what comes in next), if any.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub owed: u64,
+    /// What re-founding after a retirement would cost now (the retire
+    /// dialog quotes it).
+    #[serde(default)]
+    pub next_refound_fee: u64,
     #[serde(default)]
     pub provisions_bought: u32,
     #[serde(default)]
@@ -1997,18 +2031,23 @@ pub struct CompatibilityRow {
     /// design's founders) and theirs, 0 (sterile) to 1: body plan
     /// (`Balance::egg_hybrid` included) and whole-genome distance. Before
     /// playtest 2 this was the best pair's body-plan fertility.
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub fertility: f32,
     /// The 10th and 90th percentile pair: what to expect from a random
     /// mating.
     #[serde(default)]
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub fertility_low: f32,
     #[serde(default)]
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub fertility_high: f32,
     /// The best pair.
     #[serde(default)]
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub best_fertility: f32,
     /// Share of the pairs with any fertility.
     #[serde(default)]
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub fertile_share: f32,
     /// At least half the pairs fertile.
     pub compatible: bool,
@@ -2021,6 +2060,7 @@ pub struct CompatibilityRow {
     /// (`carnivory`, `endothermy`, `birth_mode`, `body_size`, or
     /// `morphology` for eye or leg counts), and the gap; sterile at 0.30.
     pub limiting: String,
+    #[serde(serialize_with = "crate::protocol::round::f2")]
     pub gap: f32,
 }
 
@@ -2104,6 +2144,31 @@ pub struct RefoundView {
 }
 
 /// One player's standing over a season of the history.
+/// A pasture restoration (`restore_pasture`), done or previewed.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RestoreView {
+    pub group: u8,
+    /// The circle: the group's middle and the radius.
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+    /// Food the plants gain, rounded (in `unit`).
+    pub restored: f32,
+    pub unit: String,
+    pub price: u64,
+    /// When a larger lineage with animals in the circle sets the price: its
+    /// owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priced_by: Option<String>,
+    /// Other players with animals in the circle (who eat from it too), with
+    /// how many.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_feeds: Vec<String>,
+    pub preview: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shop: Option<ShopView>,
+}
+
 /// A survey's findings (`survey`).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SurveyView {
@@ -2303,6 +2368,10 @@ pub struct ListingView {
     /// meets it (playtest 7: listings outlived old animals unwarned).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub aging: bool,
+    /// Asleep (hibernating, brumating, estivating): it walks to no meeting
+    /// until it wakes (the agreement's deadline waits).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dormant: bool,
     /// `stud` (male) or `dam` (female).
     pub role: String,
     pub sex: String,
@@ -2342,6 +2411,7 @@ pub struct ListingView {
     pub compatible: Option<bool>,
     /// That best body-plan fertility, 0..1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "crate::protocol::round::opt2")]
     pub body_plan_fertility: Option<f32>,
     /// `fixed` or `auction` (listings from before auctions read as fixed).
     #[serde(default = "fixed_kind")]
@@ -3005,6 +3075,8 @@ pub struct EraBoard {
     pub species_alive: usize,
     pub catastrophes: Vec<u32>,
     pub rows: Vec<EraRow>,
+    /// The niche prizes won (a leading player with at least
+    /// `chronicle::NICHE_MIN_SHARE` of the niche's alleles over the era).
     pub niches: Vec<NicheView>,
 }
 
@@ -3057,4 +3129,31 @@ pub struct ChronicleView {
     pub eras: EraList,
     pub catastrophes: CatastropheList,
     pub achievements: AchievementList,
+}
+
+/// Serializers that round to hundredths (playtest 9: f32 noise such as
+/// 0.30000001192092896 in mating previews, listings and compatibility).
+pub mod round {
+    use serde::Serializer;
+
+    /// `v` rounded to hundredths, as f64 (so 0.3 is written 0.3).
+    pub fn hundredths(v: f32) -> f64 {
+        (v as f64 * 100.0).round() / 100.0
+    }
+
+    /// `v` rounded to tenths, as f64.
+    pub fn tenths(v: f32) -> f64 {
+        (v as f64 * 10.0).round() / 10.0
+    }
+
+    pub fn f2<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_f64(hundredths(*v))
+    }
+
+    pub fn opt2<S: Serializer>(v: &Option<f32>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(x) => s.serialize_some(&hundredths(*x)),
+            None => s.serialize_none(),
+        }
+    }
 }
