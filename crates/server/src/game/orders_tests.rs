@@ -186,6 +186,11 @@ fn a_new_lineage_ramps_into_the_seasons_legacy_score() {
         .map(|player| crate::store::LegacyEntry { player, share: 0.3, weighted_share: 0.2 })
         .into_iter()
         .collect();
+    // Each with living animals (one with none ranks nothing: playtest 9).
+    let base = r.lineages.iter().find(|e| e.owner == 1).cloned().expect("player 1's lineage");
+    for p in [2, 3] {
+        r.lineages.push(crate::store::LineageEntry { owner: p, alive: 5, ..base.clone() });
+    }
     let ramped = g.ramped(&r);
     let share = |p: PlayerId| ramped.legacy.iter().find(|e| e.player == p).unwrap().share;
     // Founded today: nothing yet; a lineage halfway through counts half.
@@ -194,6 +199,9 @@ fn a_new_lineage_ramps_into_the_seasons_legacy_score() {
     assert_eq!(share(3), 0.3);
     // The record kept and shown is untouched.
     assert!(r.legacy.iter().all(|e| e.share == 0.3));
+    // Player 3's genes left only in others' herds: nothing ranked.
+    r.lineages.retain(|e| e.owner != 3);
+    assert_eq!(g.ramped(&r).legacy.iter().find(|e| e.player == 3).unwrap().share, 0.0);
 }
 
 /// An attack order (`possess_attack`) through the protocol: refusals with

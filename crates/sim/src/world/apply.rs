@@ -1021,16 +1021,12 @@ impl World {
         if !self.may_conceive(a) || !self.may_conceive(b) {
             return;
         }
-        // Two players' animals don't mate naturally while either is
-        // possessed or barred (`World::bar_cross_mating`): the market's
-        // agreements are the way (playtest 8: a possessed "stud raid").
+        // Two players' animals never mate naturally: the market's agreements
+        // (`World::directed_mating`) are the way. Playtest 8's possessed
+        // "stud raid" was barred; playtest 9 parked a fully fertile design in
+        // a rival's herd and reached 45% rival genes in ~20 days.
         let players = a.owner != b.owner && a.owner != crate::WILD && b.owner != crate::WILD;
-        if players
-            && (a.possessed_by.is_some()
-                || b.possessed_by.is_some()
-                || self.cross_mating_barred(a.id)
-                || self.cross_mating_barred(b.id))
-        {
+        if players {
             return;
         }
         let (f, m) = if a.sex == Sex::Female { (i, j) } else { (j, i) };
@@ -1051,6 +1047,7 @@ impl World {
         let scale = mating::wild_gap_scale(&self.config.balance, female.owner, male.owner);
         let fert =
             mating::fertility_scaled(&female.genome, &male.genome, mating::Relief::of(&self.config.balance), scale)
+                * mating::wild_fertility(&self.config.balance, female.owner, male.owner)
                 * self.disease_fertility(f, m)
                 * self.conception_boost(female);
         self.mating_contact(f, m);
@@ -2043,6 +2040,29 @@ mod tests {
         w.refresh_crowding();
         assert_eq!(w.lineage_crowding(herd), [1.0, 1.0]);
         assert_eq!(w.player_ceiling(), n);
+    }
+
+    /// Playtest 9: a herd held under the cap in era 1 ran away in era 2 as
+    /// the wild shrank. With `Balance::world_crowding` a player lineage
+    /// also crowds at that share of the world's crowding count (the
+    /// world's taken as at least the soft cap), whichever comes first.
+    #[test]
+    fn a_lineage_crowds_at_its_share_of_the_world() {
+        let w = World::new(WorldConfig { width: 32, height: 32, lineage_cap: 1500, ..Default::default() });
+        let share = w.config.balance.world_crowding;
+        assert_eq!(share, 0.2);
+        // 600 of 2,000: 1.5 times its share, crowded hard though under the cap.
+        let [litter, hunger] = w.crowding_effect_in(600.0, 2000.0);
+        assert!(litter < 0.1 && hunger > 1.2, "{litter} {hunger}");
+        assert!(w.crowding_effect(600.0)[0] > 0.99);
+        // At its share: half the litter, as at the soft cap.
+        let [at, _] = w.crowding_effect_in(400.0, 2000.0);
+        assert!((at - 0.5).abs() < 1e-4, "{at}");
+        // A small lineage in a small world: the world counts as the soft cap.
+        assert!(w.crowding_effect_in(150.0, 150.0)[0] > 0.98);
+        let mut off = w.clone();
+        off.config.balance.world_crowding = 0.0;
+        assert_eq!(off.crowding_effect_in(600.0, 2000.0), off.crowding_effect(600.0));
     }
 
     /// An incubating parent recovers from the end of her brood, as a live

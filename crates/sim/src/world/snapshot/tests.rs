@@ -580,6 +580,33 @@ fn founder_youth_off(b: &mut crate::Balance) {
 /// The playtest 8 founding tunable as snapshots before version 82 read it.
 fn rival_reach_off(b: &mut crate::Balance) {
     b.rival_reach = crate::serde_util::before_v82::OLD_VALUE;
+    playtest9_off(b);
+}
+
+/// The playtest 9 balance tunables as snapshots before version 83 read them.
+fn playtest9_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v83::OLD_VALUE;
+    (b.wild_barrier, b.world_crowding, b.wild_refuge) = (old, old, old);
+}
+
+/// Version 82 snapshots (before the playtest 9 balance rules) restore with
+/// them off, and are otherwise the same world.
+#[test]
+fn version_82_snapshots_restore_without_playtest9_balance() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v82();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 82);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.wild_barrier, crate::serde_util::before_v83::OLD_VALUE);
+    assert!(r.snapshot_v82() == old);
+    playtest9_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.wild_barrier, 0.9);
 }
 
 /// Version 81 snapshots (before the farther-sighted founding search)

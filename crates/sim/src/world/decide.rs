@@ -1530,16 +1530,42 @@ impl World {
         }
     }
 
+    /// The chance a player's hunter passes wild lineage `l` up for the day
+    /// (`Balance::wild_refuge`): `1 − r⁴`, with `r` its head count over
+    /// `wild_refuge` times its wild cap, capped at 1; 0 for a player's
+    /// lineage or with the refuge off. Playtest 9's replay: a player pack
+    /// hunted the wild antelope from 988 to 3 and the newts from 1,400 to
+    /// 50 in seven years, and the shrinking wild let a herd run away.
+    pub(crate) fn wild_refuge_skip(&self, l: u32) -> f32 {
+        let refuge = self.config.balance.wild_refuge;
+        if refuge <= 0.0 || self.lineages.get(l as usize).is_none_or(|x| x.owner != crate::WILD) {
+            return 0.0;
+        }
+        let (alive, cap) = self.cap_usage(l);
+        let r = (alive as f32 / (refuge * cap.max(1) as f32)).min(1.0);
+        1.0 - r.powi(4)
+    }
+
     /// Prey switching (`Balance::prey_switching`): has hunter `o` given up
     /// on prey lineage `l` today? With chance `min(1, 2 × pickiness) ×
     /// prey_scarcity(l)`, drawn once per hunter, prey lineage and day, so a
     /// hunter that gives a rare species up passes over all of it (and its
     /// clutches) that day.
+    ///
+    /// A player's hunter also gives up on a wild lineage grown scarce
+    /// against its wild cap (`Balance::wild_refuge`), whatever its
+    /// pickiness: [`World::wild_refuge_skip`].
     pub(crate) fn gives_up_on(&self, o: &Organism, l: u32) -> bool {
-        if self.config.balance.prey_switching <= 0.0 {
+        let refuge = if o.owner != crate::WILD { self.wild_refuge_skip(l) } else { 0.0 };
+        if self.config.balance.prey_switching <= 0.0 && refuge <= 0.0 {
             return false;
         }
-        let skip = (2.0 * o.pheno[Gene::Pickiness]).min(1.0) * self.prey_scarcity(l);
+        let picky = if self.config.balance.prey_switching > 0.0 {
+            (2.0 * o.pheno[Gene::Pickiness]).min(1.0) * self.prey_scarcity(l)
+        } else {
+            0.0
+        };
+        let skip = picky.max(refuge);
         let day = self.tick / self.config.ticks_per_day.max(1) as u64;
         // Seeded by the world's seed, so worlds of different seeds draw
         // independently (founders share ids across seeds).
@@ -2317,6 +2343,9 @@ mod tests {
     #[test]
     fn search_image_overlooks_other_prey_unless_starving() {
         let mut w = presets::standard_world(WorldConfig { seed: 3, width: 48, height: 48, ..Default::default() }, 1);
+        // A small world's voles are few against the wild cap: the refuge
+        // (`Balance::wild_refuge`, a player's hunters) is another rule.
+        w.config.balance.wild_refuge = 0.0;
         let hunter = w.organisms.iter().position(|o| o.lineage == 4 && o.matured).unwrap();
         let vole = w.organisms.iter().position(|o| o.lineage == 0 && o.matured).unwrap();
         for o in w.organisms.iter_mut() {

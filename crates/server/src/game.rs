@@ -387,6 +387,16 @@ fn egg_losses(now: &evo_sim::world::EggCounts, before: &evo_sim::world::EggCount
     .collect()
 }
 
+/// "1 tile", "12 tiles": a distance rounded to whole tiles (playtest 9: "1 tiles").
+pub(crate) fn tiles(d: impl Into<f64>) -> String {
+    let n = d.into().round().max(0.0);
+    if n == 1.0 {
+        "1 tile".to_string()
+    } else {
+        format!("{n:.0} tiles")
+    }
+}
+
 /// An egg loss cause in a sentence. `abandoned`: the lineage leaves its
 /// eggs by design (abandoned eggs), so a chilled clutch is expected, not a
 /// parent's failure.
@@ -792,6 +802,11 @@ struct Offer {
     start_dist: Option<(f32, f32)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     buyer_best: Option<f32>,
+    /// The partner's owner possessed or ordered its animal during the
+    /// agreement: only then can its moving away be the seller's fault
+    /// (playtest 9: fleeing a predator or walking to drink counted).
+    #[serde(default)]
+    partner_steered: bool,
     /// Ticks the deadline has waited for a sleeper (at most
     /// [`HOLD_MAX_DAYS`] of them).
     #[serde(default)]
@@ -2034,6 +2049,12 @@ impl Game {
         // New organisms: the next state build indexes the world again.
         self.state_cache.invalidate();
         self.lineage_of.insert(player, lineage);
+        // A new lineage starts with no orders and no group history: the last
+        // lineage's ("last order: migration … stalled", a migration under way)
+        // showed on the new one (playtest 9).
+        self.outcomes.retain(|&(p, _), _| p != player);
+        self.routes.retain(|&(p, _), _| p != player);
+        self.world.clear_migration(player);
         self.founded.insert(lineage, self.founding_sample(&founders));
         self.founded_day.insert(player, self.world.day());
         self.unpin_views(player);
@@ -2173,6 +2194,7 @@ impl Game {
         // Not deaths: no alerts for founders or the possessed.
         self.watched.retain(|_, (p, _)| *p != player);
         self.routes.retain(|&(p, _), _| p != player);
+        self.outcomes.retain(|&(p, _), _| p != player);
         if let Some(prog) = self.progress.get_mut(&player) {
             prog.extinct = true;
         }
@@ -2807,14 +2829,8 @@ impl Game {
                 let (fed, shop) = self.provision(player)?;
                 Ok(Some(serde_json::json!({ "fed": fed, "shop": shop })))
             }
-            ClientMsg::RestorePasture => {
-                let (restored, price, shop) = self.restore_pasture(player)?;
-                // Plant food restored, to tenths (playtest 9: "5386.2998").
-                Ok(Some(serde_json::json!({
-                    "restored": crate::protocol::round::tenths(restored),
-                    "price": price,
-                    "shop": shop
-                })))
+            ClientMsg::RestorePasture { group, preview } => {
+                Ok(Some(serde_json::to_value(self.restore_pasture(player, group.unwrap_or(0), preview)?).unwrap()))
             }
             ClientMsg::SetNameplate { color, title } => {
                 let (plate, shop) = self.set_nameplate(player, &color, &title)?;
@@ -3133,6 +3149,7 @@ impl Game {
             steered: None,
             start_dist: None,
             buyer_best: None,
+            partner_steered: false,
             paused: 0,
         };
         self.offers.insert(id, offer);
@@ -3658,6 +3675,7 @@ impl Game {
             organism: l.organism,
             animal_name: self.economy.animal_names.get(&l.organism).cloned(),
             aging: o.age_days(tpd) >= 0.9 * o.traits.lifespan_days,
+            dormant: matches!(o.dormancy, Dormancy::Winter | Dormancy::Summer),
             role: role_name(o.sex).into(),
             sex: sex_name(o.sex).into(),
             fee: l.fee,
@@ -4289,7 +4307,12 @@ impl Game {
             let _ = self.post(player, -(paid as i64), LedgerKind::Purchase, text, offer, listing);
         }
         if amount > paid {
-            *self.economy.refound_debt.entry(player).or_default() += amount - paid;
+            let owed = amount - paid;
+            *self.economy.refound_debt.entry(player).or_default() += owed;
+            // A ledger line for it (playtest 9: the debt was invisible).
+            let total = self.economy.refound_debt[&player];
+            let text = format!("Owed: {owed} renown more (now {total}), taken from the renown you earn next");
+            let _ = self.post(player, 0, LedgerKind::Purchase, text, offer, listing);
         }
         paid
     }
@@ -4301,8 +4324,20 @@ impl Game {
         // the seller's never came. Then the seller pays, not the buyer.
         let seller_now = o.meet.and_then(|(x, y)| self.world.organism(o.partner).map(|p| p.pos.dist(Vec2::new(x, y))));
         if let (Some((_, start)), Some(now)) = (o.start_dist, seller_now) {
-            let moved_away = now > start + SELLER_DRIFT;
-            let stood_up = o.lost.is_none() && o.buyer_best.is_some_and(|b| b <= MEET_ARRIVED) && now > MEET_ARRIVED;
+            // Moved away only counts when the seller steered it (not when
+            // it fled a predator or went to drink); never coming only when it
+            // was awake (a sleeping partner's share is discounted from the
+            // hold fee instead, as `forfeit_hold` does).
+            let moved_away = o.partner_steered && now > start + SELLER_DRIFT;
+            let partner_asleep = self
+                .world
+                .organism(o.partner)
+                .is_some_and(|x| matches!(x.dormancy, Dormancy::Winter | Dormancy::Summer));
+            let stood_up = o.lost.is_none()
+                && o.slept == 0
+                && !partner_asleep
+                && o.buyer_best.is_some_and(|b| b <= MEET_ARRIVED)
+                && now > MEET_ARRIVED;
             if moved_away || stood_up {
                 let why = if moved_away {
                     format!("{}'s #{} moved away from the meeting point", self.name(o.to), o.partner)
@@ -4422,9 +4457,19 @@ impl Game {
     /// Error for an offer's organism that is no longer alive: how it died
     /// when the world still has the record.
     fn gone(&self, id: OrgId) -> ErrorInfo {
-        let cause = self.world.organisms.iter().find(|o| o.id == id && !o.alive).and_then(|o| o.death);
+        let dead = self.world.organisms.iter().find(|o| o.id == id && !o.alive);
+        let cause = dead.and_then(|o| o.death);
+        // Who ate it, when the world knows (playtest 9: listing alerts said
+        // only "was eaten").
+        let by = dead.and_then(|o| o.killer).and_then(|l| self.world.lineages.get(l as usize)).map(|l| {
+            if l.owner == WILD {
+                format!(" by a wild {}", l.name)
+            } else {
+                format!(" by {}'s {}", self.name(l.owner), l.name)
+            }
+        });
         let how = match cause {
-            Some(DeathCause::Predation) => "was eaten".to_string(),
+            Some(DeathCause::Predation) => format!("was eaten{}", by.unwrap_or_default()),
             Some(DeathCause::Starvation) => "starved".to_string(),
             Some(DeathCause::OldAge) => "died of old age".to_string(),
             Some(c) => format!("died ({})", c.label()),
@@ -4585,7 +4630,10 @@ impl Game {
         // Killed by the seller's own lineage: the seller's fault (playtest
         // 8: the seller's pack ate the buyer's animal and the buyer paid).
         let seller_lineage = self.lineage_of(o.to);
+        // Unless the buyer steered its animal there (playtest 9: walked into
+        // the seller's pack to collect).
         if o.lost.is_none()
+            && o.steered.is_none()
             && seller_lineage.is_some()
             && self.world.organisms.iter().any(|x| x.id == o.mine && !x.alive && x.killer == seller_lineage)
         {
@@ -4824,21 +4872,28 @@ impl Game {
             let pause_cap = HOLD_MAX_DAYS * self.world.config.ticks_per_day as u64;
             if accepted && (sa || sb) {
                 let o = self.offers.get_mut(&id).unwrap();
-                if o.paused < pause_cap {
+                // The partner's (seller's) sleep pauses it for as long as it
+                // lasts (playtest 9: hibernation outlasted the 30-day cap and
+                // the sleeping seller was blamed); the buyer's sleep only up
+                // to the cap.
+                if sb || o.paused < pause_cap {
                     o.paused += 1;
                     o.accepted_tick = Some(o.accepted_tick.unwrap_or(o.created_tick).saturating_add(1));
                 }
             }
             if accepted {
-                let steered = self.world.organism(mine).is_some_and(|x| {
-                    x.possessed_by.is_some()
-                        || x.order.is_some()
-                        || self
-                            .world
-                            .groups(x.owner)
-                            .iter()
-                            .any(|g| g.id == x.group && (g.migration.is_some() || g.rally.is_some()))
-                });
+                let steered_now = |id: OrgId| {
+                    self.world.organism(id).is_some_and(|x| {
+                        x.possessed_by.is_some()
+                            || x.order.is_some()
+                            || self
+                                .world
+                                .groups(x.owner)
+                                .iter()
+                                .any(|g| g.id == x.group && (g.migration.is_some() || g.rally.is_some()))
+                    })
+                };
+                let (steered, partner_steered) = (steered_now(mine), steered_now(partner));
                 let near = self.offers[&id]
                     .meet
                     .and_then(|(x, y)| self.world.organism(mine).map(|b| b.pos.dist(Vec2::new(x, y))));
@@ -4852,6 +4907,9 @@ impl Game {
                 }
                 if steered {
                     o.steered = Some(tick);
+                }
+                if partner_steered {
+                    o.partner_steered = true;
                 }
             }
             let o = &self.offers[&id];
@@ -4929,6 +4987,16 @@ impl Game {
                 }
             }
         }
+        // Animals in open offers and agreements are spared by other
+        // players' animals until the offer closes (`World::set_market_shield`).
+        let shielded: Vec<OrgId> = self
+            .offers
+            .values()
+            .filter(|o| o.status.is_open() && o.from != o.to)
+            .flat_map(|o| [o.mine, o.partner])
+            .filter(|&id| id != 0)
+            .collect();
+        self.world.set_market_shield(shielded);
         // Possessed animals (and for two game days after) don't mate
         // naturally with other players' animals (`World::bar_cross_mating`).
         let bar_until = tick + 2 * self.world.config.ticks_per_day as u64;
@@ -5000,6 +5068,7 @@ impl Game {
         if legacy_day != self.last_legacy_day {
             self.last_legacy_day = legacy_day;
             let record = self.daily_record();
+            self.note_alive(record.day);
             self.count_hunted(record.day);
             // Before a rollover: a catastrophe ending at the boundary counts
             // for the season it fell in, not the next one.
@@ -5179,7 +5248,15 @@ impl Game {
     fn ramped(&self, record: &DailyRecord) -> DailyRecord {
         let mut r = record.clone();
         for e in &mut r.legacy {
-            let f = founding_ramp(self.founded_day.get(&e.player).copied(), record.day);
+            // A player with no living animals ranks nothing for the day: genes
+            // left in rivals' herds by a retired or extinct lineage used to
+            // keep scoring (playtest 9: ranked 4th with none alive).
+            let alive: usize = record.lineages.iter().filter(|l| l.owner == e.player).map(|l| l.alive).sum();
+            let f = if e.player != WILD && alive == 0 {
+                0.0
+            } else {
+                founding_ramp(self.founded_day.get(&e.player).copied(), record.day)
+            };
             e.share *= f;
             e.weighted_share *= f;
         }
@@ -6231,14 +6308,14 @@ impl Game {
         } else if left > 0 {
             format!(
                 "Newcomer grace: {:.1} days left ({}). It continues the grace of your earlier lineage (from day {from_day}): \
-                 founding again within {soon:.0} days of your last founding carries a grace on instead of starting a new one.",
+                 founding again within {soon:.0} days of your last lineage's end carries its grace on instead of starting a new one.",
                 days(left),
                 real(left),
             )
         } else {
             format!(
                 "No newcomer grace: it continues the grace of your earlier lineage (from day {from_day}), which has run out. \
-                 Founding again within {soon:.0} days of your last founding carries a grace on rather than starting \
+                 Founding again within {soon:.0} days of your last lineage's end carries its grace on rather than starting \
                  a fresh one; other players' animals can attack yours then."
             )
         };
@@ -6532,7 +6609,7 @@ impl Game {
             let d = m.dist(center);
             data["distance"] = crate::protocol::round::tenths(d).into();
             if far && d > FAR_CIRCLE_TILES {
-                warnings.push(format!("It is {d:.0} tiles from the group, which has to walk there first."));
+                warnings.push(format!("It is {} from the group, which has to walk there first.", tiles(d)));
             }
         }
         warnings
@@ -7842,7 +7919,10 @@ impl Game {
                 alive: self.owner_population(p),
             })
             .collect();
-        rows.sort_by(|a, b| b.share.total_cmp(&a.share).then(a.player.cmp(&b.player)));
+        // Players with animals first: one with none left (genes only in
+        // rivals' herds) no longer outranks the living (playtest 9).
+        let living = |r: &LeaderRow| r.player == WILD || r.alive > 0;
+        rows.sort_by(|a, b| living(b).cmp(&living(a)).then(b.share.total_cmp(&a.share)).then(a.player.cmp(&b.player)));
         Leaderboard { day: snap.map(|s| s.day), breeding_adults: snap.map_or(0, |s| s.breeding_adults), rows }
     }
 
@@ -8091,8 +8171,8 @@ fn attack_result_text(w: &World, attacker: OrgId, target: OrgId) -> Option<Strin
             Some(format!("Attack over: #{target} went to ground (a burrow or shelter) and escaped your #{attacker}."))
         }
         Some(t) if a.pos.dist(t.pos) > evo_sim::world::commands::ORDER_KEPT * w.attack_range() => Some(format!(
-            "Attack over: #{target} escaped; your #{attacker} lost sight of it ({:.0} tiles away).",
-            a.pos.dist(t.pos)
+            "Attack over: #{target} escaped; your #{attacker} lost sight of it ({} away).",
+            tiles(a.pos.dist(t.pos))
         )),
         Some(_) => None, // another order replaced it
         None => Some(format!("Attack over: your #{attacker} lost track of #{target} (it died or left the area).")),
@@ -8673,8 +8753,13 @@ mod tests {
         g.economy.balances.insert(1, 10_000);
         let shop = g.shop_view(1);
         assert_eq!(shop.restore_price, economy::RESTORE_MIN);
-        let d = data(&g.command(10, 1, None, ClientMsg::RestorePasture));
+        // A preview first: what it adds and costs, nothing spent.
+        let p = data(&g.command(10, 1, None, ClientMsg::RestorePasture { group: None, preview: true }));
+        assert_eq!((p["preview"].as_bool(), p["unit"].as_str()), (Some(true), Some("food")), "{p}");
+        assert_eq!(g.balance(1), 10_000);
+        let d = data(&g.command(10, 1, None, ClientMsg::RestorePasture { group: None, preview: false }));
         assert!(d["restored"].as_f64().unwrap() > 0.0, "{d}");
+        assert_eq!(d["restored"].as_f64().unwrap().fract(), 0.0, "rounded");
         assert_eq!(d["price"].as_u64(), Some(economy::RESTORE_MIN));
         assert_eq!(g.balance(1), 10_000 - economy::RESTORE_MIN);
         assert!(g.world.map.tile_at(at).veg > 0.0 || g.world.map.tile_at(at).water_depth > 0.0);
@@ -8682,7 +8767,10 @@ mod tests {
         assert_eq!(g.shop_view(1).restore_price, 2 * economy::RESTORE_MIN);
         assert_eq!(g.shop_view(1).restores_bought, 1);
         g.economy.balances.insert(1, 100);
-        assert!(!result(&g.command(10, 1, None, ClientMsg::RestorePasture)).0);
+        assert!(!result(&g.command(10, 1, None, ClientMsg::RestorePasture { group: None, preview: false })).0);
+        // Another group of the player: it must have animals.
+        let out = g.command(10, 1, None, ClientMsg::RestorePasture { group: Some(3), preview: true });
+        assert_eq!(result(&out).1.as_deref(), Some("no_such_group"));
     }
 
     /// Playtest 7: egg layers lost more eggs than hatched with no warning
@@ -10274,6 +10362,30 @@ mod tests {
         // (The lineage may have grown past the size limit; only the window is checked here.)
     }
 
+    /// Playtest 9: the leader bought cheap reinforcements each spring after
+    /// winter took it under the limit. The limit goes by the most alive at a
+    /// daily record within a ranked season's length, and lapses after it.
+    #[test]
+    fn reinforcements_go_by_the_seasons_peak() {
+        let (mut g, _, _) = game();
+        g.cfg.season_days = 4;
+        let _ = g.post(1, 5000, LedgerKind::Income, "test".into(), None, None);
+        let alive = g.owner_population(1);
+        // A peak of 100 two days ago, under the limit today.
+        let today = g.world.day();
+        g.economy.alive_days.insert(1, [(today.saturating_sub(2), 100), (today, alive)].into());
+        g.world.config.lineage_cap = 5 * (alive + 5);
+        assert!(alive <= g.reinforce_max_alive());
+        let out = g.command(10, 1, None, ClientMsg::Reinforce);
+        assert_eq!(result(&out).1.as_deref(), Some("too_large"));
+        assert!(format!("{out:?}").contains("yours had 100"), "{out:?}");
+        // The peak lapses with the window.
+        run_days(&mut g, 4);
+        assert!(g.season_peak(1) < 100, "{:?}", g.economy.alive_days.get(&1));
+        g.world.config.lineage_cap = 5 * (g.owner_population(1).max(g.season_peak(1)) + 5);
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)), (true, None));
+    }
+
     /// A provision feeds and waters a lineage's neediest adults, priced per
     /// adult fed (more for a large lineage), at most 3 within a season's
     /// length.
@@ -10356,6 +10468,7 @@ mod tests {
             steered: None,
             start_dist: None,
             buyer_best: None,
+            partner_steered: false,
             paused: 0,
         };
         let tpd = g.world.config.ticks_per_day as u64;
@@ -12262,10 +12375,31 @@ mod tests {
             || g.ledger(1, 50).iter().any(|e| e.text.contains("toward renown owed"));
         assert!(owed, "the seller owes what it lacked: {:?}", g.ledger(1, 5));
 
-        // The seller's dam walks away: a lapse is the seller's fault.
+        // Carried off without the seller steering (fleeing, drinking): not
+        // the seller's fault; the buyer forfeits as usual (playtest 9).
+        let (mut g, dam, stud, id) = setup();
+        for _ in 0..30 {
+            g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().pos = Vec2::new(2.0, 2.0);
+            g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().pos = Vec2::new(50.0, 50.0);
+            g.world.step();
+            g.after_tick();
+            if !g.offers.contains_key(&id) {
+                break;
+            }
+        }
+        let back: i64 = g
+            .ledger(2, 50)
+            .iter()
+            .filter(|e| e.kind == LedgerKind::Refund && e.offer == Some(id))
+            .map(|e| e.delta)
+            .sum();
+        assert_eq!(back, 15, "unsteered: the buyer forfeits the hold fee");
+
+        // The seller possesses its dam and walks it away: the seller's fault.
         let (mut g, dam, stud, id) = setup();
         let before = g.balance(2);
         for _ in 0..30 {
+            g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().possessed_by = Some(1);
             g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().pos = Vec2::new(2.0, 2.0);
             g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().pos = Vec2::new(50.0, 50.0);
             g.world.step();
@@ -12283,6 +12417,21 @@ mod tests {
             .map(|e| e.delta)
             .sum();
         assert_eq!(back, 20 + 5, "moved away: the seller pays");
+
+        // The buyer steered its animal into the seller's pack: not the
+        // seller's fault (playtest 9: walk in and collect).
+        let (mut g, _dam, stud, id) = setup();
+        g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().possessed_by = Some(2);
+        g.world.step();
+        g.after_tick();
+        let ann = g.lineage_of(1);
+        g.world.step();
+        let o = g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap();
+        o.alive = false;
+        o.death = Some(DeathCause::Predation);
+        o.killer = ann;
+        g.after_tick();
+        assert!(g.offers.get(&id).is_some_and(|o| o.lost.is_some() && !o.excused), "the buyer's own risk");
 
         // The buyer's animal dies of old age: not excused, the buyer pays.
         let (mut g, _dam, stud, id) = setup();

@@ -298,7 +298,14 @@ pub enum ClientMsg {
     /// member (at least 200), doubled for each restoration already bought
     /// within a ranked season's length (a sink that grows with the
     /// lineage). Data: `{restored, price, shop}` (`restored`: food added).
-    RestorePasture,
+    RestorePasture {
+        /// The group whose pasture is restored (default 0, the main one).
+        #[serde(default)]
+        group: Option<u8>,
+        /// Only say what it would do and cost.
+        #[serde(default)]
+        preview: bool,
+    },
     /// Protocol 2 only: the client lost track of the delta states; the
     /// connection's next state is a keyframe. Handled by the connection (no
     /// `result`), never by the world.
@@ -400,7 +407,7 @@ impl ClientMsg {
             ClientMsg::Reinforce => "reinforce",
             ClientMsg::Compatibility => "compatibility",
             ClientMsg::Provision => "provision",
-            ClientMsg::RestorePasture => "restore_pasture",
+            ClientMsg::RestorePasture { .. } => "restore_pasture",
             ClientMsg::SubstituteMating { .. } => "substitute_mating",
             ClientMsg::Survey => "survey",
             ClientMsg::NameAnimal { .. } => "name_animal",
@@ -1906,6 +1913,13 @@ pub struct CrowdingView {
     pub litter: f32,
     /// Hunger is multiplied by this (1 below the soft cap).
     pub hunger: f32,
+    /// The lineage also crowds from this crowding count, its share of the
+    /// world's (`Balance::world_crowding`, the world's taken as at least
+    /// the soft cap), when that is below the soft cap; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub world_cap: Option<f32>,
+    /// That share (0.2: a fifth of the world's crowding count).
+    pub world_share: f32,
 }
 
 /// `renown_shop` (and after a purchase): what renown buys.
@@ -1965,6 +1979,13 @@ pub struct ShopView {
     /// The price of naming one of your animals.
     #[serde(default)]
     pub animal_name_price: u64,
+    /// Renown owed (taken from what comes in next), if any.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub owed: u64,
+    /// What re-founding after a retirement would cost now (the retire
+    /// dialog quotes it).
+    #[serde(default)]
+    pub next_refound_fee: u64,
     #[serde(default)]
     pub provisions_bought: u32,
     #[serde(default)]
@@ -2125,6 +2146,31 @@ pub struct RefoundView {
 }
 
 /// One player's standing over a season of the history.
+/// A pasture restoration (`restore_pasture`), done or previewed.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RestoreView {
+    pub group: u8,
+    /// The circle: the group's middle and the radius.
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+    /// Food the plants gain, rounded (in `unit`).
+    pub restored: f32,
+    pub unit: String,
+    pub price: u64,
+    /// When a larger lineage with animals in the circle sets the price: its
+    /// owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priced_by: Option<String>,
+    /// Other players with animals in the circle (who eat from it too), with
+    /// how many.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_feeds: Vec<String>,
+    pub preview: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shop: Option<ShopView>,
+}
+
 /// A survey's findings (`survey`).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SurveyView {
@@ -2324,6 +2370,10 @@ pub struct ListingView {
     /// meets it (playtest 7: listings outlived old animals unwarned).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub aging: bool,
+    /// Asleep (hibernating, brumating, estivating): it walks to no meeting
+    /// until it wakes (the agreement's deadline waits).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dormant: bool,
     /// `stud` (male) or `dam` (female).
     pub role: String,
     pub sex: String,

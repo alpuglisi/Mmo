@@ -392,7 +392,10 @@ async function main() {
     await page.waitForSelector('#catastrophe-alert:not([hidden])', { timeout: UI_MS });
     // Its text in place (the notice has its full height).
     await waitFor('the notice text', () => page.evaluate(() => document.querySelector('#catastrophe-alert .cat-effect')?.textContent.length > 20));
-    check(!(await page.evaluate(() => document.querySelector('#catastrophe-alert').classList.contains('folded'))), 'the notice starts expanded');
+    // On a phone a notice starts folded to one line (playtest 9: notices and toasts covered half the map); unfold it.
+    check(await page.evaluate(() => document.querySelector('#catastrophe-alert').classList.contains('folded')), 'the notice starts folded on a phone');
+    await page.tap('#catastrophe-alert .cat-fold');
+    await waitFor('the notice unfolded', () => page.evaluate(() => !document.querySelector('#catastrophe-alert').classList.contains('folded')));
     await page.tap('#tools-more');
     await page.waitForSelector('#tools-menu #migrate', { state: 'visible' });
     const onTop = await page.evaluate(() => ['#migrate', '#group-select'].map((q) => {

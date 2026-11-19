@@ -1167,6 +1167,34 @@ fn a_much_larger_group_claims_over_a_tiny_squat() {
     assert_eq!(w.claim_territory(HERD, 0, at, 4.0), Err(CommandError::Overlaps));
 }
 
+/// A newcomer in its grace keeps even a small territory (playtest 9: a
+/// large group took over a graced newcomer's ground).
+#[test]
+fn a_graced_newcomers_squat_is_not_taken() {
+    let mut w = standard();
+    let mine = w.group_middle(HERD, 0).unwrap();
+    let theirs: Vec<usize> =
+        (0..w.organisms.len()).filter(|&i| w.organisms[i].alive && w.organisms[i].owner == 1).collect();
+    for (k, &i) in theirs.iter().enumerate() {
+        w.organisms[i].group = if k < 2 { 1 } else { 0 };
+        if k < 2 {
+            w.organisms[i].pos = mine;
+        }
+    }
+    w.claim_territory(1, 1, mine, 4.0).unwrap();
+    // Player 1's lineage is in its grace.
+    w.config.balance.attack_grace = 50.0;
+    let l1 = w.organisms[theirs[0]].lineage as usize;
+    if w.lineage_founded.len() <= l1 {
+        w.lineage_founded.resize(l1 + 1, 0);
+    }
+    w.lineage_founded[l1] = w.tick.max(1);
+    w.rebuild_grace_starts();
+    assert!(w.lineage_grace_ticks(l1 as u32).is_some());
+    assert_eq!(w.claim_territory(HERD, 0, mine, 5.0), Err(CommandError::Overlaps));
+    assert!(w.territory(1, 1).is_some());
+}
+
 /// Young don't hold ground (playtest 8: a breeding pair grew past
 /// `SQUAT_MEMBERS` with its litters and could never be displaced): a holder
 /// of two adults and many young is still a squat.

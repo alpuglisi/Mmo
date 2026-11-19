@@ -59,7 +59,9 @@ export function targetGroup(choice: GroupChoice, groups: GroupView[]): number | 
 /** The menu entries: every group first, then each group with its size. */
 export function groupOptions(groups: GroupView[]): { value: string; text: string }[] {
   const opts = [{ value: 'all', text: groups.length > 1 ? `All groups (${groups.reduce((n, g) => n + g.members, 0)})` : 'All' }];
-  for (const g of groups) opts.push({ value: String(g.id), text: `${groupName(g.id)} · ${g.members}` });
+  // An empty main group says so: orders, surveys and restorations "of the main group" need animals in it (playtest 9).
+  const others = groups.some((g) => g.id !== 0 && g.members > 0);
+  for (const g of groups) opts.push({ value: String(g.id), text: `${groupName(g.id)} · ${g.members}${g.id === 0 && g.members === 0 && others ? ' (empty: merge a group into it)' : ''}` });
   return opts;
 }
 

@@ -556,7 +556,7 @@ impl Game {
             | ClientMsg::BuyMatingSlot
             | ClientMsg::Compatibility
             | ClientMsg::Provision
-            | ClientMsg::RestorePasture
+            | ClientMsg::RestorePasture { .. }
             | ClientMsg::Survey
             | ClientMsg::NameAnimal { .. }
             | ClientMsg::AnimalNames

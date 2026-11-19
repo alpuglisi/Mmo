@@ -1405,6 +1405,35 @@ pub struct Balance {
     /// territory 8 days later, and beside a pack.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v82"))]
     pub rival_reach: f32,
+    /// A player's lineage and a wild one rarely breed true (version 83;
+    /// off at 0, what snapshots before version 83 read,
+    /// `serde_util::before_v83`): a litter or clutch of a player-owned and a
+    /// wild-owned parent is `1 − wild_barrier` the size its fertility alone
+    /// gives (at 0.9 a tenth), on top of `wild_isolation`'s gap. Playtest 9:
+    /// a design near the Meadow vole's body plan (gap near 0, so 1.6 times it
+    /// stayed fertile) was 58% fertile with it and went 35 → 393 on vole
+    /// hybrids; a grazer near the antelope's, 77%.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v83"))]
+    pub wild_barrier: f32,
+    /// A player's lineage crowds (`lineage_crowding`: smaller litters,
+    /// hungrier animals) at this share of the world's crowding count, the
+    /// wild's included (taken as at least the soft cap, so a lineage of
+    /// under this share of the soft cap never crowds by it), when that
+    /// comes before the soft cap (version 83;
+    /// off at 0, `serde_util::before_v83`). Playtest 9: a herd held to 6% in
+    /// era 1 ran away in era 2 under the cap as the wild shrank 3,800 →
+    /// 1,250: the cap was a number, not a share.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v83"))]
+    pub world_crowding: f32,
+    /// A player's hunters give up on a wild lineage grown scarce: below
+    /// this share of its wild cap a hunter passes it up for the day with
+    /// chance `1 − r⁴` (`r` its count over this share of its cap),
+    /// whatever its pickiness (`World::wild_refuge_skip`; version 83, off at
+    /// 0, `serde_util::before_v83`). The wild's own hunters keep prey
+    /// switching alone. Playtest 9's replay: a player pack took the antelope
+    /// from 988 to 3 and the newts from 1,400 to 50 in seven years.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v83"))]
+    pub wild_refuge: f32,
 }
 
 impl Balance {
@@ -1713,12 +1742,15 @@ impl Default for Balance {
             pack_prey: 40.0,
             founder_youth: 1.0,
             rival_reach: 1.0,
+            wild_barrier: 0.9,
+            world_crowding: 0.2,
+            wild_refuge: 0.3,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 178;
+    pub const FIELD_COUNT: usize = 181;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1906,6 +1938,9 @@ impl Balance {
             ("pack_prey", &mut self.pack_prey),
             ("founder_youth", &mut self.founder_youth),
             ("rival_reach", &mut self.rival_reach),
+            ("wild_barrier", &mut self.wild_barrier),
+            ("world_crowding", &mut self.world_crowding),
+            ("wild_refuge", &mut self.wild_refuge),
         ]
     }
 

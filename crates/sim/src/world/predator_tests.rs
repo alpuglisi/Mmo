@@ -5,7 +5,7 @@
 use super::{Clutch, Intent, World};
 use crate::genome::Gene;
 use crate::math::Vec2;
-use crate::organism::{Action, DeathCause, Sex};
+use crate::organism::{Action, DeathCause, Organism, Sex};
 use crate::rng::{rng_for, stream};
 use crate::{presets, WorldConfig};
 
@@ -122,6 +122,7 @@ fn prey_switching_draws_depend_on_the_seed() {
     let draws = |seed: u64| {
         let mut w = niche(seed);
         w.config.balance.prey_switching = 1e6; // every prey is rare
+        w.config.balance.wild_refuge = 0.0; // the refuge is another rule
         let hunters: Vec<usize> = (0..w.organisms.len()).filter(|&i| w.organisms[i].lineage == PACK).collect();
         let mut out = Vec::new();
         for day in 0..20u64 {
@@ -320,4 +321,42 @@ fn a_kill_is_eaten_once() {
     let (new, old) = (ate(1.0), ate(0.0));
     assert!(new > 0.5 * helping && new <= 1.01 * helping, "one helping: {new} of {helping}");
     assert!(old > 1.2 * new, "the old strike ate twice: {old} against {new}");
+}
+
+/// Playtest 9's replay: a player pack hunted the wild antelope from 988 to
+/// 3. A player's hunter passes a wild lineage up, whatever its pickiness,
+/// more surely the further it is under `Balance::wild_refuge` of its wild
+/// cap; the wild's own hunters and a player's prey are left to prey
+/// switching.
+#[test]
+fn player_hunters_spare_a_scarce_wild_species() {
+    let mut w = niche(1);
+    let wild = (0..w.lineages.len() as u32).find(|&l| w.lineages[l as usize].owner == crate::WILD).unwrap();
+    let (alive, cap) = w.cap_usage(wild);
+    assert!((alive as f32) < 0.3 * cap as f32, "{alive} of {cap}");
+    let skip = w.wild_refuge_skip(wild);
+    let r = alive as f32 / (0.3 * cap as f32);
+    assert!((skip - (1.0 - r.powi(4))).abs() < 1e-5 && skip > 0.5, "{skip}");
+    let player = (0..w.lineages.len() as u32).find(|&l| w.lineages[l as usize].owner != crate::WILD).unwrap();
+    assert_eq!(w.wild_refuge_skip(player), 0.0);
+    // A player's hunter that never switches prey still passes it up most days;
+    // a wild one doesn't.
+    w.config.balance.prey_switching = 0.0;
+    let hunter = w.organisms.iter().find(|o| o.lineage == PACK).unwrap().clone();
+    let days = |w: &mut World, o: &Organism| {
+        (0..40u64)
+            .filter(|&d| {
+                w.tick = d * w.config.ticks_per_day as u64;
+                w.gives_up_on(o, wild)
+            })
+            .count()
+    };
+    let mut mine = hunter.clone();
+    mine.owner = 1;
+    let mut feral = hunter;
+    feral.owner = crate::WILD;
+    assert!(days(&mut w, &mine) > 20, "{}", days(&mut w, &mine));
+    assert_eq!(days(&mut w, &feral), 0);
+    w.config.balance.wild_refuge = 0.0;
+    assert_eq!(days(&mut w, &mine), 0);
 }

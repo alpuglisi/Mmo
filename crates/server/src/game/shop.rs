@@ -14,7 +14,7 @@
 //! - **Score breakdown** ([`Game::score_breakdown`]): whose genes make up a
 //!   legacy share, from the daily host tally (`World::legacy_hosts`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use evo_sim::genome::Genome;
 use evo_sim::mating::{fertility_gap, plan_weights, Relief, BODY_PLAN_GENES, BODY_PLAN_STERILE};
@@ -125,14 +125,15 @@ pub const CARNIVORE_EGG_WARNING: &str = "An egg-laying hunter leaves its clutch 
 
 /// [`Spread`] over the pairs of `a` × `b` (None when either is empty), the
 /// body-plan gap counted `scale` times (`mating::wild_gap_scale`: a player's
-/// design against a wild lineage).
-pub fn spread(a: &[&Genome], b: &[&Genome], relief: Relief, scale: f32) -> Option<Spread> {
+/// design against a wild lineage), each pair's fertility times `litter`
+/// (`mating::wild_fertility`: the same pair's share of a litter).
+pub fn spread(a: &[&Genome], b: &[&Genome], relief: Relief, scale: f32, litter: f32) -> Option<Spread> {
     let mut fert: Vec<f32> = Vec::with_capacity(a.len() * b.len());
     let mut closest: Option<(f32, &Genome, &Genome)> = None;
     for &x in a {
         for &y in b {
             let gap = fertility_gap(x, y, relief) * scale;
-            fert.push(evo_sim::mating::fertility_scaled(x, y, relief, scale));
+            fert.push(evo_sim::mating::fertility_scaled(x, y, relief, scale) * litter);
             if closest.is_none_or(|(g, _, _)| gap < g) {
                 closest = Some((gap, x, y));
             }
@@ -214,6 +215,16 @@ impl Game {
             restore_price: economy::restore_price(self.owner_population(player), self.restores_bought(player)),
             restores_bought: self.restores_bought(player),
             animal_name_price: economy::ANIMAL_NAME_PRICE,
+            owed: self.economy.refound_debt.get(&player).copied().unwrap_or(0),
+            next_refound_fee: {
+                let (today, window) = (self.world.day(), self.refound_window_days());
+                let n = self
+                    .economy
+                    .refound_days
+                    .get(&player)
+                    .map_or(0, |d| d.iter().filter(|&&x| x + window > today).count());
+                crate::game::refound_fee(n as u32)
+            },
             reinforce_next_day: self.reinforce_next(player).map(|x| x.0),
             reinforce_next_minutes: self.reinforce_next(player).map(|x| x.1),
         }
@@ -347,28 +358,78 @@ impl Game {
     }
 
     /// `restore_pasture`: the plants within [`economy::RESTORE_RADIUS`] of
-    /// the player's main group regrow in full, for renown that scales with
-    /// the lineage and doubles with each restoration in the window.
-    pub(super) fn restore_pasture(&mut self, player: PlayerId) -> Result<(f32, u64, ShopView), ErrorInfo> {
+    /// one of the player's groups regrow to what the season allows
+    /// (`World::restore_pasture`), for renown that scales with the largest
+    /// lineage with animals in the circle (the buyer's or another's: no
+    /// cheap purchase by a small ally on a leader's ground) and doubles with
+    /// each restoration in the window. With `preview`, only what it would
+    /// add and cost. Nothing to regrow (midwinter, a drought, already
+    /// grown) is refused, not charged.
+    pub(super) fn restore_pasture(
+        &mut self,
+        player: PlayerId,
+        group: u8,
+        preview: bool,
+    ) -> Result<crate::protocol::RestoreView, ErrorInfo> {
         if self.lineage_of(player).is_none() || self.is_extinct(player) {
             return Err(ErrorInfo::new("no_lineage", "you have no living lineage to restore pasture for"));
         }
-        let Some(at) = self.world.group_middle(player, 0) else {
-            return Err(ErrorInfo::new("no_lineage", "your main group has no animals"));
+        let Some(at) = self.world.group_middle(player, group) else {
+            return Err(ErrorInfo::new("no_such_group", format!("your group {group} has no animals")));
         };
-        let now = economy::restore_price(self.owner_population(player), self.restores_bought(player));
+        let r = economy::RESTORE_RADIUS;
+        // Every player with animals in the circle benefits: the price follows
+        // the largest of their lineages.
+        let mut benefit: BTreeMap<PlayerId, usize> = BTreeMap::new();
+        for o in self.world.organisms.iter().filter(|o| o.alive && o.owner != WILD && o.pos.dist(at) <= r) {
+            *benefit.entry(o.owner).or_default() += 1;
+        }
+        let (priced_by, size) = benefit
+            .keys()
+            .map(|&p| (p, self.owner_population(p)))
+            .chain(std::iter::once((player, self.owner_population(player))))
+            .max_by_key(|&(p, n)| (n, p == player))
+            .unwrap();
+        let now = economy::restore_price(size, self.restores_bought(player));
         let price = self.quoted(player, now, |q| q.restore);
+        let food = self.world.restore_pasture(at, r, false);
+        let others: Vec<String> =
+            benefit.iter().filter(|(&p, _)| p != player).map(|(&p, &n)| format!("{} ({n})", self.name(p))).collect();
+        let mut view = crate::protocol::RestoreView {
+            group,
+            x: at.x.round(),
+            y: at.y.round(),
+            radius: r,
+            restored: food.round(),
+            unit: "food".into(),
+            price,
+            priced_by: (priced_by != player).then(|| self.name(priced_by)),
+            also_feeds: others,
+            preview,
+            shop: None,
+        };
+        if preview {
+            view.shop = Some(self.shop_view(player));
+            return Ok(view);
+        }
+        if food < 1.0 {
+            return Err(ErrorInfo::new(
+                "nothing_to_restore",
+                "nothing would regrow there now (midwinter, a drought, or the plants are already as high as the season allows)",
+            ));
+        }
         self.spend(
             player,
             price,
-            format!("Pasture restored within {} tiles of your main group", economy::RESTORE_RADIUS),
+            format!("Pasture restored within {r} tiles of group {group}: about {:.0} food", food),
         )?;
-        let restored = self.world.restore_pasture(at, economy::RESTORE_RADIUS);
+        view.restored = self.world.restore_pasture(at, r, true).round();
         let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
         let days = self.economy.restore_days.entry(player).or_default();
         days.retain(|&d| d + window > today);
         days.push(today);
-        Ok(((restored * 10.0).round() / 10.0, price, self.shop_view(player)))
+        view.shop = Some(self.shop_view(player));
+        Ok(view)
     }
 
     /// `survey`: rivals' groups and territories near the player's main
@@ -625,8 +686,36 @@ impl Game {
     }
 
     /// Most living members a reinforced lineage may have.
-    fn reinforce_max_alive(&self) -> usize {
+    pub(super) fn reinforce_max_alive(&self) -> usize {
         (self.world.config.lineage_cap as f64 * economy::REINFORCE_MAX_SHARE).floor() as usize
+    }
+
+    /// The most `player` had alive at a daily record within the last
+    /// ranked season's length of simulated days (0 when none recorded).
+    pub(super) fn season_peak(&self, player: PlayerId) -> usize {
+        let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
+        self.economy
+            .alive_days
+            .get(&player)
+            .map_or(0, |d| d.iter().filter(|&&(day, _)| day + window > today).map(|&(_, n)| n).max().unwrap_or(0))
+    }
+
+    /// Note each player's living count for the day (`season_peak`), and
+    /// drop the days past the window.
+    pub(super) fn note_alive(&mut self, day: u64) {
+        let window = self.cfg.season_days.max(1);
+        let players: BTreeSet<PlayerId> = self.world.lineages.iter().map(|l| l.owner).filter(|&p| p != WILD).collect();
+        for p in players {
+            let alive = self.owner_population(p);
+            let days = self.economy.alive_days.entry(p).or_default();
+            while days.front().is_some_and(|&(d, _)| d + window <= day) {
+                days.pop_front();
+            }
+            if alive > 0 || !days.is_empty() {
+                days.push_back((day, alive));
+            }
+        }
+        self.economy.alive_days.retain(|_, d| !d.is_empty());
     }
 
     /// Reinforcements `player` bought within the last ranked season's
@@ -671,6 +760,17 @@ impl Game {
             return Err(ErrorInfo::new(
                 "too_large",
                 format!("reinforcements are for lineages of at most {max} (yours has {alive})"),
+            ));
+        }
+        let peak = self.season_peak(player);
+        if peak > max {
+            return Err(ErrorInfo::new(
+                "too_large",
+                format!(
+                    "reinforcements are for lineages of at most {max} alive at any time in the last {} days \
+                     (yours had {peak})",
+                    self.cfg.season_days
+                ),
             ));
         }
         let adults = self.world.organisms.iter().any(|o| o.alive && o.matured && o.lineage == lineage);
@@ -771,7 +871,8 @@ impl Game {
                 let lin = &self.world.lineages[l as usize];
                 // `own` is a player's: against a wild lineage the gap counts more.
                 let scale = evo_sim::mating::wild_gap_scale(&self.world.config.balance, 1, lin.owner);
-                let s = spread(own, &theirs, relief, scale)?;
+                let litter = evo_sim::mating::wild_fertility(&self.world.config.balance, 1, lin.owner);
+                let s = spread(own, &theirs, relief, scale, litter)?;
                 Some(CompatibilityRow {
                     lineage: l,
                     lineage_name: lin.name.clone(),
@@ -903,7 +1004,8 @@ impl Game {
         for v in views {
             let Some(o) = self.world.organism(v.organism) else { continue };
             let scale = evo_sim::mating::wild_gap_scale(&self.world.config.balance, player, o.owner);
-            if let Some(s) = spread(&own, &[&*o.genome], relief, scale) {
+            let litter = evo_sim::mating::wild_fertility(&self.world.config.balance, player, o.owner);
+            if let Some(s) = spread(&own, &[&*o.genome], relief, scale, litter) {
                 v.compatible = Some(compatible(&s));
                 // Tenths: exact means over a rival's animal solved its body
                 // plan (playtest 8).
@@ -1022,8 +1124,13 @@ impl Game {
     /// The soft lineage cap as it stands for `player` (`lineage_stats.crowding`).
     pub(super) fn crowding_view(&self, player: PlayerId) -> Option<CrowdingView> {
         self.lineage_of(player)?;
-        let count = self.world.crowding_counts().get(&player).copied().unwrap_or(0.0);
-        let [litter, hunger] = self.world.crowding_effect(count);
+        let counts = self.world.crowding_counts();
+        let count = counts.get(&player).copied().unwrap_or(0.0);
+        let total: f32 = counts.values().sum();
+        let [litter, hunger] = self.world.crowding_effect_in(count, total);
+        let soft = self.world.config.lineage_cap as f32;
+        let share = self.world.config.balance.world_crowding;
+        let world_cap = Some(share * total.max(soft)).filter(|&c| share > 0.0 && c < soft);
         Some(CrowdingView {
             soft_cap: self.world.config.lineage_cap,
             hard_cap: self.world.player_ceiling(),
@@ -1031,6 +1138,8 @@ impl Game {
             juvenile_weight: self.world.config.balance.crowding_juveniles,
             litter,
             hunger,
+            world_cap,
+            world_share: share,
         })
     }
 }

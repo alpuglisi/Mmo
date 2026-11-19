@@ -1,7 +1,7 @@
 // Compatibility of a chosen pair, from the server's `preview_mating` reply.
 
 import type { MatingPreviewView } from '../protocol';
-import { pct } from './dom';
+import { pct, tiles } from './dom';
 import { traitNameLower } from './traitNames';
 
 export interface CompatSummary {
@@ -37,7 +37,7 @@ export function compatSummary(p: MatingPreviewView, ctx: PairContext = {}): Comp
     ? `outside their preferences (mismatch ${p.mismatch.toFixed(2)}): cost ${p.cost.toFixed(2)}, failure chance ${pct(p.failure_chance, 0)}`
     : 'within both preferences');
   const close = p.distance <= p.meeting_distance;
-  parts.push(close ? 'together now' : `${p.distance.toFixed(0)} tiles apart`);
+  parts.push(close ? 'together now' : `${tiles(p.distance)} apart`);
   let level: CompatSummary['level'] = p.fertility >= 0.9 && p.cost === 0 ? 'ok' : 'warn';
   let after = '';
   if (!close) {

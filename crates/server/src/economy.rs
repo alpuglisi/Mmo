@@ -316,6 +316,13 @@ pub struct Economy {
     /// The simulated day of each player's recent pasture restorations
     /// (`restore_pasture`; absent from older saves: none).
     pub restore_days: BTreeMap<PlayerId, Vec<u64>>,
+    /// Each player's living count at each day's record within the last
+    /// ranked season's length (day, alive): reinforcements go by the
+    /// season's peak, not today's count (playtest 9: the leader bought
+    /// cheap reinforcements every spring after winter took it under the
+    /// limit). Absent from older saves: today's count only.
+    #[serde(default)]
+    pub alive_days: BTreeMap<PlayerId, VecDeque<(u64, usize)>>,
     /// The day each player's last lineage ended, retired or died out
     /// (re-founding soon after costs founders: `Game::refound_terms`).
     pub retired_day: BTreeMap<PlayerId, u64>,

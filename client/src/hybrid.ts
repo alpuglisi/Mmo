@@ -32,6 +32,9 @@ export const THERMO_WEIGHT = 0.3;
  * 0.6 by default), so body sizes 0.19 apart are sterile with a wild species (playtest 7: player herds were 50–90%
  * fertile with a wild species at most sizes). */
 export const WILD_SCALE = 1.6;
+/** Of a player × wild litter only this share comes of it (sim `1 − Balance::wild_barrier`, 0.9 by default): a
+ * design whose body plan is a wild species' own stays nearly apart from it (playtest 9: 58% fertile with the vole). */
+export const WILD_LITTER = 0.1;
 
 /** The gap scale against species `s`: `WILD_SCALE` for an all-wild species, 1 otherwise. */
 function wildScale(s: SpeciesView): number {
@@ -143,7 +146,7 @@ export function neighbours(d: DesignSpec, species: readonly SpeciesView[], me: P
     if (gap >= GAP_STERILE + GAP_MARGIN) continue;
     const wild = scale > 1;
     out.push({
-      species: s, gap, by, fertility: fertility(gap), possible: gap >= GAP_STERILE, wild,
+      species: s, gap, by, fertility: fertility(gap) * (wild ? WILD_LITTER : 1), possible: gap >= GAP_STERILE, wild,
       wildShare: s.dominant === 0 ? s.dominant_share : 0, players,
       toSterile: Math.max(0, GAP_STERILE + GAP_MARGIN - gap) / scale,
     });
@@ -250,7 +253,7 @@ export function hybridAdvice(d: DesignSpec, species: readonly SpeciesView[], me:
   const points: string[] = [];
   if (wild.length) {
     const n = wild[0];
-    points.push(`Your design sits inside the interbreeding range of ${wild.length === 1 ? 'a wild species' : `${wild.length} wild species`}: ${list(wild)}. Where they meet, your animals mate with them, and the mixed young carry wild genes, which count for the wild ecosystem, not for you: your legacy share can end up far below your head count.`);
+    points.push(`Your design sits inside the interbreeding range of ${wild.length === 1 ? 'a wild species' : `${wild.length} wild species`}: ${list(wild)}. Where they meet, your animals mate with them (a litter with a wild parent is a tenth of its size, a wasted pregnancy for your mother), and the few mixed young carry wild genes, which count for the wild ecosystem, not for you: your legacy share can end up far below your head count.`);
     points.push(moveAdvice(d, n));
   }
   if (rivals.length) {
