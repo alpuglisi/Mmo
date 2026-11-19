@@ -111,6 +111,13 @@ const RIVAL_LAND_WEIGHT: f32 = 1.5;
 /// No founding home within this many tiles outside another player's
 /// territory (`Balance::founding_rivals`).
 const RIVAL_TERRITORY_MARGIN: f32 = 4.0;
+/// How much more a predator (carnivory above 0.6) counts against a founding
+/// home than another rival animal, and how much farther (`Balance::rival_reach`).
+const RIVAL_PACK_WEIGHT: f32 = 3.0;
+const RIVAL_PACK_RANGE: f32 = 2.0;
+/// Tiles a rival group's foraging reaches beyond its home circle, counted
+/// as its ground (`Balance::rival_reach`).
+const RIVAL_FORAGE: f32 = 8.0;
 /// Days a new founding's founders lose water more slowly in a drought
 /// (`Balance::founding_drought`).
 pub const FOUNDER_WATER_DAYS: f32 = 6.0;
@@ -349,8 +356,15 @@ struct HomeSearch {
     /// under it, away from water. `None`: the region map decides.
     settle: Option<Vec<bool>>,
     /// Other players' living animals (`Balance::founding_rivals`, in a
-    /// running world; empty otherwise).
-    rivals: PointGrid<()>,
+    /// running world; empty otherwise), each with its weight and range
+    /// (`Balance::rival_reach`: predators more, and farther).
+    rivals: PointGrid<(f32, f32)>,
+    /// The farthest range in `rivals`.
+    rival_range: f32,
+    /// Where rival groups range and are headed (`Balance::rival_reach`):
+    /// kept out of first, then only marked down, so water that lasts a
+    /// drought still wins on a crowded map.
+    rival_ranges: Vec<groups::Territory>,
     /// Other players' territories (same rule).
     rival_lands: Vec<groups::Territory>,
 }
@@ -448,13 +462,46 @@ impl HomeSearch {
         // running world, so a new world's founding is unchanged.
         let mut rivals = PointGrid::new(&w.map);
         let mut rival_lands = Vec::new();
+        let mut rival_ranges = Vec::new();
+        let reach = w.config.balance.rival_reach > 0.0;
+        let mut rival_range = RIVAL_RANGE;
         if w.config.balance.founding_rivals > 0.0 && w.tick > 0 && probe.owner != crate::WILD {
+            let mut owners = std::collections::BTreeSet::new();
             for o in &w.organisms {
                 if o.alive && o.owner != crate::WILD && o.owner != probe.owner {
-                    rivals.insert(o.pos, ());
+                    // Predators count more, and farther (`Balance::rival_reach`).
+                    let pack = reach && o.traits.carnivory > 0.6;
+                    let (weight, range) =
+                        if pack { (RIVAL_PACK_WEIGHT, RIVAL_RANGE * RIVAL_PACK_RANGE) } else { (1.0, RIVAL_RANGE) };
+                    rival_range = rival_range.max(range);
+                    rivals.insert(o.pos, (weight, range));
+                    owners.insert(o.owner);
                 }
             }
             rival_lands = w.territories.iter().filter(|(&(p, _), _)| p != probe.owner).map(|(_, &t)| t).collect();
+            // Where each rival group ranges and is headed counts as its
+            // ground (`Balance::rival_reach`; playtest 8: late joiners landed
+            // inside a third group's territory 8 days later).
+            if reach {
+                for &p in &owners {
+                    for g in w.groups(p) {
+                        if g.members == 0 {
+                            continue;
+                        }
+                        let home = World::home_radius(g.members);
+                        let circle = |center: Vec2, radius: f32| groups::Territory { center, radius, claimed_tick: 0 };
+                        if let Some(mid) = w.group_middle(p, g.id) {
+                            rival_ranges.push(circle(mid, home + RIVAL_FORAGE));
+                        }
+                        if let Some(&target) = w.migrate_orders.get(&(p, g.id)) {
+                            rival_ranges.push(circle(target, home + RIVAL_FORAGE));
+                        }
+                        if let Some(r) = g.rally {
+                            rival_ranges.push(circle(r.center, r.radius.max(home)));
+                        }
+                    }
+                }
+            }
         }
         HomeSearch {
             region,
@@ -467,6 +514,8 @@ impl HomeSearch {
             founders,
             settle,
             rivals,
+            rival_range,
+            rival_ranges,
             rival_lands,
         }
     }
@@ -1475,6 +1524,8 @@ impl World {
             founders,
             settle,
             rivals,
+            rival_range,
+            rival_ranges,
             rival_lands,
         } = search;
         // Judge the spot as it is now (`Balance::founding_conditions`): only
@@ -1516,6 +1567,11 @@ impl World {
             // Never inside (or at the edge of) another player's territory
             // (`Balance::founding_rivals`), in any round.
             if rival_lands.iter().any(|t| t.center.dist(p) < t.radius + RIVAL_TERRITORY_MARGIN) {
+                continue;
+            }
+            // Nor, in the first half of the strict pass, where rival groups
+            // range and are headed (`Balance::rival_reach`).
+            if k < 100 && rival_ranges.iter().any(|t| t.center.dist(p) < t.radius + RIVAL_TERRITORY_MARGIN) {
                 continue;
             }
             // With `founding_safety`: dry land, with room for the founders.
@@ -1660,9 +1716,10 @@ impl World {
             // more) and their territories' edges: uncontested ground first
             // (`Balance::founding_rivals`).
             let mut rival_near = 0.0f32;
-            rivals.near(p, RIVAL_RANGE, |q, _| rival_near += (1.0 - q.dist(p) / RIVAL_RANGE).max(0.0));
+            rivals
+                .near(p, *rival_range, |q, &(weight, range)| rival_near += weight * (1.0 - q.dist(p) / range).max(0.0));
             let mut rivalry = RIVAL_WEIGHT * (1.0 - (-rival_near / RIVAL_SCALE).exp());
-            for t in rival_lands.iter() {
+            for t in rival_lands.iter().chain(rival_ranges.iter()) {
                 let gap = (t.center.dist(p) - t.radius).max(0.0);
                 rivalry += RIVAL_LAND_WEIGHT * (1.0 - gap / RIVAL_RANGE).max(0.0);
             }
@@ -2369,6 +2426,52 @@ mod winter_tests {
             }
         }
         assert!(on < off, "rival animals within 35 tiles of the homes: {on} with the rule, {off} without");
+    }
+
+    /// Playtest 8: late joiners landed inside a third group's territory 8
+    /// days later, and beside a pack. With `Balance::rival_reach` a rival
+    /// group's migration target counts as its ground (no home there), and
+    /// predators keep homes farther away than plant eaters do.
+    #[test]
+    fn foundings_keep_clear_of_where_rivals_are_headed_and_of_packs() {
+        let mut w = small_world(3);
+        w.run_days(1);
+        // A rival group (player 2, the sample herd grazers) headed for the
+        // middle of the map.
+        let owner2 = w.organisms.iter().find(|o| o.alive && o.owner != crate::WILD).map(|o| o.owner).unwrap();
+        let target = Vec2::new(32.0, 32.0);
+        w.migrate_orders.insert((owner2, 0), target);
+        let members = w.organisms.iter().filter(|o| o.alive && o.owner == owner2 && o.group == 0).count();
+        let keep = World::home_radius(members) + RIVAL_FORAGE;
+        let design =
+            crate::design::FounderDesign::new("late", crate::design::Thermo::Warm, crate::design::BirthType::Live, 2)
+                .founders(20);
+        for owner in 60..66 {
+            let mut c = w.clone();
+            c.found_lineage_unchecked(owner, &design);
+            let home = c.lineage_homes[c.lineages.len() - 1].unwrap();
+            assert!(home.dist(target) >= keep, "owner {owner}: home {home:?} where the rival is headed");
+        }
+        // Predators weigh 3 times as much, out to twice the range.
+        let probe_owner = 60;
+        let pred = w.organisms.iter().find(|o| o.alive && o.owner != crate::WILD && o.traits.carnivory > 0.6);
+        let herb = w.organisms.iter().find(|o| o.alive && o.owner != crate::WILD && o.traits.carnivory < 0.3);
+        let (Some(pred), Some(herb)) = (pred, herb) else { panic!("the sample players: a pack and a herd") };
+        let mut probe = herb.clone();
+        probe.owner = probe_owner;
+        let search = HomeSearch::new(&w, &probe, w.lineages.len() as u32, 20);
+        let payload = |at: Vec2| {
+            let mut found = None;
+            search.rivals.near(at, 0.01, |q, &v| {
+                if q == at {
+                    found = Some(v);
+                }
+            });
+            found.expect("the animal is in the search")
+        };
+        assert_eq!(payload(pred.pos), (RIVAL_PACK_WEIGHT, RIVAL_RANGE * RIVAL_PACK_RANGE));
+        assert_eq!(payload(herb.pos), (1.0, RIVAL_RANGE));
+        assert_eq!(search.rival_range, RIVAL_RANGE * RIVAL_PACK_RANGE);
     }
 
     #[test]

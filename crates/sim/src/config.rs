@@ -1361,6 +1361,17 @@ pub struct Balance {
     /// of most sizes aren't diluted by a wild species. 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v73"))]
     pub wild_isolation: f32,
+    /// Founding search, farther-sighted (version 74; off at 0, what
+    /// snapshots before version 74 read, `serde_util::before_v74`): with
+    /// `founding_rivals`, other players' groups count where they range and
+    /// are headed, not only where their animals stand: each group's middle
+    /// with its forage circle, its migration target and its rally count as
+    /// a territory (no home inside, and marked down near); and predators
+    /// (carnivory above 0.6) count 3 times as much, out to twice the
+    /// range. Playtest 8: late joiners landed inside a third group's
+    /// territory 8 days later, and beside a pack.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v74"))]
+    pub rival_reach: f32,
 }
 
 impl Balance {
@@ -1664,12 +1675,13 @@ impl Default for Balance {
             prey_floor: 40.0,
             honest_signals: 1.0,
             wild_isolation: 0.6,
+            rival_reach: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 173;
+    pub const FIELD_COUNT: usize = 174;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1852,6 +1864,7 @@ impl Balance {
             ("prey_floor", &mut self.prey_floor),
             ("honest_signals", &mut self.honest_signals),
             ("wild_isolation", &mut self.wild_isolation),
+            ("rival_reach", &mut self.rival_reach),
         ]
     }
 
