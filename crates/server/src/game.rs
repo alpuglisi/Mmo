@@ -5187,9 +5187,20 @@ impl Game {
         let max = evo_sim::world::commands::GRACE_WINTER_FOUNDERS;
         let founders = w.lineages.get(lineage as usize).map_or(0, |l| l.founders);
         let winter = if w.grace_end(lineage, start) > start + w.grace_length() {
-            format!(" It lasts through your first winter: a founding of {max} or fewer whose grace would end in late autumn or winter keeps it until that winter ends.")
+            // Through the spring after it too while `Balance::founding_drought` is on (`World::grace_end`).
+            let until = if w.config.balance.founding_drought > 0.0 {
+                "through the spring after it"
+            } else {
+                "until that winter ends"
+            };
+            format!(" It lasts through your first winter: a founding of {max} or fewer whose grace would end in late autumn or winter keeps it {until}.")
         } else if founders <= max {
-            format!(" (A founding of {max} or fewer whose grace would end in late autumn or winter keeps it until that winter ends; this one ends before then.)")
+            let until = if w.config.balance.founding_drought > 0.0 {
+                "through the spring after it"
+            } else {
+                "until that winter ends"
+            };
+            format!(" (A founding of {max} or fewer whose grace would end in late autumn or winter keeps it {until}; this one ends before then.)")
         } else {
             format!(" (Only a founding of {max} or fewer keeps its grace through its first winter; this one has {founders}.)")
         };

@@ -21,7 +21,7 @@ import { exposeCards, familyShareBar } from '../share/familyShare';
 import type { AlertPrefs, ClientMsg, CompatibilityView, LineageStats, PlayerId, MatingOutcome, MatingPreviewView, NearbyOrganism, OfferView, OrgId, OwnOrganism, ResultMsg, SeasonBoard, SpeciesView, StateView } from '../protocol';
 import { parseCompatibilityView, WILD } from '../protocol';
 import { createPicker, type PickItem } from './picker';
-import { confirmDialog, textDialog } from './confirm';
+import { confirmDialog, promptDialog } from './confirm';
 import { nameplatesKey, parseNameplates, plateBadge, setNameplates } from './nameplates';
 import { WorldView } from '../world/worldView';
 import { applyDynamic, decodeTerrain, FOOD_BANDS, terrainSummary, type TerrainGrid } from '../world/terrain';
@@ -1071,16 +1071,25 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }
   /** Name a species of yours (`name_species`, a renown cosmetic). */
   async function nameSpecies(sp: SpeciesView): Promise<void> {
+    // The price always shows (also when you can't afford it), and a refusal
+    // keeps the dialog open with the reason (playtest 7).
     const price = market.shopPrice('species_name_price');
-    const name = await textDialog({ id: 'species-name', title: `A name for "${sp.name}"`, value: sp.name, maxLength: 40, ok: price ? `Name it (${price} renown)` : 'Name it',
-      body: `1 to 40 characters${price ? `; costs ${price} renown` : ''}.` });
-    if (name === null || name.trim() === '' || name.trim() === sp.name) return;
-    const r = await send({ type: 'name_species', species: sp.id, name: name.trim() });
-    if (r.ok) {
-      model.toast('info', `Species ${sp.id} is now called "${String(r.data ?? name.trim())}".`);
-      void refreshChronicle();
-    }
-    // (A refusal is toasted once, by the model, in friendly words: playtest 6 saw it twice.)
+    const balance = model.state?.balance;
+    const afford = price === undefined || balance === undefined || balance >= price;
+    await promptDialog({
+      id: 'species-name', title: `A name for "${sp.name}"`, label: 'Species name', value: sp.name, maxLength: 40,
+      ok: price ? `Name it (${price} renown)` : 'Name it',
+      body: `1 to 40 characters. ${price ? `Naming costs ${price} renown${afford ? '' : `: you have ${balance}, not enough yet`}.` : 'Naming costs renown (see the Market\'s renown shop).'}`,
+      submit: async (name) => {
+        if (name === '') return 'Type a name.';
+        if (name === sp.name) return 'That is its name already.';
+        const r = await send({ type: 'name_species', species: sp.id, name });
+        if (!r.ok) return r.error ? friendlyError(r.error) : 'The name was refused.';
+        model.toast('info', `Species ${sp.id} is now called "${String(r.data ?? name)}".`);
+        void refreshChronicle();
+        return null;
+      },
+    });
   }
   // Bought nameplates: shown next to names (Ranks, hall of fame, leaderboard, a rival's inspector).
   async function refreshNameplates(): Promise<void> {
@@ -1860,14 +1869,23 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const listMore = h('p', { class: 'muted small', id: 'organism-list-more' });
   const groupsEl = h('div', { id: 'group-list' });
   const retireBtn = h('button', { type: 'button', id: 'retire-lineage', class: 'danger' }, 'Retire lineage');
+  const retireRuleEl = h('p', { class: 'small', id: 'retire-rule' }, 'Founding again soon after retiring costs more per founder.');
   const retireEl = h('details', { id: 'lineage-retire', class: 'retire' },
     h('summary', {}, 'Retire this lineage'),
     h('p', { class: 'muted small' },
       'Start over: every animal and egg of your lineage leaves the world at once (they are removed, not killed and not left wild), ',
       'its orders end, and you can design and found a new lineage straight away. Your renown, records and titles stay. ',
       'A new lineage\'s legacy share counts toward the ranked season gradually over its first days.'),
+    // Not a free re-roll: the rule is here too, not only in the confirmation (playtest 7).
+    retireRuleEl,
     retireBtn);
   retireEl.hidden = true;
+  retireEl.addEventListener('toggle', () => {
+    if (!retireEl.open) return;
+    void api.world().then((w) => {
+      if (w.refound_rule) setText(retireRuleEl, `After retiring, ${w.refound_rule}.`);
+    }).catch(() => {});
+  });
   retireBtn.addEventListener('click', async () => {
     const lineage = model.state?.lineage;
     if (lineage === null || lineage === undefined) return;
@@ -2004,7 +2022,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       lineageExtinct.querySelector('.extinct-text')?.replaceChildren(h('strong', {}, `You retired lineage #${s.lineage}.`), ' Its animals have left the world.');
     }
     retireEl.hidden = !(s.lineage !== null && s.population > 0);
-    endGraceEl.hidden = !s.grace;
+    // Nothing to end once the lineage is gone (retired or died out).
+    endGraceEl.hidden = !(s.grace && s.population > 0);
     if (!gone) renderGroups(s);
     const lb = s.leaderboard;
     keyed(boardEl, JSON.stringify(lb) + nameplatesKey(), () => lb.rows.length === 0
@@ -2061,7 +2080,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (!e) return ['Pregnant', String(pregnant)];
     const brooding = orgs.filter((o) => o.action === 'guard').length;
     const parts = [
-      e.clutches === 0 ? 'no clutch now' : `now ${e.clutches} clutch${e.clutches === 1 ? '' : 'es'} (${e.eggs} egg${e.eggs === 1 ? '' : 's'})`,
+      // The same counts as the Genes tiles (playtest 7: "Clutches 0 / Eggs 1" there, "no clutch now" here).
+      e.clutches === 0 && e.eggs === 0 ? 'no clutch now'
+        : `now ${e.clutches} clutch${e.clutches === 1 ? '' : 'es'} (${e.eggs} egg${e.eggs === 1 ? '' : 's'})`,
       e.clutches > 0 ? `${e.brooded} brooded` : null,
       brooding > 0 ? `${brooding} brooding now` : null,
       pregnant > 0 ? `${pregnant} about to lay` : null,
