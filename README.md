@@ -9135,6 +9135,7 @@ How the prey-per-hunter bounds were chosen (the six-player study,
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` (main: 11.90) | | 11.91 (± 0.10); every lineage 12 of 12 |
 | `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 12/16 (11), 16/16 (16); 1 (newts, seed 38) | 13/16 (13), 16/16 (16); 3 (newts, seeds 34, 36 and 38) |
 | workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (456), build, e2e (16 scripts, `E2E_JOBS=2`) | | pass |
+| After merging main's round 7 (renumbered to v63): sweep; predlong (fox, pack hunters; prey lost); tests, clippy, fixtures, client (`vitest` 459), e2e | predlong 14/16 (13), 16/16; 2 | sweep 11.91 (± 0.09); predlong 14/16 (12), 16/16; 4; pass (e2e 14 of 16 under load, mobile and panels passed alone) |
 
 - **predlong includes a player pack lineage**, so the larder applies there.
   The newts were lost on two more seeds, where the larder kept more
