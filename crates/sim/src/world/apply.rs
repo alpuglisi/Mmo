@@ -1169,6 +1169,19 @@ impl World {
                 return;
             }
         }
+        // A graced raider's first raid on a rival's clutch ends its owner's
+        // grace, as a first attack does (`Balance::graced_hunting`, with
+        // `raid_rules`).
+        let bal = &self.config.balance;
+        if bal.raid_rules > 0.0
+            && bal.graced_hunting > 0.0
+            && c.owner != crate::WILD
+            && self.attack_grace_left(o).is_some()
+        {
+            let owner = o.owner;
+            self.grace_waived.insert(owner, self.tick);
+        }
+        let (o, c) = (&self.organisms[i], &self.clutches[k]);
         let n = c.eggs.len().min(3);
         let food = n as f32 * c.egg_mass * self.config.balance.meat_per_kg;
         let bal = &self.config.balance;
