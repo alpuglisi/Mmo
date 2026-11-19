@@ -86,7 +86,8 @@ const api = (page, method, url, body) => page.evaluate(async ([method, url, body
   return { status: res.status, json };
 }, [method, url, body]);
 
-/** Found the design on screen; a re-founding with fewer founders says so in the app's dialog first. */
+/** Found the design on screen; a re-founding with fewer founders says so in
+ * the app's dialog first. Returns the renown the notice says it cost (0 if none). */
 async function found(page) {
   await page.click('#design-submit');
   const which = await waitFor('the map or the reduced-founding notice', async () => {
@@ -94,12 +95,16 @@ async function found(page) {
     if (await page.$('#world-canvas')) return 'map';
     return null;
   });
+  let cost = 0;
   if (which === 'reduced') {
-    step(`re-founding notice: "${(await page.textContent('#founded-reduced')).replace(/\s+/g, ' ').slice(0, 90)}…"`);
+    const text = (await page.textContent('#founded-reduced')).replace(/\s+/g, ' ');
+    cost = Number(/It cost (\d+) renown/.exec(text)?.[1] ?? 0);
+    step(`re-founding notice: "${text.slice(0, 90)}…"`);
     check(!(await page.$('#founded-reduced-cancel')), 'the notice after founding has one OK button, no Cancel');
     await page.click('#founded-reduced-ok');
   }
   await page.waitForSelector('#world-canvas', { timeout: UI_MS });
+  return cost;
 }
 
 const lineageNow = (page) => page.evaluate(() => {
@@ -191,12 +196,12 @@ async function main() {
     // A founders count other than the starter's: the next design screen must start from it.
     const lastFounders = Number(await page.inputValue('#design-founders')) - 2;
     await page.fill('#design-founders', String(lastFounders));
-    await found(page);
+    const refoundCost = await found(page);
     const second = await waitFor('the second lineage', async () => {
       const s = await lineageNow(page);
       return s && s.lineage !== null && s.lineage !== first.lineage && s.population > 0 ? s : null;
     });
-    if (first.balance !== null && second.balance !== null) check(second.balance >= first.balance, 'renown should be kept', { first, second });
+    if (first.balance !== null && second.balance !== null) check(second.balance >= first.balance - refoundCost, 'renown should be kept, less the re-founding cost', { first, second, refoundCost });
     await page.click('#tab-lineage');
     await waitFor('the died-out notice to go', async () => page.locator('#lineage-extinct').isHidden());
     await page.screenshot({ path: path.join(shots, 'refound-again.png') });
