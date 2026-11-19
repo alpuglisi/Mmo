@@ -1073,6 +1073,17 @@ pub struct Game {
     /// sim's "hold loosened" just after says it again (playtest 9: "feeds
     /// 235", then "no longer feeds it" two ticks later); not saved.
     claimed_starving: BTreeMap<(PlayerId, u8), u64>,
+    /// Groups told their territory no longer feeds them, and not yet that it
+    /// recovered (playtest 11: the two swung every 4–10 days); not saved.
+    loose_said: BTreeSet<(PlayerId, u8)>,
+    /// The territory a group's rally replaced, given back if the rally is
+    /// cancelled (playtest 11: checking a rally's warnings cost the claim);
+    /// not saved.
+    rally_replaced: BTreeMap<(PlayerId, u8), evo_sim::world::groups::Territory>,
+    /// While most of a lineage sleeps, the animals eaten since the last
+    /// folded line, by hunter lineage, and the days counted
+    /// (`warning_alerts`); not saved.
+    fold_hunted: BTreeMap<PlayerId, (u32, BTreeMap<u32, u64>)>,
     /// The day a grazed-bare ground was last said again while animals kept
     /// starving (playtest 7: one alert, then nothing for weeks). Not saved.
     bare_repeated: BTreeMap<(PlayerId, u8), u64>,
@@ -1410,6 +1421,9 @@ impl Game {
             left_home: BTreeMap::new(),
             group_peak: BTreeMap::new(),
             claimed_starving: BTreeMap::new(),
+            loose_said: BTreeSet::new(),
+            rally_replaced: BTreeMap::new(),
+            fold_hunted: BTreeMap::new(),
             bare_repeated: BTreeMap::new(),
             poison_known: None,
             old_age_told: BTreeSet::new(),
@@ -2557,6 +2571,14 @@ impl Game {
                     data["route"] = route_json(route);
                 }
                 let mut warnings = self.travel_warnings(player, group, true);
+                // Rival hunters and territories on the way, as claims and rallies
+                // warn (playtest 11: migrate warned of no hunters at all); the
+                // destination's own rival ground is said below.
+                warnings.extend(
+                    self.way_warnings(player, group, to)
+                        .into_iter()
+                        .filter(|w| !w.starts_with("That ground lies inside")),
+                );
                 // What waits at the destination, rated for the ground the group
                 // forages there (twice its home circle), the ground the daily
                 // home check rates too (playtest 7: rated at the rally circle,
@@ -2774,7 +2796,16 @@ impl Game {
             ClientMsg::Rally { group, x, y } => {
                 finite(&[x, y])?;
                 let before = self.orders_of(player, group);
+                let held = self.world.territory(player, group);
                 let r = self.world.rally_group(player, group, Vec2::new(x, y)).map_err(e)?;
+                match held {
+                    Some(t) => {
+                        self.rally_replaced.insert((player, group), t);
+                    }
+                    None => {
+                        self.rally_replaced.remove(&(player, group));
+                    }
+                }
                 self.order_given(player, group);
                 let mut data = serde_json::to_value(RallyView::from(r)).unwrap();
                 let mut warnings = self.travel_warnings(player, group, false);
@@ -2787,6 +2818,17 @@ impl Game {
             }
             ClientMsg::CancelRally { group } => {
                 self.world.cancel_rally(player, group).map_err(e)?;
+                // The territory the rally replaced comes back, as Clear brings
+                // one back after a migration (playtest 11: checking a rally's
+                // warnings cost the claim).
+                if let Some(t) = self.rally_replaced.remove(&(player, group)) {
+                    if self.world.restore_territory(player, group, t) {
+                        return Ok(Some(serde_json::json!({
+                            "note": "the group holds its territory again",
+                            "territory": { "x": t.center.x, "y": t.center.y, "radius": t.radius },
+                        })));
+                    }
+                }
                 let back = self.world.settle_circle(player, group).is_some();
                 Ok(Some(serde_json::json!({
                     "note": if back { "the group goes back to its home ground" } else { "the group roams freely" }
@@ -2800,6 +2842,10 @@ impl Game {
                     ));
                 }
                 let out = self.world.split_group(player, group, organisms.as_deref()).map_err(e)?;
+                // Both groups' peaks start again from their new sizes (playtest
+                // 11: a split read as "Group B has fallen from 751 to 311").
+                self.group_peak.remove(&(player, group));
+                self.group_peak.remove(&(player, out.group));
                 let mut data = serde_json::json!({ "group": out.group, "moved": out.moved, "kept": out.kept });
                 self.group_counts_report(player, &mut data);
                 Ok(Some(data))
@@ -6329,7 +6375,9 @@ impl Game {
                     (a + usize::from(o.traits.birth == evo_sim::design::BirthType::AbandonedEggs), n + 1)
                 });
             let by_design = layers > 0 && abandon * 2 > layers;
-            if !by_design && lost >= EGG_WARN_MIN && lost > e.born + expected {
+            // At least 1% of the lineage's size in eggs (playtest 11: "eggs
+            // failing" every few seconds for tiny losses of a big herd).
+            if !by_design && lost >= EGG_WARN_MIN.max(e.alive as u64 / 100) && lost > e.born + expected {
                 let (cause, n) =
                     e.eggs_lost.iter().max_by_key(|(_, &n)| n).map(|(c, &n)| (c.as_str(), n)).unwrap_or(("", 0));
                 let season = season_of(w, r.day);
@@ -6414,8 +6462,18 @@ impl Game {
         }
         // A slow die-off (playtest 7: a pack went 63 → 23 over 40 days at 1–4
         // a day, never enough for one day's warning).
-        if let Some((lost, then, now)) = self.slow_decline(lineage) {
+        if let Some((lost, then, now, by)) = self.slow_decline(lineage) {
             let pct = 100.0 * lost as f64 / then.max(1) as f64;
+            let cause_words = |c: &str| match c {
+                "starved" => "of hunger",
+                "thirst" => "of thirst",
+                "cold" => "of cold",
+                "toxin" => "of toxins (poisonous prey)",
+                _ => "eaten by hunters",
+            };
+            let causes: Vec<String> = by.iter().map(|&(c, n)| format!("{n} {}", cause_words(c))).collect();
+            let causes = causes.join(", ");
+            let main_cause = by.first().map_or("starved", |x| x.0);
             // Mostly asleep (playtest 8: "find better ground ... or fatten
             // them" for a herd asleep in midwinter, which can do neither).
             let (mut mine, mut asleep) = (0usize, 0usize);
@@ -6430,6 +6488,14 @@ impl Game {
                      ground before its next sleep.",
                     100.0 * asleep as f64 / mine as f64
                 )
+            } else if main_cause == "toxin" {
+                "Your hunters are eating poisonous prey: bright-coloured toxic animals kill those that eat them. Move the \
+                 pack away from toxic herds, toward plainer prey (a hunter that survives a bite learns to avoid them)."
+                    .to_string()
+            } else if main_cause == "eaten" {
+                "Hunters are taking them: keep groups together, away from packs, and claim ground the hunters don't \
+                 range over; vigilance and speed help."
+                    .to_string()
             } else if self.lineage_hunts(player) {
                 "Move the pack to where prey is, split it, or fatten it before the cold.".to_string()
             } else {
@@ -6442,19 +6508,19 @@ impl Game {
             let drop = 100.0 * (then.saturating_sub(now)) as f64 / then.max(1) as f64;
             let text = if now >= then {
                 format!(
-                    "Your lineage is losing animals faster than it looks: {lost} died of hunger, thirst or cold over the \
-                     last {DECLINE_DAYS} days ({pct:.0}% of the {then} it had), though births kept the count up ({then} → \
+                    "Your lineage is losing animals faster than it looks: {lost} died over the \
+                     last {DECLINE_DAYS} days ({causes}; {pct:.0}% of the {then} it had), though births kept the count up ({then} → \
                      {now}). {advice}"
                 )
             } else if drop >= DECLINE_CRASH * 100.0 {
                 format!(
                     "Your lineage is crashing: {then} → {now} alive over the last {DECLINE_DAYS} days ({drop:.0}% fewer); \
-                     {lost} died of hunger, thirst or cold ({pct:.0}% of the {then}). {advice}"
+                     {lost} died ({causes}; {pct:.0}% of the {then}). {advice}"
                 )
             } else {
                 format!(
                     "Your lineage is dying off slowly: {then} → {now} alive over the last {DECLINE_DAYS} days ({drop:.0}% \
-                     fewer); {lost} died of hunger, thirst or cold ({pct:.0}% of the {then}). Day by day it looks small. \
+                     fewer); {lost} died ({causes}; {pct:.0}% of the {then}). Day by day it looks small. \
                      {advice}"
                 )
             };
@@ -6469,7 +6535,9 @@ impl Game {
             let alive = w.population_counts().get(lineage as usize).map_or(0, |c| c.alive) as u64;
             // Scaled with the lineage (playtest 6): 5 a day, or half a
             // percent of a big one, or 4% of a small one.
-            if eaten >= HUNTED_MIN.max(alive / 200) || (eaten >= 2 && eaten * 25 >= alive.max(1)) {
+            // At least 1% of a big lineage (playtest 11: alerts every 5–15 s
+            // for under 1% a day).
+            if eaten >= HUNTED_MIN.max(alive / 100) || (eaten >= 2 && eaten * 25 >= alive.max(1)) {
                 let who: Vec<String> =
                     by.iter().take(3).map(|&(l, n)| format!("{} ({n})", self.hunter_words(l, player))).collect();
                 out.push(LineageWarning {
@@ -6544,7 +6612,16 @@ impl Game {
         n > 0 && c / n as f32 > 0.6
     }
 
-    fn slow_decline(&self, lineage: u32) -> Option<(u64, u64, u64)> {
+    /// Whether `player`'s lineage lost animals to hunger or thirst on the
+    /// last recorded day.
+    fn lineage_still_starving(&self, player: PlayerId) -> bool {
+        let Some(l) = self.lineage_of(player) else { return false };
+        self.history.back().and_then(|r| r.lineages.iter().find(|e| e.lineage == l)).is_some_and(|e| {
+            e.deaths.get("starved").copied().unwrap_or(0) + e.deaths.get("thirst").copied().unwrap_or(0) > 0
+        })
+    }
+
+    fn slow_decline(&self, lineage: u32) -> Option<Decline> {
         let n = self.history.len();
         if n < DECLINE_DAYS as usize + 1 {
             return None;
@@ -6553,14 +6630,22 @@ impl Game {
         let entry = |r: &DailyRecord| r.lineages.iter().find(|e| e.lineage == lineage).cloned();
         let first = entry(window[0])?;
         let then = first.alive as u64;
-        let (mut lost, mut now) = (0u64, then);
+        let mut now = then;
+        // Toxin and predation count too (playtest 11: −28% to toxin brought
+        // one "going hungry" and no decline alert).
+        let mut by: Vec<(&'static str, u64)> = DECLINE_CAUSES.iter().map(|&c| (c, 0)).collect();
         for r in &window[1..] {
             let e = entry(r)?;
-            lost += ["starved", "thirst", "cold"].iter().map(|c| e.deaths.get(*c).copied().unwrap_or(0)).sum::<u64>();
+            for (c, n) in &mut by {
+                *n += e.deaths.get(*c).copied().unwrap_or(0);
+            }
             now = e.alive as u64;
         }
+        let lost: u64 = by.iter().map(|&(_, n)| n).sum();
+        by.retain(|&(_, n)| n > 0);
+        by.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
         // Only a lineage that is actually shrinking (playtest 8: "dying off slowly: 954 → 1251").
-        (then >= 10 && now < then && lost as f64 >= DECLINE_SHARE * then as f64).then_some((lost, then, now))
+        (then >= 10 && now < then && lost as f64 >= DECLINE_SHARE * then as f64).then_some((lost, then, now, by))
     }
 
     /// Say each lineage warning as an alert when it starts, and again every
@@ -6574,8 +6659,17 @@ impl Game {
                 let alive = self.world.population_counts().get(l as usize).map_or(0, |c| c.alive);
                 alive as f64 >= NEAR_CAP_REARM * self.world.player_ceiling() as f64
             });
-            self.warned
-                .retain(|(q, k), _| *q != p || now.iter().any(|w| &w.kind == k) || (k == "near_cap" && near_cap_armed));
+            // A warning's day is kept through its cool-down even when it lapses
+            // for a day, and the sleeping fold's own key too (playtest 11: the
+            // fold's 3-day cool-down never held, its key dropped every day).
+            self.warned.retain(|(q, k), d| {
+                *q != p
+                    || if k == "near_cap" {
+                        now.iter().any(|w| &w.kind == k) || near_cap_armed
+                    } else {
+                        now.iter().any(|w| &w.kind == k) || day < *d + WARNING_REPEAT_DAYS
+                    }
+            });
             // Mostly asleep (playtest 10: hungry, hunted and crashing alerts
             // every few seconds while 70% of a herd slept): the day's
             // warnings about losses fold into one line, said at most every
@@ -6586,7 +6680,25 @@ impl Game {
                 .iter()
                 .filter(|o| o.alive && o.owner == p)
                 .fold((0usize, 0usize), |(n, a), o| (n + 1, a + usize::from(o.dormancy.is_deep())));
-            let now = if alive > 0 && asleep as f64 >= DORMANT_FOLD_SHARE * alive as f64 {
+            let dormant = alive > 0 && asleep as f64 >= DORMANT_FOLD_SHARE * alive as f64;
+            if dormant {
+                // The kills since the last folded line, by hunter.
+                let own = |l: u32| self.world.lineages.get(l as usize).is_some_and(|x| x.owner == p);
+                let today: Vec<(u32, u64)> = self
+                    .hunted
+                    .get(&p)
+                    .filter(|(d, _)| *d == day)
+                    .map(|(_, by)| by.iter().copied().filter(|&(l, _)| !own(l)).collect())
+                    .unwrap_or_default();
+                let f = self.fold_hunted.entry(p).or_default();
+                f.0 += 1;
+                for (l, n) in today {
+                    *f.1.entry(l).or_default() += n;
+                }
+            } else {
+                self.fold_hunted.remove(&p);
+            }
+            let now = if dormant {
                 let (fold, keep): (Vec<LineageWarning>, Vec<LineageWarning>) =
                     now.into_iter().partition(|w| FOLDED_WARNINGS.contains(&w.kind.as_str()));
                 let due = !fold.is_empty()
@@ -6597,7 +6709,31 @@ impl Game {
                         self.warned.insert((p, w.kind.clone()), day);
                     }
                     let first = |t: &str| t.split(": ").next().unwrap_or(t).trim_end_matches('.').to_string();
-                    let said: Vec<String> = fold.iter().map(|w| first(&w.text)).collect();
+                    // Being hunted keeps who and how many (playtest 11: the fold
+                    // dropped them): "being hunted by X's Y (30), …: 38 eaten in 3 days".
+                    let (days, by) = self.fold_hunted.remove(&p).unwrap_or_default();
+                    let hunted_line = {
+                        let mut by: Vec<(u32, u64)> = by.into_iter().collect();
+                        by.sort_by_key(|&(l, n)| (std::cmp::Reverse(n), l));
+                        let eaten: u64 = by.iter().map(|&(_, n)| n).sum();
+                        let who: Vec<String> =
+                            by.iter().take(3).map(|&(l, n)| format!("{} ({n})", self.hunter_words(l, p))).collect();
+                        (eaten > 0).then(|| {
+                            format!(
+                                "your lineage is being hunted by {}: {eaten} eaten in {} day{}",
+                                who.join(", "),
+                                days.max(1),
+                                if days.max(1) == 1 { "" } else { "s" }
+                            )
+                        })
+                    };
+                    let said: Vec<String> = fold
+                        .iter()
+                        .map(|w| match (&hunted_line, w.kind.as_str()) {
+                            (Some(h), "hunted") => h.clone(),
+                            _ => first(&w.text),
+                        })
+                        .collect();
                     let text = format!(
                         "While most of your lineage sleeps ({:.0}% asleep): {}. Sleepers can't be moved or fed; the \
                          daily summary counts the losses, and this is said again in {WARNING_REPEAT_DAYS} days at most.",
@@ -6875,8 +7011,10 @@ impl Game {
                     if self.claimed_starving.remove(&(player, group)).is_some_and(|t| {
                         self.world.tick().saturating_sub(t) <= self.world.config.ticks_per_day as u64
                     }) => {}
+                GroupEvent::HoldLoosened { player, group, .. } if self.loose_said.contains(&(player, group)) => {}
                 GroupEvent::HoldLoosened { player, group, .. } if !self.territory_alert_due(player, group) => {}
                 GroupEvent::HoldLoosened { player, group, hungry_share, parched_share } => {
+                    self.loose_said.insert((player, group));
                     let what = match (hungry_share >= 0.05, parched_share >= 0.05) {
                         (true, true) => format!(
                             "{:.0}% of it is starving and {:.0}% parched",
@@ -6920,8 +7058,14 @@ impl Game {
                         .insert((player, group), format!("reached ({:.0}, {:.0}), claim blocked", target.x, target.y));
                     self.alert(player, AlertKind::Group, text, None, out);
                 }
+                // "Recovered" only after "no longer feeds" was said, and not while
+                // the lineage still loses animals to hunger or thirst
+                // (playtest 11: the pair swung every 4–10 days).
+                GroupEvent::HoldRestored { player, group }
+                    if !self.loose_said.contains(&(player, group)) || self.lineage_still_starving(player) => {}
                 GroupEvent::HoldRestored { player, group } if !self.territory_alert_due(player, group) => {}
                 GroupEvent::HoldRestored { player, group } => {
+                    self.loose_said.remove(&(player, group));
                     let text = format!("{} has recovered: it keeps inside its territory again.", group_name(group));
                     self.alert(player, AlertKind::Group, text, None, out);
                 }
@@ -8716,6 +8860,11 @@ pub const FLOOD_CLEAR: f32 = 0.1;
 /// Animals eaten in a day that raise the "being hunted" warning (fewer do
 /// when they are at least 4% of the lineage).
 pub const HUNTED_MIN: u64 = 5;
+/// A slow decline (`Game::slow_decline`): deaths, the count at the window's
+/// start and now, and the deaths by cause, most first.
+type Decline = (u64, u64, u64, Vec<(&'static str, u64)>);
+/// Death causes the slow-decline warning counts (`Game::slow_decline`).
+pub const DECLINE_CAUSES: [&str; 5] = ["starved", "thirst", "cold", "toxin", "eaten"];
 /// Heat deaths in a summer day that raise the heat warning.
 pub const HEAT_MIN: u64 = 3;
 

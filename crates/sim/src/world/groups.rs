@@ -1447,6 +1447,19 @@ impl World {
         r.filter(|r| self.tick < r.expires_tick).ok_or(CommandError::NoRally(group))
     }
 
+    /// Give `group` back a territory it held before an order replaced it
+    /// (the host's undo of a cancelled rally), unless another player's
+    /// territory overlaps it now. Whether it was restored.
+    pub fn restore_territory(&mut self, player: PlayerId, group: u8, t: Territory) -> bool {
+        let clash =
+            self.all_territories().any(|(p, _, o)| p != player && o.center.dist(t.center) < o.radius + t.radius);
+        if clash || self.group_counts(player, group).0 == 0 {
+            return false;
+        }
+        self.territories.insert((player, group), t);
+        true
+    }
+
     /// Group command: `group` gives up its territory.
     /// The claim cooldown left then shrinks to [`ABANDON_COOLDOWN_SHARE`] of
     /// a full one if that is sooner: a regretted claim can be replaced after
