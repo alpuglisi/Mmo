@@ -14,7 +14,7 @@ export const SERIES = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#
 /** Death causes shown on their own; the rest fold into "other" (toxins, drowning and attrition were lumped there: playtest 2). */
 export const CAUSES = ['eaten', 'killed_by_prey', 'starved', 'thirst', 'cold', 'heat', 'winter_sleep', 'exposure', 'toxin', 'drowned', 'attrition', 'old_age'] as const;
 export const CAUSE_COLORS: Record<string, string> = {
-  eaten: SERIES[1], starved: SERIES[3], thirst: SERIES[0], exposure: SERIES[5], old_age: SERIES[2], other: SERIES[6],
+  eaten: SERIES[1], starved: SERIES[3], thirst: SERIES[0], exposure: SERIES[5], old_age: '#b8a06a', other: SERIES[6],
   toxin: '#9bbd2e', drowned: '#2fb3c4', attrition: '#b07a52', winter_sleep: '#5b6fb5', cold: SERIES[5], heat: '#e0823d',
   killed_by_prey: '#a8443a',
 };

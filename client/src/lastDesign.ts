@@ -11,7 +11,7 @@ const key = (player: PlayerId | undefined) => `evo.lastDesign.${player ?? 'anon'
 
 export function saveLastDesign(player: PlayerId | undefined, d: EditorDesign): void {
   try {
-    localStorage.setItem(key(player), JSON.stringify({ ...d, name: '' }));
+    localStorage.setItem(key(player), JSON.stringify(d));
   } catch {
     /* private mode or full: the next design starts from the starter */
   }
@@ -32,7 +32,8 @@ export function restoreDesign(raw: unknown, cat: GeneCatalog): EditorDesign | nu
     }
   }
   return {
-    name: '',
+    // Its name too (playtest 8: an empty name made the player type it again); the server warns if it's refused.
+    name: typeof r.name === 'string' ? r.name.slice(0, 40) : '',
     thermo: r.thermo === 'cold' || r.thermo === 'warm' ? r.thermo : base.thermo,
     birth: r.birth === 'live' || r.birth === 'incubated_eggs' || r.birth === 'abandoned_eggs' ? r.birth : base.birth,
     litter_size: int(r.litter_size, 1, cat.max_litter, base.litter_size),

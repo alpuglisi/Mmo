@@ -8,10 +8,10 @@ const cat = {
 } as unknown as GeneCatalog;
 
 describe('last design', () => {
-  it('comes back with known genes and valid values only, and no name', () => {
+  it('comes back with its name, known genes and valid values only', () => {
     const d = restoreDesign({ name: 'Old', thermo: 'cold', birth: 'abandoned_eggs', litter_size: 6, founders: 30,
       traits: { muscle: 0.7, carnivory: 2, ghost: 0.5 }, morphology: { eye_count: 3 } }, cat)!;
-    expect(d.name).toBe('');
+    expect(d.name).toBe('Old');
     expect([d.thermo, d.birth, d.litter_size, d.founders]).toEqual(['cold', 'abandoned_eggs', 6, 30]);
     expect(d.traits.muscle).toBe(0.7);
     expect(d.traits.carnivory).not.toBe(2);
@@ -30,7 +30,7 @@ describe('last design', () => {
     expect(d.traits.muscle).toBe(0.4);
     expect(d.traits.carnivory).toBe(0);
     expect(d.morphology.eye_count).toBe(4);
-    expect([d.birth, d.founders, d.name]).toEqual(['live', 24, '']);
+    expect([d.birth, d.founders, d.name]).toEqual(['live', 24, 'Old']);
     expect(fromServerDesign(null, cat)).toBeNull();
   });
 });

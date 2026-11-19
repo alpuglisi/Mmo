@@ -1096,6 +1096,8 @@ export interface CrowdingView {
 /** `renown_shop`: what renown buys. */
 export interface ShopView {
   balance: number;
+  /** Renown still owed on a re-founding fee, taken from the next income (absent: none). */
+  refound_debt?: number;
   slots_left: number;
   slots_bought: number;
   /** Price of the next extra slot (absent at the limit). */
@@ -1192,7 +1194,7 @@ export interface DesignCompatView {
   drought_warning?: string;
   /** Founding now is a re-founding soon after your last lineage ended: `founders` of `requested` (founders cost double points: as many as fit, at least half), costing
    * `cost` points, until `until_day` (about `minutes_left` real minutes). */
-  refound?: { founders: number; requested: number; cost: number; until_day: number; minutes_left: number; reason: string; fee?: number };
+  refound?: { founders: number; requested: number; cost: number; until_day: number; minutes_left: number; reason: string; fee?: number; fee_now?: number; fee_owed?: number };
   /** Why founding would refuse the design's name (it looks like another player's); absent when fine. */
   name_warning?: string;
   /** The newcomer grace a founding of this design would get now (fresh with the first-winter rule, or continued); absent from older servers. */
