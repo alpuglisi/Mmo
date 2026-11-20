@@ -5790,7 +5790,7 @@ impl Game {
             self.credit_survival(record.day);
             self.season_day(&record, &mut out);
             let ramped = self.ramped(&record);
-            self.era_scores.add(&ramped, self.world.config.era_days());
+            self.era_scores.add(&ramped, self.world.config.era_days(), 4 * self.world.config.days_per_season() as u64);
             self.refresh_hosts();
             self.pay_income(&record);
             self.pay_royalties(record.day);

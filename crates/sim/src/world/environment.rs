@@ -176,7 +176,12 @@ impl World {
 
         let adults = || self.organisms.iter().filter(|o| o.is_breeding_adult());
         self.group.update(adults().map(|o| (o.pos, &o.pheno, &o.morph)));
-        let breeding = self.organisms.par_iter().filter(|o| o.is_breeding_adult());
+        // With `Balance::share_young` the young count too (their alleles;
+        // nothing raised yet): the autumn young no longer arrive in the
+        // share all at once as they mature over winter (playtest 13: the
+        // leader 19% → 30% each winter while its head count fell).
+        let young = self.config.balance.share_young > 0.0;
+        let breeding = self.organisms.par_iter().filter(|o| o.is_breeding_adult() || (young && o.alive));
         let morph = self.config.balance.morph_in_legacy();
         // The weighted share counts offspring raised up to `raised_cap`
         // (`Balance::raised_cap`), so an old cohort's lifetime count doesn't
@@ -185,6 +190,9 @@ impl World {
         let cap = if cap > 0.0 { cap as u32 } else { u32::MAX };
         let mut snapshot =
             LegacySnapshot::compute_par(self.day(), breeding.map(|o| (&*o.genome, o.offspring_raised.min(cap))), morph);
+        if young {
+            snapshot.breeding_adults = self.organisms.iter().filter(|o| o.is_breeding_adult()).count();
+        }
         if self.config.lod.enabled {
             self.lod_legacy(&mut snapshot);
         }

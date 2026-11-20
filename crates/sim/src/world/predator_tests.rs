@@ -522,3 +522,22 @@ fn deep_sleepers_lie_hidden_from_most_hunters() {
     w.config.balance.sleeper_cover = 0.0;
     assert!(hunters.iter().all(|h| !w.sleeper_hidden(h, &prey)));
 }
+
+/// Playtest 13: the cold toxic bright brumator dominated. Deep in
+/// brumation a cold-blooded animal keeps `1 − torpid_toxins` of its toxin
+/// defence; awake, or warm-blooded asleep, it keeps all of it.
+#[test]
+fn a_torpid_brumator_loses_most_of_its_toxin_defence() {
+    let w = niche(3);
+    let mut q = w.organisms.iter().find(|o| o.lineage != PACK).unwrap().clone();
+    q.traits.warm = false;
+    assert_eq!(w.torpid_defence(&q), 1.0, "awake");
+    q.dormancy = crate::organism::Dormancy::Winter;
+    assert!((w.torpid_defence(&q) - 0.4).abs() < 1e-6);
+    q.traits.warm = true;
+    assert_eq!(w.torpid_defence(&q), 1.0, "a warm sleeper");
+    let mut off = w.clone();
+    off.config.balance.torpid_toxins = 0.0;
+    q.traits.warm = false;
+    assert_eq!(off.torpid_defence(&q), 1.0);
+}
