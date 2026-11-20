@@ -123,6 +123,8 @@ export function actionText(action: string, needs?: { hunger: number; thirst: num
   }
   // A night's shallow torpor, not a hibernation (the torpor gene, or one inherited from a cross).
   if (action === 'torpid') return 'torpid (a cold night)';
+  // Playtest 13: "defend" unexplained (wild animals inside the territory count as intruders too).
+  if (action === 'defend') return 'defending its territory (driving out a wild or rival animal that wandered in)';
   return action.replace(/_/g, ' ');
 }
 

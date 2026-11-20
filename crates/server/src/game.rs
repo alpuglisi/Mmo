@@ -968,6 +968,9 @@ pub struct Game {
     possess_orphaned: BTreeMap<PlayerId, u64>,
     /// The day each group's short-prey note was last said. Memory only.
     prey_said: BTreeMap<(PlayerId, u8), u64>,
+    /// Animals bought as reinforcements, while alive (not counted for the
+    /// generation milestones). Memory only.
+    reinforced: BTreeSet<OrgId>,
     /// Each player's recent finished matings, newest first (memory only:
     /// `GET /api/matings/history`).
     mating_log: BTreeMap<PlayerId, VecDeque<MatingRecord>>,
@@ -1430,6 +1433,7 @@ impl Game {
             possess_conn: BTreeMap::new(),
             possess_orphaned: BTreeMap::new(),
             prey_said: BTreeMap::new(),
+            reinforced: BTreeSet::new(),
             mating_log: BTreeMap::new(),
             watched: BTreeMap::new(),
             progress: BTreeMap::new(),
@@ -1577,8 +1581,14 @@ impl Game {
             // with 76 days left, and the alert read as if it had run out).
             let text = match self.world.take_grace_attack(p) {
                 Some(victim) => format!(
-                    "Your animals attacked {}'s animal, which ends your newcomer grace early: other players' animals \
-                     can now attack yours, and yours theirs.",
+                    "{} {}'s animal, which ends your newcomer grace early: other players' animals can now attack \
+                     yours, and yours theirs.",
+                    // Only an order does it with instinct grace (playtest 13).
+                    if self.world.config.balance.instinct_grace > 0.0 {
+                        "Your ordered attack struck"
+                    } else {
+                        "Your animals attacked"
+                    },
                     self.name(victim)
                 ),
                 None => "Your newcomer grace has ended: other players' animals can now attack yours, and yours theirs."
@@ -2837,6 +2847,9 @@ impl Game {
                 let outcome = match outcome {
                     Ok(o) => o,
                     Err(CommandError::ClaimCooldown { ticks_left }) => return Err(self.cooldown_error(ticks_left)),
+                    Err(CommandError::Overlaps) => {
+                        return Err(self.overlap_error(player, group, Vec2::new(x, y), radius));
+                    }
                     Err(err) => return Err(e(err)),
                 };
                 self.order_given(player, group);
@@ -3189,6 +3202,7 @@ impl Game {
             ClientMsg::BuyMatingSlot => Ok(Some(serde_json::to_value(self.buy_mating_slot(player)?).unwrap())),
             ClientMsg::Reinforce => {
                 let (ids, shop, site) = self.reinforce(player)?;
+                self.reinforced.extend(ids.iter().copied());
                 let mut data = serde_json::json!({ "added": ids, "shop": shop, "at": site.at.map(crate::protocol::round::hundredths), "nearby_count": site.nearby_count, "group": site.group });
                 if let Some(note) = site.note {
                     data["note"] = note.into();
@@ -4441,7 +4455,12 @@ impl Game {
             if income > 0 {
                 let taper = if income < full {
                     // Playtest 11: "(32 less the taper on a balance over 1000)".
-                    format!(" ({full}, reduced by the taper on a balance over {})", thousands(from))
+                    // Escrow counts (playtest 13: "a balance over 1,000" read
+                    // as a bug at 998 with 6 held in offers).
+                    format!(
+                        " ({full}, reduced by the taper on renown over {}, balance and renown held in offers together)",
+                        thousands(from)
+                    )
                 } else {
                     String::new()
                 };
@@ -5086,6 +5105,24 @@ impl Game {
         if status != OfferStatus::Declined {
             if let Some(log) = self.request_log.get_mut(&(o.from, o.to)) {
                 log.retain(|&(_, id)| id != o.id);
+            }
+        }
+        // A possessed animal is let go once its mating has run (playtest 13:
+        // one stayed possessed and slept where the meeting left it, 45 tiles
+        // from its herd, with no word).
+        if status == OfferStatus::Completed {
+            for (owner, id) in [(o.from, o.mine), (o.to, o.partner)] {
+                if self.world.organism(id).is_some_and(|a| a.possessed_by == Some(owner))
+                    && self.world.release(owner, id).is_ok()
+                {
+                    if self.possessing.get(&owner) == Some(&id) {
+                        self.possessing.remove(&owner);
+                    }
+                    let text = format!(
+                        "Released #{id} after its mating: it goes back to its own instincts and makes its way back to its group."
+                    );
+                    self.alert(owner, AlertKind::Market, text, Some(id), out);
+                }
             }
         }
         let settlement = self.settle(&o, status, out);
@@ -5845,7 +5882,7 @@ impl Game {
             self.credit_survival(record.day);
             self.season_day(&record, &mut out);
             let ramped = self.ramped(&record);
-            self.era_scores.add(&ramped, self.world.config.era_days());
+            self.era_scores.add(&ramped, self.world.config.era_days(), 4 * self.world.config.days_per_season() as u64);
             self.refresh_hosts();
             self.pay_income(&record);
             self.pay_royalties(record.day);
@@ -6987,10 +7024,12 @@ impl Game {
             });
         }
         // Animals inside the territories their groups hold, and how many of them are starving.
-        let (mut inside, mut starving) = (0usize, 0usize);
+        let (mut inside, mut starving, mut holders) = (0usize, 0usize, 0usize);
         let mut groups: BTreeSet<u8> = BTreeSet::new();
         for o in w.organisms.iter().filter(|o| o.alive && o.owner == player) {
-            if w.territory(player, o.group).is_some_and(|t| t.contains(o.pos)) {
+            let held = w.territory(player, o.group);
+            holders += usize::from(held.is_some());
+            if held.is_some_and(|t| t.contains(o.pos)) {
                 inside += 1;
                 if o.needs.hunger >= TERRITORY_NEED || o.needs.thirst >= TERRITORY_NEED {
                     starving += 1;
@@ -7011,8 +7050,11 @@ impl Game {
             };
             out.push(LineageWarning {
                 kind: "territory_starving".into(),
+                // Inside the circles, beside the groups' whole count (playtest
+                // 13: "13 of the 47 animals holding territories" of a group of 86).
                 text: format!(
-                    "{starving} of the {inside} animals holding territories ({}) are starving or parched: {how}.",
+                    "{starving} of the {inside} animals inside their territories ({}; {holders} in those groups, the \
+                     rest outside the circles) are starving or parched: {how}.",
                     names.join(", ")
                 ),
             });
@@ -7159,7 +7201,7 @@ impl Game {
                         })
                         .collect();
                     let text = format!(
-                        "While most of your lineage sleeps ({:.0}% asleep): {}. Sleepers can't be moved or fed; the \
+                        "While most of your lineage sleeps ({:.0}% asleep): {}. Sleepers can't be moved or fed (a Provision feeds only the awake ones); the \
                          daily summary counts the losses, and this is said again in {WARNING_REPEAT_DAYS} days at most.",
                         100.0 * asleep as f64 / alive as f64,
                         said.join("; ")
@@ -7331,7 +7373,14 @@ impl Game {
             // With graced hunting a graced lineage may attack, and its first
             // attack on a rival ends its grace (playtest 12: "nor yours on
             // theirs" after that changed).
-            let own = if w.config.balance.graced_hunting > 0.0 {
+            // With instinct grace your animals leave rivals' alone on their
+            // own, so only an ordered attack ends it (playtest 13: "even one
+            // your animals start on their own" contradicted that).
+            let b = &w.config.balance;
+            let own = if b.graced_hunting > 0.0 && b.instinct_grace > 0.0 {
+                " On their own yours leave rivals' animals alone too; an attack order (possess one of yours) on a \
+                 rival's unprotected animal is allowed, and that first ordered attack ends your grace."
+            } else if b.graced_hunting > 0.0 {
                 " Yours may hunt rivals' unprotected animals, but your lineage's first attack on a rival's animal (even \
                  one your animals start on their own) ends your grace."
             } else {
@@ -7719,6 +7768,23 @@ impl Game {
                     // Water along the way (playtest 9: a 92%-dry route, no word).
                     let water = self.route_water(player, group, &way);
                     let pace = World::group_pace(j.members).max(0.1);
+                    // Fliers too: a group keeps together and stops to forage
+                    // (playtest 13: "4.1 tiles a day" for fliers read as wrong).
+                    let flies = {
+                        let (mut n, mut f) = (0usize, 0usize);
+                        for o in
+                            self.world.organisms.iter().filter(|o| o.alive && o.owner == player && o.group == group)
+                        {
+                            n += 1;
+                            f += usize::from(o.traits.body.can_fly);
+                        }
+                        n > 0 && 2 * f >= n
+                    };
+                    let fly = if flies {
+                        " (wings don't hurry a whole group: it keeps together and stops to eat)"
+                    } else {
+                        ""
+                    };
                     let dry_days = water.dry_tiles / pace;
                     let limit =
                         if water.thirsty >= 0.1 { travel::DRY_STRETCH_DAYS / 2.0 } else { travel::DRY_STRETCH_DAYS };
@@ -7761,8 +7827,8 @@ impl Game {
                             String::new()
                         };
                         warnings.push(format!(
-                            "About {:.0} days on the way: a group of {} covers about {pace:.1} tiles a day, and its route \
-                             is {:.0} tiles long. {food}Split the group or migrate in stages.",
+                            "About {:.0} days on the way: a group of {} covers about {pace:.1} tiles a day{fly}, and its \
+                             route is {:.0} tiles long. {food}Split the group or migrate in stages.",
                             j.days, j.members, j.tiles
                         ));
                     }
@@ -7922,6 +7988,37 @@ impl Game {
         self.outcomes.remove(&(player, group));
     }
 
+    /// `overlaps`, naming the territory in the way when the player can see
+    /// its centre (playtest 13: refusals named no one).
+    fn overlap_error(&self, player: PlayerId, group: u8, center: Vec2, radius: f32) -> ErrorInfo {
+        let base = ErrorInfo::from(&CommandError::Overlaps);
+        let adults = self
+            .world
+            .organisms
+            .iter()
+            .filter(|o| o.alive && o.owner == player && o.group == group && o.matured)
+            .count();
+        let r = radius.clamp(evo_sim::world::groups::TERRITORY_MIN_RADIUS, World::territory_radius_limit(adults));
+        let hit = self
+            .world
+            .all_territories()
+            .filter(|&(p, _, t)| p != player && t.center.dist(center) < t.radius + r && self.in_sight(player, t.center))
+            .min_by(|a, b| a.2.center.dist(center).total_cmp(&b.2.center.dist(center)));
+        match hit {
+            Some((p, _, t)) => ErrorInfo::new(
+                &base.code,
+                format!(
+                    "that circle overlaps {}'s territory at ({:.0}, {:.0}), radius {:.0}: claim clear of it",
+                    self.name(p),
+                    t.center.x,
+                    t.center.y,
+                    t.radius
+                ),
+            ),
+            None => base,
+        }
+    }
+
     /// `claim_cooldown`, the wait said in minutes of real time and game days.
     fn cooldown_error(&self, ticks_left: u64) -> ErrorInfo {
         let minutes = ticks_left as f64 * self.cfg.tick_ms / 60_000.0;
@@ -8054,8 +8151,15 @@ impl Game {
                             } else {
                                 String::new()
                             };
+                            // Ice, not drought (playtest 13: "no drinking water"
+                            // on a frozen lake shore read as wrong).
+                            let why = if self.frozen_near(center, radius + 2.0) {
+                                " (the water there is frozen; it opens when the thaw comes)"
+                            } else {
+                                ""
+                            };
                             texts.push(format!(
-                                "{name}'s {what} at ({x:.0}, {y:.0}) has no drinking water left: {fix}.{tail}"
+                                "{name}'s {what} at ({x:.0}, {y:.0}) has no drinking water left{why}: {fix}.{tail}"
                             ));
                         }
                         let food = self.world.food_check(p, g.id, center, radius);
@@ -8106,9 +8210,13 @@ impl Game {
                         // Outgrown: the herd has grown past what the ground feeds,
                         // before anyone starves (playtest 5: claimed at 475, held
                         // 1,941, 55% starved in 10 days).
-                        let outgrown = !bare && food.is_some_and(|f| f.supports < f.members);
-                        if self.condition_begins((p, g.id, 2), outgrown, !outgrown) && self.territory_alert_due(p, g.id)
-                        {
+                        // A tenth short at least, and not a fresh claim (playtest
+                        // 13: "outgrown" at 68 of 69 fed, right after a claim);
+                        // re-armed once it feeds them all again.
+                        let outgrown =
+                            !bare && !fresh && food.is_some_and(|f| (f.supports as f64) < 0.9 * f.members as f64);
+                        let fits = food.is_none_or(|f| f.supports >= f.members);
+                        if self.condition_begins((p, g.id, 2), outgrown, fits) && self.territory_alert_due(p, g.id) {
                             let f = food.expect("checked");
                             let advice = if sleeping {
                                 "Most of the group is asleep and moves only when it wakes: split it, move it or claim more \
@@ -8263,6 +8371,20 @@ impl Game {
         }
     }
 
+    /// Whether water within `reach` of `center` is frozen over.
+    fn frozen_near(&self, center: Vec2, reach: f32) -> bool {
+        let m = &self.world.map;
+        let (w, h) = (m.width as i32, m.height as i32);
+        let span = reach.ceil() as i32;
+        let (cx, cy) = (center.x.floor() as i32, center.y.floor() as i32);
+        ((cy - span).max(0)..=(cy + span).min(h - 1)).any(|y| {
+            ((cx - span).max(0)..=(cx + span).min(w - 1)).any(|x| {
+                let t = &m.tiles[m.idx(x as usize, y as usize)];
+                t.water_depth > 0.0 && t.ice >= 0.5
+            })
+        })
+    }
+
     /// What a group order does to the group's clutches (playtest 5: orders
     /// pulled brooding parents off their nests with no word, 20–66 eggs
     /// chilled a day). `brooding`: members sitting on a clutch. With
@@ -8322,7 +8444,13 @@ impl Game {
     fn daily_alerts(&mut self, record: &DailyRecord, out: &mut Outbox) {
         let players: Vec<(PlayerId, u32)> = self.lineage_of.iter().map(|(&p, &l)| (p, l)).collect();
         let mut max_gen: BTreeMap<u32, u32> = BTreeMap::new();
-        for o in self.world.organisms.iter().filter(|o| o.alive && o.owner != WILD) {
+        // Bought reinforcements are a generation on from the adults they copy:
+        // not a generation reached (playtest 13: "Generation 2 reached" from
+        // reinforcements).
+        let world = &self.world;
+        self.reinforced.retain(|&id| world.organism(id).is_some());
+        for o in self.world.organisms.iter().filter(|o| o.alive && o.owner != WILD && !self.reinforced.contains(&o.id))
+        {
             let g = max_gen.entry(o.lineage).or_default();
             *g = (*g).max(o.generation);
         }
@@ -8415,17 +8543,18 @@ impl Game {
                 } else {
                     String::new()
                 };
+                // No day number in the text: the alert's `day` field (from 0,
+                // as every API day) and the feed's label (from 1) give it
+                // (playtests 12 and 13 read "Day 59" beside `day: 58` as a
+                // day off).
                 let text = format!(
-                    "Day {}: {} born, {} died{}{eggs} · {} alive",
-                    // The day the births and deaths happened (the one just
-                    // ended), counted from 1, as the vitals chart labels it.
-                    record.day.max(1),
+                    "The day's tally: {} born, {} died{}{eggs} · {} alive",
                     entry.born,
                     died,
                     if causes.is_empty() { String::new() } else { format!(" ({})", causes.join(", ")) },
                     entry.alive
                 );
-                // Stamped with the day it is about (the feed shows "day N" beside "Day N: …").
+                // Stamped with the day it is about (the one just ended).
                 self.alert_on(p, AlertKind::DailySummary, text, None, record.day.saturating_sub(1), out);
             }
             let alive = entry.alive;
@@ -10612,6 +10741,39 @@ mod tests {
         assert!(g.offers.is_empty());
     }
 
+    /// Playtest 13: a provision "fed 20" with every adult asleep, beside an
+    /// alert saying sleepers can't be fed: it feeds the awake only.
+    #[test]
+    fn provisions_feed_only_the_awake() {
+        let (mut g, _, _) = game();
+        for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+            o.matured = true;
+            o.dormancy = Dormancy::Winter;
+        }
+        let out = g.command(10, 1, None, ClientMsg::Provision);
+        assert_eq!(result(&out).1.as_deref(), Some("all_asleep"));
+        let shop = g.shop_view(1);
+        assert!(shop.provision_blocked.is_some());
+    }
+
+    /// Playtest 13: an overlap refusal names the territory in the way when
+    /// it is in sight.
+    #[test]
+    fn overlap_refusals_name_the_territory() {
+        let (mut g, a, b) = game();
+        in_sight_of(&mut g, b[0], a[0]);
+        let at = g.world.organism(b[0]).unwrap().pos;
+        g.world.claim_territory(2, 0, at, 5.0).unwrap();
+        let out = g.command(10, 1, None, ClientMsg::ClaimTerritory { group: 0, x: at.x, y: at.y, radius: 5.0 });
+        let e = out.iter().find_map(|(_, m)| match m {
+            ServerMsg::Result { error: Some(e), .. } => Some(e.clone()),
+            _ => None,
+        });
+        let e = e.expect("refused");
+        assert_eq!(e.code, "overlaps");
+        assert!(e.message.contains("bob's territory at"), "{}", e.message);
+    }
+
     /// Playtest 11: migrate and rally once a second per group; a refused
     /// order doesn't start the wait.
     #[test]
@@ -10696,9 +10858,15 @@ mod tests {
         let top = 4 * g.cfg.income_taper_from - before;
         let _ = g.post(1, top as i64, LedgerKind::Grant, "test".into(), None, None);
         g.pay_income(&record);
-        assert_eq!(g.balance(1) - 4 * g.cfg.income_taper_from, full / 4);
+        assert_eq!(g.balance(1) - 4 * g.cfg.income_taper_from, (full / 16).max(economy::DAILY_STIPEND));
         let last = g.ledger(1, 1);
-        assert!(last[0].text.contains("reduced by the taper on a balance over 1,000"), "{}", last[0].text);
+        assert!(
+            last[0]
+                .text
+                .contains("reduced by the taper on renown over 1,000, balance and renown held in offers together"),
+            "{}",
+            last[0].text
+        );
     }
 
     #[test]

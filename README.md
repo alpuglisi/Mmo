@@ -9133,6 +9133,57 @@ around it.
 
 
 
+### Playtest 13: balance
+
+Playtest 13 (`docs/playtest-13.md`, findings 1, 2, 4 and the sim part of 5).
+- **The leader's share still passed 30% every winter.** It went 19% → 30%,
+  20% → 30% and 28% → 34%, each time while its head count fell. Over
+  winter the young matured as the wild's adults died, so the world's
+  breeding total stayed flat: the remembered peak never engaged, and the
+  litter brake had nothing to act on.
+- **The cold, toxic, bright brumator dominated** (two copies held 56%).
+- **The era score's end term (its last tenth) always fell in winter.**
+- **Packs** found little reachable prey, and their adult females died more.
+
+Version 96 (each off at 0), and the era score's end term:
+
+- **The young count in the legacy** (`Balance::share_young`, 1). The share
+  counts every living animal's alleles, agents and cohort members alike,
+  not only breeding adults' (`breeding_adults` still counts adults). The
+  autumn young are in the share from birth, so maturing over winter no
+  longer moves it. The weighted share still counts offspring raised.
+- **A torpid brumator loses most of its toxin defence**
+  (`Balance::torpid_toxins`, 0.6). A cold-blooded animal deep in brumation
+  or estivation keeps 40% of it, in hunters' avoidance (colour and lesson)
+  and in the toxin of a strike (`World::torpid_defence`). Awake, or
+  warm-blooded asleep, it keeps it all. Round 13's `--cold-mod` runs found
+  that toxins with colour, then brumation, carried the class.
+- **The era score's end term is the era's last full year** (server,
+  `EraScores::add(.., year_days)`), not its last tenth. A year holds every
+  season. Renaming "Era mean" to "Era score" in the API and UI is left to
+  the polish branch.
+
+**Pack sex ratio.** The trace now counts the pack's adults and deaths by sex
+each season. With version 95's `pack_nursing` (pregnant females fed first),
+the replay's pack is mostly female: 60/53, 88/62 and 72/49 adult
+females/males across years 3–5. Deaths split roughly in proportion, and
+few dying females were pregnant (0–3 a season). The replay doesn't
+reproduce the playtest's skew, which came from played packs (orders,
+wintering inside a toxic herd); no sim change.
+
+**Replay** (`dominance --only Cold,Herd,Pack,Steady,Flier,Sleepers --cold-day
+27 --flier-day 360`; seeds 1–4, 840 days). Plain era means, playtest 13
+rules → v96 rules:
+- Cold 12.6% → 12.4% (titles 12 → 2 of 40)
+- Flier, the late copy: 16.5% → 14.0% (peak alive 594 → 387, final share
+  13.2% → 6.1%)
+- Herd 11.8% → 22.8%, Sleepers 15.3% → 4.5%
+- Steady 10.7% → 11.2%, Pack 4.6% → 7.0% (peak 199 → 258; 304 on seed 1)
+
+No lineage passes 23% for an era. In the trace (seed 1) the leader's
+winter jumps shrink: Cold 11% → 15% over a winter, where it went 14% →
+26–29% under the old measure.
+
 ### Playtest 12: balance
 
 Playtest 12 (`docs/playtest-12.md`, findings 1, 2 and 7). The cold, live-bearing,
@@ -9640,6 +9691,66 @@ and 8 of 8 (8 and 8 off; viable 7 and 8 either way).
 | --- | --- |
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.77 (± 0.16; 11.82 with the five tunables off). Every lineage survives 12 of 12. |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
+
+### Playtest 13: server Lows
+
+From `docs/playtest-13.md` (Medium 6 and server Lows):
+
+- **Grace and instinct grace (Medium 6).**
+  - With `Balance::instinct_grace` a graced player's animals leave rivals'
+    animals alone on their own. The founding reply now says so, and says
+    that only an ordered attack ends the grace.
+  - The grace-ended alert says "Your ordered attack struck …" instead of
+    "Your animals attacked …".
+  - The `StateView::grace` comment says the same.
+  - The client's End-grace panel ("by order or on instinct") is left to
+    the polish pass.
+- **Provision and sleepers.**
+  - A provision feeds only awake adults, since sleepers live on their fat.
+    With every adult asleep it is refused with `all_asleep`.
+  - The sleeping-lineage alert says a Provision feeds only the awake ones.
+  - At the window's limit the shop quotes the next provision's real size
+    and price, and `provision_blocked` says why it is blocked. It used to
+    quote the default 40 for 20.
+- **Frozen water.** "No drinking water left" adds "(the water there is
+  frozen; it opens when the thaw comes)" when water near the circle is
+  iced over.
+- **Spring restores.** In spring the restore hint says the plants regrow
+  on their own, so what a restore adds shrinks by the minute. The quote's
+  guard still refuses a purchase that changed too much.
+- **After a mating.** A possessed animal is released when its mating
+  completes, with an alert. One had stayed possessed and slept 45 tiles
+  from its herd.
+- **Territory counts.** The starving-territory line counts the animals
+  inside the circles and the whole of those groups ("13 of the 47 animals
+  inside their territories (Group A (main); 86 in those groups, the rest
+  outside the circles)").
+- **Day convention.** Alert texts that name a day count from 1, and the
+  `day` field counts from 0. The daily summary no longer names a day ("The
+  day's tally: …"); the field and the feed's label carry it.
+- **Survey.** The `survey` reply already carries the result: groups,
+  territories, the centre and the radius.
+- **Shop fees.** `listing_fee_percent` 0 sits beside `market_fee_percent` 10.
+- **Fliers' pace.** The journey warning says wings don't hurry a whole
+  group: it keeps together and stops to eat.
+- **Overlaps.** An `overlaps` refusal names the territory in the way
+  (owner, centre, radius) when its centre is in sight.
+- **Generations.** Reinforcements are left out of the generation
+  milestones. They are a generation on from the adults they copy.
+- **"defend".** The client's inspector reads "defending its territory
+  (driving out a wild or rival animal that wandered in)".
+- **"Outgrown".** The alert waits until the ground feeds under 90% of the
+  group, and not for a claim made in the last 3 days. It re-arms once the
+  ground feeds them all again.
+- **Substitutes.** The client no longer says "accepted" again when an
+  accepted agreement changes without ending (a substitute or a moved
+  meeting). The server's alert names the substitute.
+- **Renown taper.**
+  - Income now scales by `(1,000 / renown)²`: a quarter at 2,000, a
+    sixteenth at 4,000, never below the stipend. With the linear taper,
+    balances still piled up to 1,464–3,980.
+  - The ledger line says the taper is on renown "balance and renown held
+    in offers together", which is what it counts.
 
 ### Playtest 12: server Lows
 
