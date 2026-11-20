@@ -891,7 +891,8 @@ impl World {
         }
         // A climber up in the canopy is mostly out of reach of ground hunters.
         p *= 1.0 - crate::terrain::canopy_refuge(self.map.ground_at(b.pos), &b.traits.body, &a.traits.body);
-        let tox = b.pheno[Gene::Toxins];
+        // A torpid cold-blooded sleeper's toxin works less (`Balance::torpid_toxins`).
+        let tox = b.pheno[Gene::Toxins] * self.torpid_defence(b);
         if tox > 0.3 {
             p *= 1.0 - 0.6 * tox;
         }

@@ -120,16 +120,28 @@ pub fn drought_design_text(drought: f32) -> String {
 
 /// Share of the dry land too hot in summer for a design from which the
 /// design check warns (`DesignCompatView::heat_warning`).
-pub const HEAT_DESIGN_SHARE: f32 = 0.25;
+/// A sixth (playtest 13: a fur-and-fat design died of heat with no warning
+/// at a quarter).
+pub const HEAT_DESIGN_SHARE: f32 = 0.15;
 
 /// [`DesignCompatView::heat_warning`]'s text.
 pub fn heat_design_text(share: f32, limit: f32) -> String {
     format!(
-        "Heat: in summer about {:.0}% of the land gets hotter than this design can bear (about {limit:.0} °C, its fur \
+        "Heat: on summer afternoons about {:.0}% of the land gets hotter than this design can bear (about {limit:.0} °C, its fur \
          and fat hold the heat in), and founders landing there die of heat in their first summer. Shade and water \
          don't cool them, and body size makes no difference; less fur and fat, burrowing (a burrow keeps the midday \
          heat off) or estivation (sleeping through the hottest weeks) do.",
         share * 100.0
+    )
+}
+
+/// [`DesignCompatView::timing_warning`]'s text.
+pub fn timing_design_text(window: u32, wait: u32) -> String {
+    format!(
+        "Timed breeding: this design mates only in the first {window} days of spring. Founded now, its first young \
+         are conceived only when next spring begins, about {wait} days from now, and the founders must live that \
+         long. Found shortly before spring, or keep timed breeding below {:.1} to breed all year.",
+        evo_sim::stats::STRATEGY_THRESHOLD
     )
 }
 
@@ -228,10 +240,11 @@ impl Game {
             nameplate_colors: economy::NAMEPLATE_COLORS.iter().map(|c| c.to_string()).collect(),
             nameplate: self.economy.nameplates.get(&player).cloned(),
             species_name_price: economy::SPECIES_NAME_PRICE,
+            // The next real size, even while blocked (`provision_blocked` says why).
             provision_price: self
-                .provision_terms(player)
+                .provision_size_now(player)
                 .map_or(economy::PROVISION_PRICE, |(_, n, per)| per * n.len() as u64),
-            provision_size: self.provision_terms(player).map_or(economy::PROVISION_SIZE, |(_, n, _)| n.len()),
+            provision_size: self.provision_size_now(player).map_or(economy::PROVISION_SIZE, |(_, n, _)| n.len()),
             provisions_bought: self.recent_count(self.economy.provision_days.get(&player)),
             provisions_max: economy::MAX_PROVISIONS_PER_SEASON,
             provision_blocked: self.provision_terms(player).err().map(|e| e.message),
@@ -317,9 +330,7 @@ impl Game {
     /// adults it would feed (the neediest first) and the renown per adult;
     /// or why not.
     fn provision_terms(&self, player: PlayerId) -> Result<(u32, Vec<usize>, u64), ErrorInfo> {
-        let Some(lineage) = self.lineage_of(player).filter(|_| !self.is_extinct(player)) else {
-            return Err(ErrorInfo::new("no_lineage", "you have no living lineage to provision"));
-        };
+        let terms = self.provision_size_now(player)?;
         if self.recent_count(self.economy.provision_days.get(&player)) >= economy::MAX_PROVISIONS_PER_SEASON {
             return Err(ErrorInfo::new(
                 "limit_reached",
@@ -330,6 +341,16 @@ impl Game {
                 ),
             ));
         }
+        Ok(terms)
+    }
+
+    /// [`Game::provision_terms`] without the window's limit: what the next
+    /// provision would feed and cost (playtest 13: at the limit the shop
+    /// quoted the default 40 for 20).
+    fn provision_size_now(&self, player: PlayerId) -> Result<(u32, Vec<usize>, u64), ErrorInfo> {
+        let Some(lineage) = self.lineage_of(player).filter(|_| !self.is_extinct(player)) else {
+            return Err(ErrorInfo::new("no_lineage", "you have no living lineage to provision"));
+        };
         let max = self.reinforce_max_alive().max(1);
         let alive = self.owner_population(player);
         let (size, per) = if alive <= max {
@@ -341,11 +362,22 @@ impl Game {
         let mut needy: Vec<usize> = (0..self.world.organisms.len())
             .filter(|&i| {
                 let o = &self.world.organisms[i];
-                o.alive && o.lineage == lineage && o.matured
+                // Awake ones only: sleepers live on their fat and can't be fed
+                // (playtest 13: a provision "fed 20" with every one asleep,
+                // beside an alert saying sleepers can't be fed).
+                o.alive && o.lineage == lineage && o.matured && !o.dormancy.is_deep()
             })
             .collect();
         if needy.is_empty() {
-            return Err(ErrorInfo::new("no_adults", "your lineage has no adult to provision"));
+            let asleep = self.world.organisms.iter().any(|o| o.alive && o.lineage == lineage && o.matured);
+            return Err(if asleep {
+                ErrorInfo::new(
+                    "all_asleep",
+                    "every adult of your lineage is asleep: sleepers live on their fat and can't be fed until they wake",
+                )
+            } else {
+                ErrorInfo::new("no_adults", "your lineage has no adult to provision")
+            });
         }
         let need = |i: usize| {
             let n = &self.world.organisms[i].needs;
@@ -448,6 +480,16 @@ impl Game {
                     "poor value now: about {per_food:.1} renown per food (a drought or the season holds the plants back)"
                 )
             })
+        };
+        // In spring the plants regrow on their own, so what a restore adds
+        // shrinks by the minute (playtest 13: a preview of 1,092 was 861 12 s
+        // later, at the same price): said, beside the quote's guard.
+        let hint = if food >= 1.0 && self.world.season() == evo_sim::terrain::Season::Spring {
+            let spring =
+                "it is spring: the plants regrow on their own now, so what a restore adds shrinks by the minute";
+            Some(hint.map_or(spring.to_string(), |h| format!("{h}; {spring}")))
+        } else {
+            hint
         };
         let price = if food < 1.0 { 0 } else { price };
         let mut view = crate::protocol::RestoreView {
@@ -1117,8 +1159,13 @@ impl Game {
             .summer_heat(design)
             .filter(|&(share, _)| share >= HEAT_DESIGN_SHARE)
             .map(|(share, limit)| heat_design_text(share, limit));
+        let wait = self.world.days_to_breeding_window();
+        let timing_warning =
+            (design.values()[evo_sim::Gene::TimedBreeding.index()] >= evo_sim::stats::STRATEGY_THRESHOLD && wait > 0)
+                .then(|| timing_design_text(self.world.breeding_window_days(), wait));
         DesignCompatView {
             day: self.world.day(),
+            timing_warning,
             sample: SAMPLE,
             fertile_with,
             at_risk,

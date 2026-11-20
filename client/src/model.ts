@@ -266,6 +266,12 @@ export class GameModel {
           this.emit('offers');
           break;
         }
+        // Still accepted, nothing ended: a substitute or a moved meeting (playtest 13: "accepted" said
+        // again for each substitute; the server's alert names the substitute).
+        if (prev && prev.offer.status === 'accepted' && m.offer.status === 'accepted' && !m.error && !m.outcome) {
+          this.emit('offers');
+          break;
+        }
         const text = offerUpdateText(m.offer, m.outcome, m.error, this.player);
         this.toast(m.error && m.offer.status !== 'accepted' ? 'error' : 'info', text, true);
         this.addFeed([{ kind: 'offer', text, tick: this.tick(), day: m.day ?? this.state?.clock.day }]);
@@ -281,7 +287,10 @@ export class GameModel {
     let changed = false;
     for (const o of open) {
       const prev = this.offers.get(o.id);
-      if (!prev || prev.offer.status !== o.status) {
+      // A status change, or the animals a whole day older (playtest 13: a card said 118 days old while
+      // the offer said 138: ages only came with status changes).
+      const day = (x: OfferView) => `${Math.floor(x.mine_age?.age_days ?? 0)}|${Math.floor(x.partner_age?.age_days ?? 0)}`;
+      if (!prev || prev.offer.status !== o.status || day(prev.offer) !== day(o)) {
         this.offers.set(o.id, { ...prev, offer: o, incoming: prev?.incoming ?? o.to_player === this.player });
         changed = true;
       }

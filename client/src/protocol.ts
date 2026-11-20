@@ -456,7 +456,7 @@ export type TailLook = 'none' | 'thin' | 'bushy' | 'fin' | 'club' | 'prehensile'
 export interface LeaderRow {
   player: PlayerId;
   name: string;
-  /** Share of alleles among living breeding adults. */
+  /** Share of alleles among living animals (young included since v96, `share_young`). */
   share: number;
   /** Share weighted by offspring raised to adulthood. */
   weighted_share: number;
@@ -953,7 +953,8 @@ export interface WorldSummary {
   /** No births past this many living members (with crowding, a multiple of `lineage_cap`, which is then the soft cap). */
   lineage_hard_cap?: number;
   /** Player lineages in their newcomer grace (others can't order attacks on them). */
-  protected?: { player: PlayerId; lineage: number; days_left: number }[];
+  /** Lineages under their newcomer grace (days left are not told). */
+  protected?: { player: PlayerId; lineage: number; days_left?: number }[];
   /** Days in a year (four equal seasons); absent from older servers. */
   days_per_year?: number;
   /** Ticks in a game day; absent from older servers. */
@@ -1246,6 +1247,8 @@ export interface DesignCompatView {
   carnivore_egg_warning?: string;
   /** A warm-blooded design that overheats in summer on a quarter or more of the land (playtest 11). */
   heat_warning?: string;
+  /** A timed breeder founded outside its spring window: how long until it first breeds. */
+  timing_warning?: string;
   /** Balance's drought-founding warning, when the server sends one (shown verbatim). */
   drought_warning?: string;
   /** Founding now is a re-founding soon after your last lineage ended: `founders` of `requested` (founders cost double points: as many as fit, at least half), costing
@@ -1546,7 +1549,7 @@ export interface EraRow {
   /** Share at the era's end (and weighted). */
   share: number;
   weighted_share: number;
-  /** The era's mean day score, which ranks it (absent for older eras, ranked by the final share). */
+  /** The era score, which ranks it (the field keeps its old name): day scores, later days weighted more, blended with the era's last full year (absent for older eras, ranked by the final share). */
   mean_share?: number;
 }
 

@@ -2044,9 +2044,11 @@ impl World {
     }
 
     /// For a warm-blooded design: the share of the dry land whose summer
-    /// peak (the year's mean plus the seasonal swing) is hot enough to harm
-    /// its founders, and that temperature (°C). Forest and water don't cool
-    /// an animal; a lighter coat, a smaller body, a burrow or estivation do.
+    /// peak (the year's mean plus the seasonal swing and the afternoon's
+    /// day/night swing: playtest 13 saw heat deaths in a design warned of
+    /// nothing) is hot enough to harm its founders, and that temperature
+    /// (°C). Forest, water and body size don't cool an animal; a lighter
+    /// coat, a burrow or estivation do.
     /// None for a cold-blooded design.
     pub fn summer_heat(&self, design: &crate::design::FounderDesign) -> Option<(f32, f32)> {
         if design.thermo != crate::design::Thermo::Warm {
@@ -2066,7 +2068,12 @@ impl World {
                 continue;
             }
             land += 1;
-            if g.base_temp + self.map.climate_temp + crate::terrain::SEASONAL_AMPLITUDE > limit {
+            if g.base_temp
+                + self.map.climate_temp
+                + crate::terrain::SEASONAL_AMPLITUDE
+                + crate::terrain::DIURNAL_AMPLITUDE
+                > limit
+            {
                 hot += 1;
             }
         }
@@ -2557,6 +2564,28 @@ mod tests {
         let mut off = snap(500.0);
         w.smooth_legacy(&mut off);
         assert_eq!((off.total_alleles, off.world_alleles), (500.0, 0.0));
+    }
+
+    /// Playtest 13: the autumn young arrived in the share all at once as
+    /// they matured over winter. With `Balance::share_young` every living
+    /// animal's alleles count (breeding adults still counted apart).
+    #[test]
+    fn the_young_count_in_the_legacy() {
+        let mut w = small_world(3);
+        w.run_days(1);
+        let young = w.organisms.iter().filter(|o| o.alive && !o.matured).count();
+        let mut off = w.clone();
+        off.config.balance.share_young = 0.0;
+        off.legacy.clear();
+        off.run_days(1);
+        let mut on = w.clone();
+        on.legacy.clear();
+        on.run_days(1);
+        let (a, b) = (off.latest_legacy().unwrap(), on.latest_legacy().unwrap());
+        if young > 0 {
+            assert!(b.alleles.values().sum::<f64>() > a.alleles.values().sum::<f64>(), "{a:?} {b:?}");
+        }
+        assert_eq!(a.breeding_adults, b.breeding_adults);
     }
 
     /// The daily legacy snapshots are a window, not a history: a long-running
