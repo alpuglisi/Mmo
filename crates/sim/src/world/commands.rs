@@ -50,7 +50,9 @@ pub(super) const GROUP_EVENTS_KEPT: usize = 256;
 pub enum GroupEvent {
     /// Most of the group's adults reached its migration target: the order
     /// is done.
-    Arrived { player: PlayerId, group: u8, target: Vec2 },
+    /// `kept`: the territory it held while away, if any: kept (the target
+    /// lies in or near it) or given up (playtest 13: dropped silently).
+    Arrived { player: PlayerId, group: u8, target: Vec2, kept: Option<(super::groups::Territory, bool)> },
     /// The group has no living members left: its migration, territory and
     /// rally are gone.
     Emptied { player: PlayerId, group: u8 },

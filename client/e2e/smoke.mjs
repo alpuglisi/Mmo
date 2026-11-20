@@ -557,13 +557,13 @@ async function main() {
                 const r = await window.evo.socket.send({ type: 'create_listing', organism: id, fee: 0 });
                 // Listed now, or already (a second listing of one is refused).
                 if (r.ok || /already|listed/.test(r.error?.code ?? '')) listed.push(id);
-                else refused.push(r.error?.code);
+                else refused.push(r.error?.code ?? '?');
                 if (r.error?.code === 'too_many_listings') break;
               }
               return { listed, refused };
             }, req.partner);
             for (const id of ok.listed) listedMales.add(id);
-            if (ok.refused.length) console.log(`  … bob's listings refused: ${ok.refused.join(', ')}`);
+            if (ok.refused.length) console.log(`  … bob's listings refused: ${[...new Set(ok.refused)].join(', ')} (${ok.listed.length} listed)`);
           }
           const server = (await (await fetch(`${base}/api/world`)).json()).clock.tick;
           const look = (p, id) => p.evaluate((id) => { const s = window.evo.model.state; const o = s.organisms.find((o) => o.id === id); return `${s.clock.tick}:${o ? `${o.sex[0]}${o.pregnant ? 'P' : ''}${o.matured ? 'A' : ''}` : '-'}`; }, id);
@@ -902,7 +902,7 @@ async function main() {
       await choosePick(page, '#market-list-organism', null, 10000);
       await page.click('#market-list-submit');
       const relisted = await waitFor('create_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_listing')));
-      if (!relisted.ok && !['not_found', 'not_mature', 'already_listed'].includes(relisted.error?.code)) throw new Error(`create_listing failed: ${JSON.stringify(relisted.error)}`);
+      if (!relisted.ok && !['not_found', 'not_mature', 'already_listed', 'unfit'].includes(relisted.error?.code)) throw new Error(`create_listing failed: ${JSON.stringify(relisted.error)}`);
       if (relisted.ok) [withdrawId, withdrawOrg] = [relisted.data.listing.id, relisted.data.listing.organism];
     };
     for (let attempt = 0; attempt < 8 && !withdrawn; attempt++) {
@@ -995,7 +995,7 @@ async function main() {
         lotTried.push(lot);
         const r = await waitFor('create_auction result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_auction') ?? null), 30000);
         if (r.ok) return { id: r.data.listing.id, sex: r.data.listing.sex, organism: r.data.listing.organism };
-        if (!['already_pregnant', 'not_found', 'not_mature', 'already_listed', 'organism_busy'].includes(r.error?.code)) throw new Error(`create_auction failed: ${JSON.stringify(r.error)}`);
+        if (!['already_pregnant', 'not_found', 'not_mature', 'already_listed', 'organism_busy', 'unfit'].includes(r.error?.code)) throw new Error(`create_auction failed: ${JSON.stringify(r.error)}`);
         const server = (await (await fetch(`${base}/api/world`)).json()).clock.tick;
         const diag = await page.evaluate((id) => { const s = window.evo.model.state; const o = s.organisms.find((o) => String(o.id) === id); return `${s.clock.tick}:${o ? `${o.sex[0]}${o.pregnant ? 'P' : ''}${o.matured ? 'A' : ''}` : '-'}`; }, lot);
         createLog.push(`#${lot} refused (${r.error?.code}; server ${server}, ann ${diag})`);

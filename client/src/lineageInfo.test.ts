@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boomShareText, capInfo, graceText, grouped, LEGACY_EXPLAIN, migrationText, rampText } from './lineageInfo';
+import { capInfo, graceText, grouped, LEGACY_EXPLAIN, migrationText, rampText, shareSumNote } from './lineageInfo';
 import type { GroupView } from './protocol';
 
 describe('the population cap row', () => {
@@ -83,10 +83,10 @@ describe('grace and the founding ramp', () => {
   });
 });
 
-describe('boomShareText', () => {
-  it('explains a share that falls while the young outnumber the adults', () => {
-    expect(boomShareText(231, 717)).toContain('Most of yours are young (717 of 948)');
-    expect(boomShareText(300, 200)).toBeNull();
-    expect(boomShareText(2, 5)).toBeNull();
+describe('shareSumNote', () => {
+  it('explains shares that add up to less than 100% in a shrunken world', () => {
+    expect(shareSumNote([0.409, 0.133, 0.071, 0.035, 0.03, 0.018])).toContain('add up to 70%');
+    expect(shareSumNote([0.6, 0.39])).toBeNull();
+    expect(shareSumNote([])).toBeNull();
   });
 });

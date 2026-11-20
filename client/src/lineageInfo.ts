@@ -150,17 +150,14 @@ export function rampText(ramp: { founded_day: number; weight: number; days: numb
 }
 
 /** What the two leaderboard columns mean (Lineage and Ranks tabs). */
-export const LEGACY_EXPLAIN = 'Share: your alleles among all living breeding adults (genes, not heads; your genes in other lineages count too). '
+export const LEGACY_EXPLAIN = 'Share: your alleles among all living animals, young included (genes, not heads; your genes in other lineages count too). '
   + 'Weighted: the same, but each adult counts by how many of its young reached adulthood, so it stays at 0% until your first young grow up. '
-  + 'A new lineage counts toward the ranked season gradually (the founding ramp), so dying out and founding again does not pay.';
+  + 'A new lineage counts toward the ranked season gradually (the founding ramp), so dying out and founding again does not pay. '
+  + 'Shares are measured against the world\'s recent peak, not today\'s count, so when the world shrinks (a drought, a hard winter) they add up to less than 100%.';
 
-/**
- * Why the share can fall while the herd grows (playtest 11: it halved during
- * a boom of young): only breeding adults count. Null unless the young
- * outnumber the adults.
- */
-export function boomShareText(adults: number, young: number): string | null {
-  if (young <= adults || young < 10) return null;
-  return `Most of yours are young (${grouped(young)} of ${grouped(adults + young)}): the legacy share counts breeding adults only, `
-    + 'so it can fall during a boom while older adults die, and rises as the young grow up.';
+/** Under a leaderboard whose shares add up to clearly less than 100% (playtest 13: 69–88% with no word why). */
+export function shareSumNote(shares: readonly number[]): string | null {
+  const sum = shares.reduce((a, b) => a + b, 0);
+  if (shares.length === 0 || sum >= 0.97) return null;
+  return `These shares add up to ${Math.round(sum * 100)}%: they are measured against the world's recent peak, and the world has shrunk since.`;
 }

@@ -859,7 +859,12 @@ impl World {
                     o.range = at;
                 }
             }
-            for o in made {
+            let middles = if c.owner == crate::WILD { BTreeMap::new() } else { self.group_middles() };
+            for mut o in made {
+                // Back into the group whose ground it is on (playtest 13:
+                // cohorts keep no group, so satellite groups drained into the
+                // main one each time their region was abstracted).
+                o.group = self.group_by_ground(o.owner, o.pos, &middles);
                 self.insert(o);
                 self.lod.stats.expanded += 1;
             }
@@ -1106,6 +1111,8 @@ impl World {
         }
         o.pos = best.1;
         o.range = best.1;
+        let middles = if owner == crate::WILD { BTreeMap::new() } else { self.group_middles() };
+        o.group = self.group_by_ground(owner, o.pos, &middles);
         self.insert(o);
         self.lod.stats.emigrated += 1;
     }

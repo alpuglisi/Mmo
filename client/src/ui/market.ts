@@ -13,6 +13,7 @@ import { groupName } from '../groups';
 import type { GameModel } from '../model';
 import type { ClientMsg, CompatibilityView, LedgerView, ListingView, MarketSort, MarketView, OrgId, ResultMsg, ShopView, SurveyView } from '../protocol';
 import { parseCompatibilityView, parseLedgerView, parseMarketView, parseShopView } from '../protocol';
+import { api } from '../api';
 import { confirmDialog } from './confirm';
 import { h, pct } from './dom';
 import { traitName } from './traitNames';
@@ -506,7 +507,20 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   // The ledger sequence of the survey shown: a newer one (bought elsewhere) hides it (playtest 7: the first
   // survey's result stayed after later ones).
   let surveySeq = -1;
+  let surveying = false;
   surveyBtn.addEventListener('click', async () => {
+    // One at a time (playtest 13: a second tap while the first was answered bought a second survey).
+    if (surveying) return;
+    surveying = true;
+    surveyBtn.disabled = true;
+    try {
+      await survey();
+    } finally {
+      surveying = false;
+      render();
+    }
+  });
+  async function survey(): Promise<void> {
     // The price now, not the one shown when the shop last loaded (playtest 8: a stale price in the confirm).
     const fresh = await deps.send({ type: 'renown_shop' });
     if (fresh.ok) shop = parseShopView(fresh.data) ?? shop;
@@ -528,8 +542,11 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     surveyOut.replaceChildren(h('li', { class: 'muted' }, `Survey taken${day !== undefined ? ` on day ${day + 1}` : ''}:`), ...(v.groups.length
       ? v.groups.map((g) => h('li', {}, `${g.name}: about ${g.members} animals near ${g.x}, ${g.y}${g.territory ? ` · territory at ${g.territory[0]}, ${g.territory[1]} (radius ${g.territory[2]})` : ''}`))
       : [h('li', { class: 'muted' }, `No rival groups within ${v.radius} tiles of ${v.x}, ${v.y}.`)]));
-    render();
-  });
+    // Said where the player is too (playtest 13: only in the Market panel, missed on a phone).
+    model.toast('info', v.groups.length
+      ? `Survey: ${v.groups.slice(0, 3).map((g) => `${g.name} about ${g.members} near ${g.x}, ${g.y}`).join('; ')}${v.groups.length > 3 ? ` and ${v.groups.length - 3} more` : ''} (details in the Market).`
+      : `Survey: no rival groups within ${v.radius} tiles of ${v.x}, ${v.y}.`);
+  }
   // Naming an animal (cosmetic): shown on its listings.
   // Picked, not typed by number (playtest 8): the selected animal by default.
   const namePick = createPicker({ id: 'shop-name-animal-id', label: 'Animal to name', placeholder: 'Search your animals: id or words', filters: ['sex'], noneLabel: 'Choose one of your animals…' });
@@ -643,14 +660,14 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     if (s.animal_name_price) setText(nameBtn, `Name an animal: ${s.animal_name_price} renown`);
     surveyRow.hidden = s.survey_price === undefined;
     if (s.survey_price !== undefined) {
-      surveyBtn.disabled = s.balance < s.survey_price;
+      surveyBtn.disabled = surveying || s.balance < s.survey_price;
       setText(surveyBtn, `Survey nearby rivals: ${s.survey_price} renown`);
     }
     renderNameplate(s);
   }
 
   function renderCompat(): void {
-    const key = JSON.stringify(compat);
+    const key = JSON.stringify(compat) + [...speciesOf].join();
     if (compatEl.dataset.key === key) return;
     compatEl.dataset.key = key;
     if (!compat || compat.lineage === undefined) {
@@ -674,8 +691,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       h('p', { class: 'muted small' }, 'Lineages whose diet, warmth, birth mode or size differ by 0.30 or more from yours are sterile with it: only the fertile ones are worth trading with. "Offer a mating" lets the owner pick one of their animals that is free (no guessing which females are pregnant).'),
       h('label', {}, 'Price for an offer (renown)', offerPrice),
       h('ul', { class: 'small compat-list' },
-        ...fertile.map((r) => h('li', { 'data-lineage': r.lineage, class: 'good' }, compatRowText(r), r.owner !== 0 ? offerBtn(r) : '')),
-        ...sterile.slice(0, 6).map((r) => h('li', { 'data-lineage': r.lineage, class: 'muted' }, compatRowText(r)))),
+        ...fertile.map((r) => h('li', { 'data-lineage': r.lineage, class: 'good' }, compatRowText(r, speciesOf.get(r.lineage)), r.owner !== 0 ? offerBtn(r) : '')),
+        ...sterile.slice(0, 6).map((r) => h('li', { 'data-lineage': r.lineage, class: 'muted' }, compatRowText(r, speciesOf.get(r.lineage))))),
       h('p', { class: 'muted small compat-confidence', id: 'market-compat-note' }, COMPAT_CONFIDENCE),
       // "Mostly sterile" rows still have pairs that conceive (playtest 12: "40% of pairs can conceive" above "None of the sampled pairs can breed").
       ...(fertile.length === 0 ? [h('p', { class: 'small', id: 'market-compat-none' }, sterile.some((r) => (r.fertile_share ?? 0) > 0)
@@ -701,6 +718,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   }
 
   /** Fetch the first page again, and as many after it as were loaded. */
+  let speciesOf = new Map<number, string>();
+  let speciesAt = 0;
   async function refresh(): Promise<void> {
     if (fetching) {
       again = true;
@@ -719,6 +738,15 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       }
       if (sh.ok) shop = parseShopView(sh.data) ?? shop;
       if (cp.ok) compat = parseCompatibilityView(cp.data) ?? compat;
+      // Named species by their main lineage, for the "who can breed" rows (at most once a minute).
+      if (Date.now() - speciesAt > 60000) {
+        speciesAt = Date.now();
+        const sp = await api.species().catch(() => null);
+        if (sp) {
+          speciesOf = new Map(sp.species.filter((s) => s.named && s.extinct_day === undefined && s.lineages[0])
+            .map((s) => [s.lineages[0].lineage, s.name] as const));
+        }
+      }
       if (first) {
         const next: ListingView[][] = [first.listings];
         own = first.own ?? own;

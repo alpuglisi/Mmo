@@ -136,6 +136,9 @@ describe('compatibility and the shop', () => {
   const row = { lineage: 4, lineage_name: 'Foxes', owner: 3, owner_name: 'ann', fertility: 1, compatible: true, limiting: 'carnivory', gap: 0.05 };
   it('says who can breed with whom and why not', () => {
     expect(compatRowText(row)).toBe("ann's Foxes: fully fertile");
+    // A species a player named: both names, one thing (playtest 13).
+    expect(compatRowText(row, 'Nomad Pocket II')).toBe("ann's Foxes (species Nomad Pocket II): fully fertile");
+    expect(compatRowText(row, 'Foxes')).toBe("ann's Foxes: fully fertile");
     expect(compatRowText({ ...row, fertility: 0.5, gap: 0.21 })).toBe("ann's Foxes: 50% fertile on average (diet far apart in the closest pair)");
     // Playtest 11: the fertile pairs' own chance beside the share.
     expect(compatRowText({ ...row, fertility: 0.1, fertile_share: 0.8, gap: 0.21 }))

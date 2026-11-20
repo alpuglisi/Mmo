@@ -547,6 +547,14 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .standing .board td:has(> .who), .board td:has(> .nameplate) { white-space: nowrap; overflow-wrap: normal; }
 .standing td:has(> .nameplate) .who { max-width: 6.5em; }
 .board td .nameplate { max-width: 6.5em; vertical-align: bottom; }
+/* Phones: in tables the name wins (playtest 13: Ranks names cut off, and a nameplate wrapped the leaderboard row);
+   the title shows on the name's own line elsewhere and in its tooltip. */
+@media (max-width: 760px) {
+  .standings { grid-template-columns: 1fr; }
+  .board td .nameplate { display: none; }
+  .board td:has(> .who) { white-space: nowrap; }
+  .board .who, .standing td .who, .standing td:has(> .nameplate) .who { display: inline-block; max-width: 11em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+}
 #season-more { margin-top: 6px; }
 /* Eight tabs share a phone's width: smaller labels, no side padding to spare. */
 @media (max-width: 760px) {

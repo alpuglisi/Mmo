@@ -534,37 +534,64 @@ pub fn within_two(a: &str, b: &str) -> bool {
 }
 
 /// Whether `text` as a whole, or one of its words, is within two edits of
-/// `name` (not any stretch: "Herd of masters" is two letters from
-/// "Herdmaster" too).
+/// `name` (not any stretch of it, which would reach far too many names;
+/// rearrangements with fillers are [`rearranged`]'s).
 fn two_off(text: &str, name: &str) -> bool {
     within_two(&fold(&letters(text)), name)
         || text.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| within_two(&fold(&letters(w)), name))
 }
 
-/// Whether `text`'s words, put in another order, spell `name` (each word
-/// at least 3 letters, at most 5 words), a letter off at most: "Master
-/// Herd", "Hunter Apex", "Comer Late" (playtest 12).
-fn reordered(text: &str, name: &str) -> bool {
-    let words: Vec<String> =
-        text.split(|c: char| !c.is_ascii_alphanumeric()).map(|w| fold(&letters(w))).filter(|w| !w.is_empty()).collect();
-    if words.len() < 2 || words.len() > 5 || words.iter().any(|w| w.len() < 3) || name.len() < 6 {
+/// Words that only pad a name ("The Master Herd Jr"), for [`normalised`]:
+/// not the group words of [`DECORATIONS`], which can be part of a name.
+const FILLERS: &[&str] = &[
+    "the", "of", "and", "jr", "sr", "junior", "senior", "new", "old", "true", "real", "original", "neo", "second",
+    "third", "prime", "reborn", "redux", "returns", "again", "clone", "copy", "official", "fan", "fans",
+];
+
+/// `text` normalised for [`rearranged`]: its words without fillers
+/// ([`FILLERS`]: "the", "of", "jr", "new" …), roman numerals, digits and
+/// words of one or two letters, folded and run together ("The Master Herd
+/// Jr" → "masterherd", "Nomad Pocket II" → "nomadpocket").
+fn normalised(text: &str) -> String {
+    const ROMAN: &[&str] = &["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii"];
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .map(str::to_ascii_lowercase)
+        .filter(|w| !ROMAN.contains(&w.as_str()))
+        .map(|w| fold(&letters(&w)))
+        .filter(|w| w.len() > 2 && !FILLERS.iter().any(|d| fold(d) == *w))
+        .collect()
+}
+
+/// Whether `text`, normalised ([`normalised`]), is a player's name
+/// rearranged: its letters turned around at any point ("Masterherd",
+/// "Nomadpocket") or its CamelCase parts in another order ("Pocket
+/// Nomad" for "NomadPocket"), held anywhere a letter off, or as a whole
+/// two letters off for names of 9+ letters ("Pokcet Nomda II"): playtests
+/// 12 and 13.
+fn rearranged(text: &str, name: &str) -> bool {
+    let t = normalised(text);
+    let n = fold(&letters(name));
+    if n.len() < 6 || t.len() < 4 {
         return false;
     }
-    fn permute(words: &mut Vec<String>, k: usize, name: &str) -> bool {
-        if k == words.len() {
-            let joined = words.concat();
-            return joined == name || within_one(&joined, name);
-        }
-        for i in k..words.len() {
-            words.swap(k, i);
-            if permute(words, k + 1, name) {
-                return true;
+    let mut forms: Vec<String> =
+        (0..n.len()).filter(|&k| n.is_char_boundary(k)).map(|k| format!("{}{}", &n[k..], &n[..k])).collect();
+    let parts: Vec<String> = camel_parts(&letters(name)).iter().map(|p| fold(p)).filter(|p| !p.is_empty()).collect();
+    if (2..=4).contains(&parts.len()) {
+        fn permute(parts: &mut Vec<String>, k: usize, out: &mut Vec<String>) {
+            if k == parts.len() {
+                out.push(parts.concat());
+                return;
             }
-            words.swap(k, i);
+            for i in k..parts.len() {
+                parts.swap(k, i);
+                permute(parts, k + 1, out);
+                parts.swap(k, i);
+            }
         }
-        false
+        permute(&mut parts.clone(), 0, &mut forms);
     }
-    permute(&mut words.clone(), 0, name)
+    forms.iter().any(|f| near_inside(&t, f) || (f.len() >= 9 && within_two(&t, f)))
 }
 
 /// Whether some stretch of `text` is within one edit of `name`.
@@ -661,7 +688,7 @@ pub fn impersonates<'a>(text: &str, others: impl IntoIterator<Item = &'a str>, k
                 // the name's parts in another order ("Master Herd"):
                 // playtest 12.
                 || (ol.len() >= 9 && two_off(text, &ol))
-                || reordered(text, &ol)
+                || rearranged(text, n)
                 || (kind == Kind::Account
                     && short.len() >= 5
                     && long.len() - short.len() <= 2
@@ -1022,14 +1049,27 @@ mod tests {
             ("Nomad Hunter", false),
             ("Herd Pocket", false),
             ("Steppe grazers", false),
-            ("Masters of the herd", false),
+            // With fillers dropped these spell the name (playtest 13).
+            ("Masters of the herd", true),
             // Playtest 12: the parts in another order, two swaps in a long name.
             ("Master Herd", true),
             ("Hunter Apex", true),
             ("Nomad Pocket", true),
             ("Broker Gene", true),
             ("Hedrmatser", true),
-            ("Herd of masters", false),
+            ("Herd of masters", true),
+            // Playtest 13: decorations, short words, run together, swaps
+            // across words.
+            ("Nomad Pocket II", true),
+            ("Nomadpocket", true),
+            ("Master Herd Jr", true),
+            ("Masterherd", true),
+            ("The Master Herd", true),
+            ("Apex the Hunter", true),
+            ("Pokcet Nomda II", true),
+            ("Hunter of the Apex", true),
+            ("Herd of the Steppe", false),
+            ("Pocket gophers", false),
         ] {
             assert_eq!(impersonates(name, players, Kind::Title), blend, "{name:?}");
         }

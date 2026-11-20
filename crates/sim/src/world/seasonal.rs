@@ -316,6 +316,22 @@ impl World {
         (self.day_of_year() as f32) < self.config.days_per_season() as f32 * w
     }
 
+    /// Days until the breeding window opens (0 inside it): when a timed
+    /// breeder founded now first conceives (the designer warns: playtest 13,
+    /// one founded in summer bred nothing for ~90 days).
+    pub fn days_to_breeding_window(&self) -> u32 {
+        if self.in_breeding_window() {
+            0
+        } else {
+            self.config.days_per_year.max(1).saturating_sub(self.day_of_year())
+        }
+    }
+
+    /// The breeding window's length in days (the start of spring).
+    pub fn breeding_window_days(&self) -> u32 {
+        (self.config.days_per_season() as f32 * self.config.balance.breeding_window.clamp(0.0, 1.0)).ceil() as u32
+    }
+
     /// May this organism mate now, as far as its season goes? Timed breeders
     /// only in the window; everyone else year-round.
     pub(crate) fn may_conceive(&self, o: &Organism) -> bool {
@@ -1487,7 +1503,8 @@ mod tests {
     /// Playtest 11: a furred design died of heat in its first summer, with
     /// no designer warning. `World::summer_heat` gives the share of dry
     /// land whose summer peak harms a warm-blooded design: all of a 24 °C
-    /// map for a thick coat, none for a light one; none on a cool map.
+    /// map for a thick coat, none of a 20 °C one for a light one; none on a
+    /// cool map.
     #[test]
     fn a_thick_coat_overheats_on_a_warm_map() {
         let furred = design(Thermo::Warm).with(Gene::Fur, 1.0).with(Gene::FatStores, 1.0);
@@ -1495,7 +1512,10 @@ mod tests {
         let warm = flat_world(24.0, 10.0, 40);
         let (share, limit) = warm.summer_heat(&furred).unwrap();
         assert!(share > 0.99 && limit < 24.0 + crate::terrain::SEASONAL_AMPLITUDE, "{share} {limit}");
-        assert_eq!(warm.summer_heat(&light).unwrap().0, 0.0);
+        // The afternoon swing counts too (playtest 13): at 24 °C a bare coat
+        // passes its limit at 15:00 in midsummer; at 20 °C it doesn't.
+        assert_eq!(warm.summer_heat(&light).unwrap().0, 1.0);
+        assert_eq!(flat_world(20.0, 10.0, 40).summer_heat(&light).unwrap().0, 0.0);
         assert_eq!(flat_world(2.0, 10.0, 40).summer_heat(&furred).unwrap().0, 0.0);
         assert_eq!(warm.summer_heat(&design(Thermo::Cold)), None);
     }
