@@ -269,7 +269,7 @@ fn a_migration_arrives_when_half_the_group_is_there_not_the_first_few() {
     }
     settle_now(&mut w);
     assert_eq!(w.migration_order(HERD, 0), None);
-    assert!(w.take_group_events().contains(&GroupEvent::Arrived { player: HERD, group: 0, target }));
+    assert!(w.take_group_events().contains(&GroupEvent::Arrived { player: HERD, group: 0, target, kept: None }));
     let s = w.settle_circle(HERD, 0).expect("settles");
     assert_eq!(s.center, target);
     assert_eq!(s.radius, World::home_radius(n));
@@ -796,7 +796,7 @@ fn a_long_migration_arrives() {
     }
     let events = w.take_group_events();
     assert!(
-        events.contains(&GroupEvent::Arrived { player: HERD, group: 0, target }),
+        events.contains(&GroupEvent::Arrived { player: HERD, group: 0, target, kept: None }),
         "{events:?} (start {:.0} tiles off)",
         start.dist(target)
     );
@@ -1243,4 +1243,65 @@ fn a_far_claim_reports_the_radius_it_gets() {
         Ok(ClaimOutcome::Migrating { radius, .. }) => assert_eq!(radius, limit),
         other => panic!("{other:?}"),
     }
+}
+
+/// A migration ending inside the territory it kept holds it again; one
+/// ending far away gives it up and says so (playtest 13: dropped silently
+/// on arrival though the target lay inside it).
+#[test]
+fn a_kept_territory_is_held_again_when_the_target_is_inside_it() {
+    let mut w = standard();
+    w.tick = 5000;
+    let home = w.group_middle(HERD, 0).unwrap();
+    let t = w.claim_territory(HERD, 0, home, 10.0).unwrap();
+    let target = w.command_migrate(HERD, home + Vec2::new(4.0, 0.0)).unwrap();
+    assert_eq!(w.territory(HERD, 0), None, "kept while away");
+    for &i in &herd(&w, HERD) {
+        w.organisms[i].pos = target;
+    }
+    settle_now(&mut w);
+    let ev = w.take_group_events();
+    assert!(ev.iter().any(|e| matches!(e, GroupEvent::Arrived { kept: Some((_, true)), .. })), "{ev:?}");
+    assert_eq!(w.territory(HERD, 0), Some(t));
+}
+
+/// A claim beyond the group's home reach of the circle migrates there
+/// first (playtest 13: a claim 18–28 tiles off was never reached).
+#[test]
+fn a_claim_beyond_home_reach_migrates_first() {
+    use super::groups::ClaimOutcome;
+    let mut w = standard();
+    w.tick = 5000;
+    let home = w.group_middle(HERD, 0).unwrap();
+    let n = herd(&w, HERD).len();
+    let far = home + Vec2::new(World::home_radius(n) + 4.0 + 6.0, 0.0);
+    let far = w.map.clamp(far);
+    if far.dist(home) <= World::home_radius(n) + 4.0 + 1.0 {
+        return; // the map edge leaves no room
+    }
+    match w.claim_or_migrate(HERD, 0, far, 4.0) {
+        Ok(ClaimOutcome::Migrating { .. }) => {}
+        Err(e) => assert!(!matches!(e, CommandError::NoSuchGroup(_)), "{e:?}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// An animal rebuilt from a cohort rejoins the group whose ground it is on
+/// (playtest 13: satellite groups drained into the main group).
+#[test]
+fn a_rebuilt_animal_rejoins_the_group_on_its_ground() {
+    let mut w = standard();
+    w.tick = 5000;
+    let home = w.group_middle(HERD, 0).unwrap();
+    let members = herd(&w, HERD);
+    for &i in &members[..members.len() / 2] {
+        w.organisms[i].group = 1;
+    }
+    let spot = w.map.clamp(home + Vec2::new(40.0, 0.0));
+    w.claim_territory(HERD, 1, spot, 5.0).ok();
+    let middles = w.group_middles();
+    if w.territory(HERD, 1).is_some() {
+        assert_eq!(w.group_by_ground(HERD, spot, &middles), 1);
+    }
+    assert_eq!(w.group_by_ground(crate::WILD, spot, &middles), 0);
 }
