@@ -3176,9 +3176,11 @@ pub struct EraRow {
     /// Share at the era's end (and weighted).
     pub share: f64,
     pub weighted_share: f64,
-    /// The era's mean day score (the ranked season's: mean of raw and
-    /// weighted share, with the founding ramp), which ranks it; absent for
-    /// eras from before it was kept, ranked by the final share.
+    /// The era score, which ranks it (the field keeps its old name): the
+    /// ranked season's day scores (mean of raw and weighted share, with the
+    /// founding ramp), later days weighted more, blended with the mean of
+    /// the era's last full year (`game::eras`); absent for eras from before
+    /// it was kept, ranked by the final share.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mean_share: Option<f64>,
 }

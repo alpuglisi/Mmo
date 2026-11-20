@@ -24,7 +24,7 @@ const LABELS: Record<SeasonCategory, string> = {
 };
 
 const HINTS: Record<SeasonCategory, string> = {
-  legacy: 'Mean share of breeding alleles over the season (a missing day counts as 0). Shares are measured against the world\'s recent peak, so in a shrunken world they add up to less than 100%',
+  legacy: 'Mean share of the world\'s alleles over the season (a missing day counts as 0). Shares are measured against the world\'s recent peak, so in a shrunken world they add up to less than 100%',
   lineage: 'The most living members on any recorded day of the season (a peak, not the size now); lineages that both reach the population cap tie',
   species: 'Species that split off from your lineage (speciation) this season. A founding\'s own species doesn\'t count: a new one forms when part of your lineage (at least a season old) drifts apart enough to breed only with its own kind. The title needs at least two players with one.',
   market: 'Renown earned from stud fees',
@@ -187,7 +187,7 @@ function standingTables(standings: StandingPage[], me: PlayerId, idPrefix: strin
 }
 
 /** The legacy category in words (`league.rs`: each day the mean of raw and weighted share, scaled by the founding ramp). */
-export const LEGACY_SCORE_EXPLAIN = 'Each day counts the mean of your share (your alleles among all living breeding adults) and your weighted share '
+export const LEGACY_SCORE_EXPLAIN = 'Each day counts the mean of your share (your alleles among all living animals, young included) and your weighted share '
   + '(the same, with each adult counted by how many of its young reached adulthood). The crown goes to the best average over the season\'s days. '
   + 'A new lineage counts gradually: 10% on its first day after founding, rising to 100% after 10 days (the founding ramp), so dying out and founding again does not pay.';
 

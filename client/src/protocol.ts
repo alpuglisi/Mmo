@@ -456,7 +456,7 @@ export type TailLook = 'none' | 'thin' | 'bushy' | 'fin' | 'club' | 'prehensile'
 export interface LeaderRow {
   player: PlayerId;
   name: string;
-  /** Share of alleles among living breeding adults. */
+  /** Share of alleles among living animals (young included since v96, `share_young`). */
   share: number;
   /** Share weighted by offspring raised to adulthood. */
   weighted_share: number;
@@ -1545,7 +1545,7 @@ export interface EraRow {
   /** Share at the era's end (and weighted). */
   share: number;
   weighted_share: number;
-  /** The era's mean day score, which ranks it (absent for older eras, ranked by the final share). */
+  /** The era score, which ranks it (the field keeps its old name): day scores, later days weighted more, blended with the era's last full year (absent for older eras, ranked by the final share). */
   mean_share?: number;
 }
 

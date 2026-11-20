@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boomShareText, capInfo, graceText, grouped, LEGACY_EXPLAIN, migrationText, rampText, shareSumNote } from './lineageInfo';
+import { capInfo, graceText, grouped, LEGACY_EXPLAIN, migrationText, rampText, shareSumNote } from './lineageInfo';
 import type { GroupView } from './protocol';
 
 describe('the population cap row', () => {
@@ -80,14 +80,6 @@ describe('grace and the founding ramp', () => {
     expect(rampText({ founded_day: 99, weight: 0.4, days: 10 })).toBe('40% of your share counts toward the ranked season now; it rises to 100% by day 110 (10 days after founding on day 100)');
     expect(rampText({ founded_day: 3, weight: 1, days: 10 })).toMatch(/^full/);
     expect(LEGACY_EXPLAIN).toMatch(/stays at 0% until your first young grow up/);
-  });
-});
-
-describe('boomShareText', () => {
-  it('explains a share that falls while the young outnumber the adults', () => {
-    expect(boomShareText(231, 717)).toContain('Most of yours are young (717 of 948)');
-    expect(boomShareText(300, 200)).toBeNull();
-    expect(boomShareText(2, 5)).toBeNull();
   });
 });
 

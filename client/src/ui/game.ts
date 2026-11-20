@@ -14,7 +14,7 @@ import { apartText, historyRows, meetText, offerLine } from './matingHistory';
 import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
 import { buildFamilyTree, type FamilyModel } from '../familyTree';
-import { actionText, boomShareText, capInfo, graceText, grouped, LEGACY_EXPLAIN, migrationText, rampText, shareSumNote } from '../lineageInfo';
+import { actionText, capInfo, graceText, grouped, LEGACY_EXPLAIN, migrationText, rampText, shareSumNote } from '../lineageInfo';
 import { droughtNotice } from '../droughtInfo';
 import { markRetired, wasRetired } from '../retired';
 import { awaySummary, seenKey } from '../awaySummary';
@@ -2256,8 +2256,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const endGraceEl = h('details', { id: 'lineage-end-grace', class: 'retire' },
     h('summary', {}, 'End the newcomer grace'),
     h('p', { class: 'muted small' },
-      'While the grace lasts, other players\' animals can\'t attack yours, and yours can\'t attack theirs, by order or on instinct. ',
-      'A hunter needs prey: end it to hunt other players\' animals now. They can hunt yours from then on, and founding again soon after won\'t bring it back.'),
+      // Instinct grace (playtest 13, perf round 14): on their own yours leave rivals' animals alone; an
+      // ordered attack on an unprotected one is allowed and ends the grace.
+      'While the grace lasts, other players\' animals can\'t attack yours. Yours leave theirs alone on their own; you can still order an attack (possess one of yours) on a rival\'s unprotected animal, and that first ordered attack ends your grace. ',
+      'A hunter that should hunt on its own needs the grace over: end it now. Rivals can hunt yours from then on, and founding again soon after won\'t bring it back.'),
     endGraceBtn);
   endGraceEl.hidden = true;
   endGraceBtn.addEventListener('click', async () => {
@@ -2345,8 +2347,6 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       ...(ramp ? [['Season weight', h('span', { id: 'ramp-weight' }, ramp)] as [string, string | Node]] : []),
     ]));
     if (cap.explain && !gone) statsEl.append(h('p', { class: `cap-note small${cap.level === 'ok' ? ' muted' : ''}`, id: 'cap-note' }, cap.explain));
-    const boom = gone ? null : boomShareText(adultsAll, youngAll);
-    if (boom) statsEl.append(h('p', { class: 'muted small', id: 'boom-note' }, boom));
     // Lineage-wide warnings (hunger crash, near the hard cap, starving territories), as the alerts say them.
     const warnings = gone ? [] : mine?.warnings ?? [];
     if (warnings.length) {
