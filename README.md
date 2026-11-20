@@ -10934,7 +10934,7 @@ playtest's newcomer, down to 69, was told "you had 306".
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.83 (± 0.19); every lineage 12 of 12 |
 | `predlong 6` on seeds 31–38 and 41–48 | fox 16/16 (16 viable), pack hunters 16/16 (16); 2 seeds lost a prey species, the toxic frog on 33 and 38 (round 13: 1) |
 | workspace tests (470 sim), both clippy runs, fixtures, serde lib tests, client typecheck, `vitest` (481), build | pass |
-| e2e (`E2E_JOBS=2`, evo-server rebuilt) | E2E_RESULT |
+| e2e (`E2E_JOBS=2`, evo-server rebuilt) | 16 of 16 pass |
 
 ## Genetics validation
 
