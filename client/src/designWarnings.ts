@@ -15,7 +15,7 @@ export const DROUGHT_EXTREME = 0.75;
 export const EGGS_WARMED = 4;
 
 export interface DesignWarning {
-  id: 'drought' | 'catastrophe' | 'wings' | 'eggs' | 'carnivore_eggs' | 'clutch' | 'egg_chill' | 'heat';
+  id: 'drought' | 'catastrophe' | 'wings' | 'eggs' | 'carnivore_eggs' | 'clutch' | 'egg_chill' | 'heat' | 'timing';
   level: 'warn' | 'bad';
   text: string;
 }

@@ -171,7 +171,7 @@ export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, 
             + `${e.catastrophes.length ? ` · ${e.catastrophes.length} catastrophe${e.catastrophes.length === 1 ? '' : 's'}` : ''}`),
           h('table', { class: 'board' },
             h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'Player'),
-              byMean(e) ? h('th', { title: 'Mean over the era\'s days of the raw and weighted share, with the founding ramp: what ranks the era' }, 'Era mean') : null,
+              byMean(e) ? h('th', { title: 'What ranks the era: the day scores (raw and weighted share, with the founding ramp), later days counting more, blended with the era\'s last full year' }, 'Era score') : null,
               h('th', {}, 'Final share'), h('th', { title: 'Weighted by offspring raised to adulthood' }, 'Weighted'))),
             // Players are ranked among players (as "you #N" says); the wild ecosystem's row has no rank.
             h('tbody', {}, ...e.rows.slice(0, 8).map((r) => h('tr', { class: r.player === me ? 'me' : '' },

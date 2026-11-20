@@ -124,6 +124,9 @@ pub const HOLD_LOOSE_REACH: f32 = 10.0;
 /// larger group may claim over ([`SQUAT_RATIO`]): playtest 7 found a
 /// 2-animal splinter could deny a key water spot to every rival for good.
 pub const SQUAT_MEMBERS: usize = 12;
+/// How far beyond a group's ground an animal rebuilt from a cohort may be
+/// and still rejoin it ([`World::group_by_ground`]).
+pub const GROUND_REGROUP_TILES: f32 = 24.0;
 /// How many times a squat's holders a claiming group must number to take
 /// its ground.
 pub const SQUAT_RATIO: usize = 10;
@@ -749,8 +752,25 @@ impl World {
                 let settle = Settle { center: target, radius: Self::home_radius(n), until_tick: u64::MAX };
                 self.group_plans.settles.insert(key, settle);
                 self.group_plans.pending.start_median.remove(&key);
-                // The ground it left is given up now it has arrived.
-                self.group_plans.held.away.remove(&key);
+                // The ground it left: held again when the target lies in or
+                // near it (playtest 13: a migration inside its own territory
+                // dropped it), else given up, the claim cooldown cut as an
+                // abandon cuts it. A new claim there replaces it either way.
+                let away = self.group_plans.held.away.remove(&key);
+                let pending = self.group_plans.pending.claims.contains_key(&key);
+                let kept = away.map(|t| {
+                    let near = !pending && target.dist(t.center) <= t.radius + Self::home_radius(n);
+                    if near {
+                        self.territories.insert(key, t);
+                        self.group_plans.settles.remove(&key);
+                    } else if let Some(&at) = self.territory_claims.get(&key) {
+                        let cd = self.claim_cooldown_ticks();
+                        let short = (ABANDON_COOLDOWN_SHARE * cd as f32).round() as u64;
+                        let ready = (at + cd).min(self.tick + short);
+                        self.territory_claims.insert(key, ready.saturating_sub(cd));
+                    }
+                    (t, near)
+                });
                 match self.group_plans.pending.claims.remove(&key) {
                     Some((center, radius)) => {
                         let adults = self.group_counts(player, group).1;
@@ -770,7 +790,7 @@ impl World {
                         self.rallies.remove(&key);
                         self.push_group_event(GroupEvent::ClaimedOnArrival { player, group, territory: t });
                     }
-                    None => self.push_group_event(GroupEvent::Arrived { player, group, target }),
+                    None => self.push_group_event(GroupEvent::Arrived { player, group, target, kept }),
                 }
                 continue;
             }
@@ -808,13 +828,15 @@ impl World {
                 let gained = (start - plan.best_median).max(0.0);
                 let never_moved = gained < MIGRATE_PROGRESS_TILES;
                 let pending_claim = self.group_plans.pending.claims.remove(&key).is_some();
-                // Still on the ground it left: it holds it again.
+                // The ground it left is held again: kept until a new one is
+                // reached (playtest 13: a far claim cut short by winter sleep
+                // lost both territories).
                 let territory_kept = match self.group_plans.held.away.remove(&key) {
-                    Some(t) if self.group_median_dist(player, group, t.center).is_some_and(|d| d <= t.radius) => {
+                    Some(t) => {
                         self.territories.insert(key, t);
                         true
                     }
-                    _ => false,
+                    None => false,
                 };
                 self.push_group_event(GroupEvent::TimedOut {
                     player,
@@ -1326,7 +1348,8 @@ impl World {
     }
 
     /// Group command: claim a territory, or, when its centre is more than
-    /// [`FAR_CLAIM_TILES`] from the group, migrate there first and claim on
+    /// [`FAR_CLAIM_TILES`] from the group (or beyond its home reach of the
+    /// circle's edge), migrate there first and claim on
     /// arrival (the claim's checks run now; the circle is kept to the
     /// group's limit when it is claimed). A far claim used to become the
     /// group's territory (and home range) with nobody in it.
@@ -1354,11 +1377,15 @@ impl World {
             }
             Err(e) => return Err(e),
         };
-        if middle.dist(at) <= FAR_CLAIM_TILES {
+        let (members, adults) = self.group_counts(player, group);
+        let r = radius.clamp(TERRITORY_MIN_RADIUS, Self::territory_radius_limit(adults));
+        // Claimed at once only when the group's middle is within its home
+        // reach of the circle's edge (and at most FAR_CLAIM_TILES): a claim
+        // 18–28 tiles off was never reached, the loosened hold foraging in
+        // place (playtest 13). Farther, it migrates there first.
+        if middle.dist(at) <= (r + Self::home_radius(members)).min(FAR_CLAIM_TILES) {
             return self.claim_territory(player, group, center, radius).map(ClaimOutcome::Claimed);
         }
-        let adults = self.group_counts(player, group).1;
-        let r = radius.clamp(TERRITORY_MIN_RADIUS, Self::territory_radius_limit(adults));
         self.check_water(player, group, at, r)?;
         let target = self.command_migrate_group(player, group, at)?;
         self.group_plans.pending.claims.insert((player, group), (at, radius));
@@ -1453,6 +1480,60 @@ impl World {
         Self::check_group(group)?;
         let r = self.rallies.remove(&(player, group));
         r.filter(|r| self.tick < r.expires_tick).ok_or(CommandError::NoRally(group))
+    }
+
+    /// The group of `owner`'s whose ground `pos` is nearest, for an animal
+    /// rebuilt from a cohort (cohorts keep no group): each group's
+    /// territory, kept territory, home, rally or migration target, measured
+    /// from its edge, or its members' middle (`middles`, from
+    /// [`World::group_middles`]); the main group when none is near.
+    pub(crate) fn group_by_ground(&self, owner: PlayerId, pos: Vec2, middles: &BTreeMap<(PlayerId, u8), Vec2>) -> u8 {
+        if owner == crate::WILD {
+            return 0;
+        }
+        let mut best: (f32, u8) = (GROUND_REGROUP_TILES, 0);
+        // A roaming group's middle counts too (a split group with no order).
+        for (&(p, g), &m) in middles.range((owner, 0)..=(owner, u8::MAX)) {
+            debug_assert_eq!(p, owner);
+            let d = pos.dist(m);
+            if d < best.0 {
+                best = (d, g);
+            }
+        }
+        let mut consider = |g: u8, center: Vec2, radius: f32| {
+            let d = (pos.dist(center) - radius).max(0.0);
+            if d < best.0 || (d == best.0 && g < best.1) {
+                best = (d, g);
+            }
+        };
+        for g in 0..MAX_GROUPS {
+            let key = (owner, g);
+            if let Some(t) = self.territories.get(&key).or_else(|| self.group_plans.held.away.get(&key)) {
+                consider(g, t.center, t.radius);
+            }
+            if let Some(s) = self.group_plans.settles.get(&key) {
+                consider(g, s.center, s.radius);
+            }
+            if let Some(r) = self.rallies.get(&key) {
+                consider(g, r.center, r.radius);
+            }
+            if let Some(&t) = self.migrate_orders.get(&key) {
+                consider(g, t, 0.0);
+            }
+        }
+        best.1
+    }
+
+    /// Each player group's middle (agents only), for [`World::group_by_ground`].
+    pub(crate) fn group_middles(&self) -> BTreeMap<(PlayerId, u8), Vec2> {
+        let mut sums: BTreeMap<(PlayerId, u8), (f32, f32, usize)> = BTreeMap::new();
+        for o in self.organisms.iter().filter(|o| o.alive && o.owner != crate::WILD) {
+            let e = sums.entry((o.owner, o.group)).or_default();
+            e.0 += o.pos.x;
+            e.1 += o.pos.y;
+            e.2 += 1;
+        }
+        sums.into_iter().map(|(k, (x, y, n))| (k, Vec2::new(x / n as f32, y / n as f32))).collect()
     }
 
     /// Give `group` back a territory it held before an order replaced it

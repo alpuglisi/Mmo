@@ -47,3 +47,22 @@ export function tiles(d: number): string {
   const n = Math.max(0, Math.round(d));
   return n === 1 ? '1 tile' : `${n} tiles`;
 }
+
+/**
+ * Keep a hidden element out of the page (a comment holds its place) and put
+ * it back when shown: hidden text stays out of copies, searches and screen
+ * readers (playtests 12–13: "Start a new lineage", "Name your lineage…").
+ */
+const placeholders = new WeakMap<HTMLElement, Comment>();
+export function present(el: HTMLElement, on: boolean): void {
+  let mark = placeholders.get(el);
+  if (!on && el.parentNode) {
+    if (!mark) {
+      mark = document.createComment(el.id || 'notice');
+      placeholders.set(el, mark);
+    }
+    el.replaceWith(mark);
+  } else if (on && !el.parentNode && mark?.parentNode) {
+    mark.replaceWith(el);
+  }
+}

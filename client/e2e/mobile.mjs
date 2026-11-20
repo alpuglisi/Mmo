@@ -496,12 +496,15 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
       }
       return d / n;
     };
+    // Near the main group's middle: a claim beyond its home reach migrates
+    // there first (playtest 13) and isn't held at once.
+    const herd = window.evo.model.state.organisms.filter((o) => (o.group ?? 0) === 0);
+    const mx = herd.reduce((s, o) => s + o.x, 0) / Math.max(1, herd.length);
+    const my = herd.reduce((s, o) => s + o.y, 0) / Math.max(1, herd.length);
     let best = null;
-    for (const o of window.evo.model.state.organisms.slice(0, 12)) {
-      for (let dy = -10; dy <= 10; dy += 2) for (let dx = -10; dx <= 10; dx += 2) {
-        const s = share(o.x + dx, o.y + dy);
-        if (!best || s > best.s) best = { x: o.x + dx, y: o.y + dy, s };
-      }
+    for (let dy = -6; dy <= 6; dy += 1) for (let dx = -6; dx <= 6; dx += 1) {
+      const s = share(mx + dx, my + dy);
+      if (!best || s > best.s) best = { x: mx + dx, y: my + dy, s };
     }
     v.setFollow(false);
     if (best) v.centerOn(best.x, best.y);

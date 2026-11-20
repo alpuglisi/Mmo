@@ -552,15 +552,23 @@ async function main() {
               const s = window.evo.model.state;
               const ids = [first, ...s.organisms.filter((o) => o.sex === 'male' && o.matured).map((o) => o.id)];
               const listed = [];
+              const refused = [];
               for (const id of [...new Set(ids)]) {
-                const r = await window.evo.socket.send({ type: 'create_listing', organism: id, fee: 0 });
+                // At the server's minimum fee (a fee of 0 is refused: bad_price,
+                // and the request then kept naming unlisted males).
+                let r = await window.evo.socket.send({ type: 'create_listing', organism: id, fee: 5 });
+                if (!r.ok && r.error?.code === 'bad_price' && r.error?.detail?.min) {
+                  r = await window.evo.socket.send({ type: 'create_listing', organism: id, fee: r.error.detail.min });
+                }
                 // Listed now, or already (a second listing of one is refused).
                 if (r.ok || /already|listed/.test(r.error?.code ?? '')) listed.push(id);
+                else refused.push(r.error?.code ?? '?');
                 if (r.error?.code === 'too_many_listings') break;
               }
-              return listed;
+              return { listed, refused };
             }, req.partner);
-            for (const id of ok) listedMales.add(id);
+            for (const id of ok.listed) listedMales.add(id);
+            if (ok.refused.length) console.log(`  … bob's listings refused: ${[...new Set(ok.refused)].join(', ')} (${ok.listed.length} listed)`);
           }
           const server = (await (await fetch(`${base}/api/world`)).json()).clock.tick;
           const look = (p, id) => p.evaluate((id) => { const s = window.evo.model.state; const o = s.organisms.find((o) => o.id === id); return `${s.clock.tick}:${o ? `${o.sex[0]}${o.pregnant ? 'P' : ''}${o.matured ? 'A' : ''}` : '-'}`; }, id);
@@ -1413,12 +1421,28 @@ async function main() {
       const sel = document.querySelector('#group-select');
       return sel.value === String(g) && sel.options.length === 3 && window.evo.model.state.groups.length === 2;
     }, newGroup), 20000);
+    // Drawn on the new group's own ground: a claim beyond its home reach
+    // migrates there first (playtest 13) and isn't held at once.
+    const at = await page.evaluate((g) => {
+      const v = window.evo.screen().view;
+      const mine = window.evo.model.state.organisms.filter((o) => (o.group ?? 0) === g);
+      if (mine.length === 0) return null;
+      const mx = mine.reduce((s, o) => s + o.x, 0) / mine.length;
+      const my = mine.reduce((s, o) => s + o.y, 0) / mine.length;
+      // The member nearest the middle: on land the group stands on.
+      const m = mine.reduce((b, o) => ((o.x - mx) ** 2 + (o.y - my) ** 2 < (b.x - mx) ** 2 + (b.y - my) ** 2 ? o : b));
+      v.setFollow(false);
+      v.centerOn(m.x, m.y);
+      return { x: m.x, y: m.y };
+    }, newGroup);
+    await page.waitForTimeout(200);
+    const centre = at ? await page.evaluate((p) => window.evo.screen().view.worldToScreen(p.x, p.y), at) : { x: canvasBox.width / 2, y: canvasBox.height / 2 };
     await page.click('#territory');
-    await page.mouse.click(canvasBox.x + canvasBox.width / 2, canvasBox.y + canvasBox.height / 2);
+    await page.mouse.click(canvasBox.x + centre.x, canvasBox.y + centre.y);
     const draft = await waitFor('a territory draft', () => page.evaluate(() => window.evo.screen().view.overlayInfo().draft));
     if (draft.group !== newGroup) throw new Error(`draft for group ${draft.group}, want ${newGroup}`);
     const zoom = await page.evaluate(() => window.evo.screen().view.cam.zoom);
-    await page.mouse.click(canvasBox.x + canvasBox.width / 2 + 4 * zoom, canvasBox.y + canvasBox.height / 2);
+    await page.mouse.click(canvasBox.x + centre.x + 4 * zoom, canvasBox.y + centre.y);
     const claim = await waitFor('claim_territory result', () => page.evaluate(() => window.__results.find((r) => r.type === 'claim_territory')));
     if (!claim.ok) throw new Error(`claim_territory failed: ${JSON.stringify(claim.error)}`);
     const shown = await waitFor('the territory in the state and on the map', () => page.evaluate((g) => {
