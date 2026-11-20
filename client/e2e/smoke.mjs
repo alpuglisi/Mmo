@@ -541,7 +541,7 @@ async function main() {
         // adult (which can be the partner's sex): retry then, too.
         const swapped = req.mine !== cand.mine || req.partner !== cand.partner;
         if (!req.ok) {
-          if (!swapped && !['already_pregnant', 'not_mature', 'not_found', 'died', 'out_of_sight'].includes(req.error?.code)) throw new Error(`request_mating failed: ${JSON.stringify(req.error)} for ${JSON.stringify(cand)}`);
+          if (!swapped && !['already_pregnant', 'not_mature', 'not_found', 'died', 'out_of_sight', 'unfit'].includes(req.error?.code)) throw new Error(`request_mating failed: ${JSON.stringify(req.error)} for ${JSON.stringify(cand)}`);
           // A request names only an animal in sight, on the market or in an
           // offer: the lineages can be founded far apart, so bob lists it.
           // Every adult male of his (each retry may pick another: listing
@@ -552,15 +552,18 @@ async function main() {
               const s = window.evo.model.state;
               const ids = [first, ...s.organisms.filter((o) => o.sex === 'male' && o.matured).map((o) => o.id)];
               const listed = [];
+              const refused = [];
               for (const id of [...new Set(ids)]) {
                 const r = await window.evo.socket.send({ type: 'create_listing', organism: id, fee: 0 });
                 // Listed now, or already (a second listing of one is refused).
                 if (r.ok || /already|listed/.test(r.error?.code ?? '')) listed.push(id);
+                else refused.push(r.error?.code);
                 if (r.error?.code === 'too_many_listings') break;
               }
-              return listed;
+              return { listed, refused };
             }, req.partner);
-            for (const id of ok) listedMales.add(id);
+            for (const id of ok.listed) listedMales.add(id);
+            if (ok.refused.length) console.log(`  … bob's listings refused: ${ok.refused.join(', ')}`);
           }
           const server = (await (await fetch(`${base}/api/world`)).json()).clock.tick;
           const look = (p, id) => p.evaluate((id) => { const s = window.evo.model.state; const o = s.organisms.find((o) => o.id === id); return `${s.clock.tick}:${o ? `${o.sex[0]}${o.pregnant ? 'P' : ''}${o.matured ? 'A' : ''}` : '-'}`; }, id);
@@ -739,7 +742,7 @@ async function main() {
       await page.click('#market-list-submit');
       const listed = await waitFor('create_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_listing')));
       if (!listed.ok) {
-        if (['not_found', 'not_mature', 'already_listed'].includes(listed.error?.code)) {
+        if (['not_found', 'not_mature', 'already_listed', 'unfit'].includes(listed.error?.code)) {
           console.log(`  … create_listing refused (${listed.error.code}); picking again`);
           continue;
         }
@@ -793,7 +796,7 @@ async function main() {
       }
       const r = await waitFor('buy_listing result', () => bob.evaluate(() => window.__results.find((r) => r.type === 'buy_listing')));
       if (!r.ok) {
-        if (['already_pregnant', 'not_found', 'died', 'not_mature', 'unknown_listing'].includes(r.error?.code)) {
+        if (['already_pregnant', 'not_found', 'died', 'not_mature', 'unknown_listing', 'unfit'].includes(r.error?.code)) {
           console.log(`  … buy_listing refused (${r.error.code}); picking again`);
           continue;
         }
