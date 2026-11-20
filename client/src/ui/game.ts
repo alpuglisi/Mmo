@@ -692,9 +692,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const r = await send({ type: 'possess_attack', organism: p.id, target });
     // A refusal is toasted once, by the model, like every failed command.
     if (r.ok) {
-      const warning = (r.data as { warning?: string } | undefined)?.warning;
-      model.toast(warning ? 'error' : 'info', `#${p.id} is hunting #${target}; hungry pack-mates nearby join in${warning ? `. ${warning}` : ''}`);
-      model.select(target);
+      const d = r.data as { warning?: string; target?: OrgId; note?: string } | undefined;
+      const warning = d?.warning;
+      // The server may retarget an order whose prey dived into its burrow.
+      const hunted = d?.target ?? target;
+      model.toast(warning ? 'error' : 'info', `#${p.id} is hunting #${hunted}; hungry pack-mates nearby join in${d?.note ? ` (${d.note})` : ''}${warning ? `. ${warning}` : ''}`);
+      model.select(hunted);
     }
     return r.ok;
   }
