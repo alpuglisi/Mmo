@@ -953,7 +953,8 @@ export interface WorldSummary {
   /** No births past this many living members (with crowding, a multiple of `lineage_cap`, which is then the soft cap). */
   lineage_hard_cap?: number;
   /** Player lineages in their newcomer grace (others can't order attacks on them). */
-  protected?: { player: PlayerId; lineage: number; days_left: number }[];
+  /** Lineages under their newcomer grace (days left are not told). */
+  protected?: { player: PlayerId; lineage: number; days_left?: number }[];
   /** Days in a year (four equal seasons); absent from older servers. */
   days_per_year?: number;
   /** Ticks in a game day; absent from older servers. */

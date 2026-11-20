@@ -798,6 +798,9 @@ async fn leaderboard_history(
     for l in records.iter_mut().flat_map(|r| r.lineages.iter_mut()) {
         if l.owner != player {
             public_genes(&mut l.genes);
+            if let Some(m) = l.morph.as_mut() {
+                public_morph(m);
+            }
         }
         // Stored before the name filter: cleaned as they go out.
         if l.owner != evo_sim::WILD {
@@ -833,6 +836,17 @@ const PUBLIC_GENES: &[&str] = &["body_size", "leg_length", "fur"];
 fn public_genes(genes: &mut std::collections::BTreeMap<String, f32>) {
     genes.retain(|name, _| PUBLIC_GENES.contains(&name.as_str()));
     for v in genes.values_mut() {
+        *v = (*v * 4.0).round() / 4.0;
+    }
+}
+
+/// Another player's lineage's body plan as the history gives it: its
+/// continuous axes coarse like `public_genes` (eye placement to 15°,
+/// snout, horns and wings to quarters). Playtest 13: exact to 3 decimals,
+/// the eye azimuth gave a rival's blind spot.
+fn public_morph(m: &mut crate::store::BodyPlanMode) {
+    m.eye_azimuth = (m.eye_azimuth / 15.0).round() * 15.0;
+    for v in [&mut m.snout_length, &mut m.horn_size, &mut m.wing_aspect] {
         *v = (*v * 4.0).round() / 4.0;
     }
 }
