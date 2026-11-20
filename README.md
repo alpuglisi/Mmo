@@ -10931,7 +10931,7 @@ playtest's newcomer, down to 69, was told "you had 306".
 
 | Check | Result |
 | --- | --- |
-| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | SWEEP_RESULT |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.83 (± 0.19); every lineage 12 of 12 |
 | `predlong 6` on seeds 31–38 and 41–48 | PREDLONG_RESULT |
 | workspace tests (470 sim), both clippy runs, fixtures, serde lib tests, client typecheck, `vitest` (481), build | pass |
 | e2e (`E2E_JOBS=2`, evo-server rebuilt) | E2E_RESULT |
