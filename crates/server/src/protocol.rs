@@ -889,10 +889,10 @@ pub struct AlertView {
     pub id: u64,
     pub tick: u64,
     /// The day the alert is about, counted from 0 like every day field in
-    /// the API; texts and the client count from 1, so a daily summary
-    /// stamped `day: 119` reads "Day 120: …", and a landing alert stamped
-    /// 17 is the founding the Lineage tab shows as day 18 (playtest 12 read
-    /// both as a day early).
+    /// the API; the client shows it from 1 (a landing alert stamped 17 is
+    /// the founding the Lineage tab shows as day 18). A text that names a
+    /// day counts from 1 too; the daily summary names none (playtests 12
+    /// and 13 read "Day 59" beside `day: 58` as a day off).
     pub day: u64,
     pub kind: AlertKind,
     pub text: String,
@@ -1539,8 +1539,10 @@ pub struct StateView {
     pub escrow: u64,
     /// Your lineage's newcomer grace while it lasts: other players' animals
     /// can't attack it. With `Balance::graced_hunting` it may attack
-    /// theirs, and its first attack on a rival's animal ends the grace;
-    /// without, it can't. Absent once it ends.
+    /// theirs, and its first attack on a rival's animal ends the grace
+    /// (with `Balance::instinct_grace` only an ordered attack: its animals
+    /// leave rivals' alone on their own); without, it can't. Absent once
+    /// it ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grace: Option<GraceView>,
     /// Lineages your animals have learned are poisonous
