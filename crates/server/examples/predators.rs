@@ -205,6 +205,9 @@ struct Outcome {
     lesson: f32,
     orders: u32,
     warned: u32,
+    /// Deep sleepers of the five other players killed by predators (counted
+    /// per tick; a kill on the tick the day's dead are swept is missed).
+    sleepers_eaten: u64,
 }
 
 fn ok(out: &[(evo_server::game::Target, ServerMsg)]) -> Result<Option<serde_json::Value>, String> {
@@ -310,8 +313,23 @@ fn run(seed: u64, arm: Arm, a: &Args) -> Outcome {
             if arm == Arm::Deliberate && t % a.every.max(1) == 0 {
                 hunter_turn(&mut g, &mut o);
             }
+            let sleepers: Vec<_> = g
+                .world
+                .organisms
+                .iter()
+                .filter(|o| o.alive && o.owner != WILD && o.owner != HUNTER && o.dormancy.is_deep())
+                .map(|o| o.id)
+                .collect();
             g.world.step();
             g.after_tick();
+            o.sleepers_eaten += sleepers
+                .iter()
+                .filter(|&&id| {
+                    g.world
+                        .organism(id)
+                        .is_some_and(|q| !q.alive && q.death == Some(evo_sim::organism::DeathCause::Predation))
+                })
+                .count() as u64;
         }
         let alive: Vec<usize> = (1..=6).map(|p| g.world.owner_count(p)).collect();
         if std::env::var("PRED_TRACE").is_ok() && day % 5 == 0 {
@@ -421,8 +439,8 @@ fn main() {
                 let Some(&(seed, arm)) = jobs.get(k) else { break };
                 let o = run(seed, ARMS[arm].0, &a);
                 println!(
-                    "  seed {seed} arm {arm}: final {:?} kills {:?} hunter deaths {:?} lesson {:.2} orders {}",
-                    o.final_alive, o.kills, o.hunter_deaths, o.lesson, o.orders
+                    "  seed {seed} arm {arm}: final {:?} kills {:?} hunter deaths {:?} lesson {:.2} orders {} sleepers eaten {}",
+                    o.final_alive, o.kills, o.hunter_deaths, o.lesson, o.orders, o.sleepers_eaten
                 );
                 results.lock().unwrap().push((seed, arm, o));
             });
@@ -456,13 +474,14 @@ fn main() {
         }
         let deaths: Vec<String> = deaths.iter().map(|(k, v)| format!("{k} {v:.0}")).collect();
         println!(
-            "  Hunter's deaths/world: {}; wild kills {:.0}/world; Toxic's animals eaten {:.0}/world; Hunter's lesson about Toxic {:.2}; orders {:.0}/world ({:.0} warned)",
+            "  Hunter's deaths/world: {}; wild kills {:.0}/world; Toxic's animals eaten {:.0}/world; Hunter's lesson about Toxic {:.2}; orders {:.0}/world ({:.0} warned); sleepers eaten {:.0}/world",
             deaths.join(", "),
             avg(&|o| o.kills.get(&WILD).copied().unwrap_or(0) as f64),
             avg(&|o| o.toxic_eaten as f64),
             avg(&|o| o.lesson as f64),
             avg(&|o| o.orders as f64),
             avg(&|o| o.warned as f64),
+            avg(&|o| o.sleepers_eaten as f64),
         );
     }
 }
