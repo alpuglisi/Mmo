@@ -10,8 +10,9 @@
 //! leader's share at the end. An era's score is now [`MEAN_WEIGHT`] of a
 //! mean that weights each day by its place in the era (the last day counts
 //! as many times as the era has days, the first once) and the rest the
-//! mean of its last tenth: growth late in an era counts, a one-day spike
-//! doesn't.
+//! mean of its last full year (playtest 13: a last tenth of a 3-year era
+//! always fell in winter, when the leader's share spikes; a year holds
+//! every season): growth late in an era counts, a one-day spike doesn't.
 
 use std::collections::BTreeMap;
 
@@ -37,13 +38,14 @@ pub struct EraScores {
     /// sum (absent in older saves: the plain mean).
     weighted: BTreeMap<PlayerId, f64>,
     weights: f64,
-    /// Day scores over the era's last tenth, and the days counted.
+    /// Day scores over the era's end term (its last year), and the days
+    /// counted.
     tail: BTreeMap<PlayerId, f64>,
     tail_days: u32,
 }
 
 /// The share of an era's score from its time-weighted mean; the rest is the
-/// mean of its last tenth ([`EraScores`]).
+/// mean of its last year ([`EraScores`]).
 pub const MEAN_WEIGHT: f64 = 0.75;
 
 impl EraScores {
@@ -56,7 +58,9 @@ impl EraScores {
 
     /// Count `record` (its shares already scaled by the founding ramp) for
     /// its era; a record of a later era starts that era's sums afresh.
-    pub fn add(&mut self, record: &DailyRecord, era_days: u64) {
+    /// `year_days`: the end term's span (the era's last tenth when it is 0
+    /// or not shorter than the era).
+    pub fn add(&mut self, record: &DailyRecord, era_days: u64, year_days: u64) {
         let era = Self::era_of(record.day, era_days);
         if era < self.era {
             return;
@@ -68,7 +72,9 @@ impl EraScores {
         self.days += 1;
         // The day's place in the era (1 on its first day).
         let place = (record.day.saturating_sub(1) % era_days.max(1) + 1) as f64;
-        let in_tail = place > 0.9 * era_days.max(1) as f64;
+        let era = era_days.max(1) as f64;
+        let in_tail =
+            if year_days > 0 && year_days < era_days { place > era - year_days as f64 } else { place > 0.9 * era };
         self.weights += place;
         self.tail_days += u32::from(in_tail);
         for e in &record.legacy {
@@ -153,15 +159,15 @@ mod tests {
         // Era 0 of 4 days: records of days 1..=4 (weights 1, 2, 3, 4; the
         // last tenth is day 4).
         for d in 1..=3 {
-            s.add(&rec(d, &[(1, 0.3)]), 4);
+            s.add(&rec(d, &[(1, 0.3)]), 4, 0);
         }
-        s.add(&rec(4, &[(1, 0.2), (2, 0.4)]), 4);
+        s.add(&rec(4, &[(1, 0.2), (2, 0.4)]), 4, 0);
         let m = s.close(0).unwrap().clone();
         let (one, two) = (0.75 * (0.3 * 6.0 + 0.2 * 4.0) / 10.0 + 0.25 * 0.2, 0.75 * 0.4 * 4.0 / 10.0 + 0.25 * 0.4);
         assert!((m[&1] - one).abs() < 1e-9 && (m[&2] - two).abs() < 1e-9, "{m:?}");
         assert!(m[&1] > m[&2]);
         // The next era starts afresh.
-        s.add(&rec(5, &[(2, 0.5)]), 4);
+        s.add(&rec(5, &[(2, 0.5)]), 4, 0);
         assert_eq!(s.close(1).unwrap().get(&1), None);
         assert_eq!(s.means(0), Some(&m));
     }
@@ -175,11 +181,30 @@ mod tests {
         for d in 1..=n {
             let t = d as f64 / n as f64;
             // The leader holds 30% then sinks to 20%; the joiner grows 0 → 10%.
-            s.add(&rec(d, &[(1, 0.3 - 0.1 * t), (2, 0.1 * t)]), n);
+            s.add(&rec(d, &[(1, 0.3 - 0.1 * t), (2, 0.1 * t)]), n, 0);
         }
         let m = s.close(0).unwrap().clone();
         let plain = (0.25, 0.05);
         assert!(m[&2] / m[&1] > plain.1 / plain.0 + 0.1, "{m:?}");
         assert!(m[&1] > m[&2]);
+    }
+
+    /// Playtest 13: the last tenth of a 3-year era always fell in winter,
+    /// when the leader's share spiked. With a year's span the end term is
+    /// the era's whole last year.
+    #[test]
+    fn the_end_term_is_the_last_full_year() {
+        let (era, year) = (30u64, 10u64);
+        let mut s = EraScores::default();
+        for d in 1..=era {
+            // A spike in the last three days only.
+            let x = if d > 27 { 0.6 } else { 0.2 };
+            s.add(&rec(d, &[(1, x)]), era, year);
+        }
+        let m = s.close(0).unwrap()[&1];
+        let weights: f64 = (1..=era).map(|d| d as f64).sum();
+        let weighted: f64 = (1..=era).map(|d| d as f64 * if d > 27 { 0.6 } else { 0.2 }).sum::<f64>() / weights;
+        let tail = (7.0 * 0.2 + 3.0 * 0.6) / 10.0;
+        assert!((m - (0.75 * weighted + 0.25 * tail)).abs() < 1e-9, "{m}");
     }
 }
