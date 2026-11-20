@@ -16,7 +16,7 @@
 //!   `income = 2 + round(100 · (share + weighted_share) / 2)` (a lineage with
 //!   10% raw and 6% weighted share earns 10 a day; an extinct one nothing),
 //!   tapered on a balance above [`INCOME_TAPER_FROM`] ([`tapered_income`]:
-//!   half at twice it, a quarter at four times);
+//!   a quarter at twice it, a sixteenth at four times);
 //! - achievements: species founded 100, niche dominance 40, survived a
 //!   catastrophe 25, each year of lineage longevity 20.
 //!
@@ -218,7 +218,9 @@ pub fn daily_income(share: f64, weighted_share: f64, alive: bool) -> u64 {
 pub const INCOME_TAPER_FROM: u64 = 1_000;
 
 /// Daily income on a balance of `balance`: in full up to `from`, then scaled
-/// by `from / balance` (half at twice `from`, a quarter at four times),
+/// by `(from / balance)²` (a quarter at twice `from`, a sixteenth at four
+/// times; playtest 13: with the linear taper balances still piled up to
+/// 1,464–3,980),
 /// never below the stipend while anything is earned; `from` 0 is no taper.
 /// Saved renown keeps its worth, but hoarding stops paying: spending (the
 /// shop, studs, auctions) is how a leader keeps earning in full.
@@ -226,7 +228,8 @@ pub fn tapered_income(income: u64, balance: u64, from: u64) -> u64 {
     if from == 0 || balance <= from || income == 0 {
         return income;
     }
-    let scaled = (income as u128 * from as u128 / balance as u128) as u64;
+    let (f, b) = (from as u128, balance as u128);
+    let scaled = (income as u128 * f * f / (b * b)) as u64;
     scaled.max(DAILY_STIPEND.min(income))
 }
 
@@ -564,8 +567,9 @@ mod tests {
     fn income_tapers_above_the_threshold() {
         assert_eq!(tapered_income(40, 500, 1_000), 40);
         assert_eq!(tapered_income(40, 1_000, 1_000), 40);
-        assert_eq!(tapered_income(40, 2_000, 1_000), 20);
-        assert_eq!(tapered_income(40, 4_000, 1_000), 10);
+        assert_eq!(tapered_income(40, 2_000, 1_000), 10);
+        assert_eq!(tapered_income(40, 4_000, 1_000), 2);
+        assert_eq!(tapered_income(400, 1_250, 1_000), 256);
         assert_eq!(tapered_income(40, 1_000_000, 1_000), DAILY_STIPEND);
         assert_eq!(tapered_income(40, 4_000, 0), 40, "0 is no taper");
         assert_eq!(tapered_income(0, 4_000, 1_000), 0);
