@@ -541,7 +541,7 @@ async function main() {
         // adult (which can be the partner's sex): retry then, too.
         const swapped = req.mine !== cand.mine || req.partner !== cand.partner;
         if (!req.ok) {
-          if (!swapped && !['already_pregnant', 'not_mature', 'not_found', 'died', 'out_of_sight'].includes(req.error?.code)) throw new Error(`request_mating failed: ${JSON.stringify(req.error)} for ${JSON.stringify(cand)}`);
+          if (!swapped && !['already_pregnant', 'not_mature', 'not_found', 'died', 'out_of_sight', 'unfit'].includes(req.error?.code)) throw new Error(`request_mating failed: ${JSON.stringify(req.error)} for ${JSON.stringify(cand)}`);
           // A request names only an animal in sight, on the market or in an
           // offer: the lineages can be founded far apart, so bob lists it.
           // Every adult male of his (each retry may pick another: listing
@@ -554,7 +554,12 @@ async function main() {
               const listed = [];
               const refused = [];
               for (const id of [...new Set(ids)]) {
-                const r = await window.evo.socket.send({ type: 'create_listing', organism: id, fee: 0 });
+                // At the server's minimum fee (a fee of 0 is refused: bad_price,
+                // and the request then kept naming unlisted males).
+                let r = await window.evo.socket.send({ type: 'create_listing', organism: id, fee: 5 });
+                if (!r.ok && r.error?.code === 'bad_price' && r.error?.detail?.min) {
+                  r = await window.evo.socket.send({ type: 'create_listing', organism: id, fee: r.error.detail.min });
+                }
                 // Listed now, or already (a second listing of one is refused).
                 if (r.ok || /already|listed/.test(r.error?.code ?? '')) listed.push(id);
                 else refused.push(r.error?.code ?? '?');
@@ -742,7 +747,7 @@ async function main() {
       await page.click('#market-list-submit');
       const listed = await waitFor('create_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_listing')));
       if (!listed.ok) {
-        if (['not_found', 'not_mature', 'already_listed'].includes(listed.error?.code)) {
+        if (['not_found', 'not_mature', 'already_listed', 'unfit'].includes(listed.error?.code)) {
           console.log(`  … create_listing refused (${listed.error.code}); picking again`);
           continue;
         }
@@ -796,7 +801,7 @@ async function main() {
       }
       const r = await waitFor('buy_listing result', () => bob.evaluate(() => window.__results.find((r) => r.type === 'buy_listing')));
       if (!r.ok) {
-        if (['already_pregnant', 'not_found', 'died', 'not_mature', 'unknown_listing'].includes(r.error?.code)) {
+        if (['already_pregnant', 'not_found', 'died', 'not_mature', 'unknown_listing', 'unfit'].includes(r.error?.code)) {
           console.log(`  … buy_listing refused (${r.error.code}); picking again`);
           continue;
         }
@@ -902,7 +907,7 @@ async function main() {
       await choosePick(page, '#market-list-organism', null, 10000);
       await page.click('#market-list-submit');
       const relisted = await waitFor('create_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_listing')));
-      if (!relisted.ok && !['not_found', 'not_mature', 'already_listed'].includes(relisted.error?.code)) throw new Error(`create_listing failed: ${JSON.stringify(relisted.error)}`);
+      if (!relisted.ok && !['not_found', 'not_mature', 'already_listed', 'unfit'].includes(relisted.error?.code)) throw new Error(`create_listing failed: ${JSON.stringify(relisted.error)}`);
       if (relisted.ok) [withdrawId, withdrawOrg] = [relisted.data.listing.id, relisted.data.listing.organism];
     };
     for (let attempt = 0; attempt < 8 && !withdrawn; attempt++) {
@@ -995,7 +1000,7 @@ async function main() {
         lotTried.push(lot);
         const r = await waitFor('create_auction result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_auction') ?? null), 30000);
         if (r.ok) return { id: r.data.listing.id, sex: r.data.listing.sex, organism: r.data.listing.organism };
-        if (!['already_pregnant', 'not_found', 'not_mature', 'already_listed', 'organism_busy'].includes(r.error?.code)) throw new Error(`create_auction failed: ${JSON.stringify(r.error)}`);
+        if (!['already_pregnant', 'not_found', 'not_mature', 'already_listed', 'organism_busy', 'unfit'].includes(r.error?.code)) throw new Error(`create_auction failed: ${JSON.stringify(r.error)}`);
         const server = (await (await fetch(`${base}/api/world`)).json()).clock.tick;
         const diag = await page.evaluate((id) => { const s = window.evo.model.state; const o = s.organisms.find((o) => String(o.id) === id); return `${s.clock.tick}:${o ? `${o.sex[0]}${o.pregnant ? 'P' : ''}${o.matured ? 'A' : ''}` : '-'}`; }, lot);
         createLog.push(`#${lot} refused (${r.error?.code}; server ${server}, ann ${diag})`);
@@ -1416,12 +1421,28 @@ async function main() {
       const sel = document.querySelector('#group-select');
       return sel.value === String(g) && sel.options.length === 3 && window.evo.model.state.groups.length === 2;
     }, newGroup), 20000);
+    // Drawn on the new group's own ground: a claim beyond its home reach
+    // migrates there first (playtest 13) and isn't held at once.
+    const at = await page.evaluate((g) => {
+      const v = window.evo.screen().view;
+      const mine = window.evo.model.state.organisms.filter((o) => (o.group ?? 0) === g);
+      if (mine.length === 0) return null;
+      const mx = mine.reduce((s, o) => s + o.x, 0) / mine.length;
+      const my = mine.reduce((s, o) => s + o.y, 0) / mine.length;
+      // The member nearest the middle: on land the group stands on.
+      const m = mine.reduce((b, o) => ((o.x - mx) ** 2 + (o.y - my) ** 2 < (b.x - mx) ** 2 + (b.y - my) ** 2 ? o : b));
+      v.setFollow(false);
+      v.centerOn(m.x, m.y);
+      return { x: m.x, y: m.y };
+    }, newGroup);
+    await page.waitForTimeout(200);
+    const centre = at ? await page.evaluate((p) => window.evo.screen().view.worldToScreen(p.x, p.y), at) : { x: canvasBox.width / 2, y: canvasBox.height / 2 };
     await page.click('#territory');
-    await page.mouse.click(canvasBox.x + canvasBox.width / 2, canvasBox.y + canvasBox.height / 2);
+    await page.mouse.click(canvasBox.x + centre.x, canvasBox.y + centre.y);
     const draft = await waitFor('a territory draft', () => page.evaluate(() => window.evo.screen().view.overlayInfo().draft));
     if (draft.group !== newGroup) throw new Error(`draft for group ${draft.group}, want ${newGroup}`);
     const zoom = await page.evaluate(() => window.evo.screen().view.cam.zoom);
-    await page.mouse.click(canvasBox.x + canvasBox.width / 2 + 4 * zoom, canvasBox.y + canvasBox.height / 2);
+    await page.mouse.click(canvasBox.x + centre.x + 4 * zoom, canvasBox.y + centre.y);
     const claim = await waitFor('claim_territory result', () => page.evaluate(() => window.__results.find((r) => r.type === 'claim_territory')));
     if (!claim.ok) throw new Error(`claim_territory failed: ${JSON.stringify(claim.error)}`);
     const shown = await waitFor('the territory in the state and on the map', () => page.evaluate((g) => {

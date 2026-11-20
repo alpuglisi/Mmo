@@ -469,7 +469,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       const d = r.data as { restored?: number; unit?: string; price?: number; shop?: unknown } | undefined;
       shop = parseShopView(d?.shop) ?? shop;
       const next = shop?.restore_price;
-      model.toast('info', `Pasture restored around ${groupName(group)}${d?.restored !== undefined ? ` (about ${Math.round(d.restored)} ${d.unit ?? 'food'} regrown)` : ''} for ${d?.price ?? '?'} renown.${next ? ` The next costs ${next}.` : ''}`);
+      model.toast('info', `Pasture restored around ${groupName(group)}${d?.restored !== undefined ? ` (about ${Math.round(d.restored)} ${d.unit ?? 'food'} regrown)` : ''} for ${d?.price ?? '?'} renown.${next ? ` The next costs from ${next} (the price doubles with each within a ranked season's length of the last, whatever the season).` : ''}`);
       render();
     }
   });

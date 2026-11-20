@@ -780,6 +780,10 @@ pub const LONG_WALK_TILES: f32 = 24.0;
 /// (`Game::check_fit_to_offer`).
 pub const UNFIT_NEED: f32 = 85.0;
 
+/// Below this chance of outliving a trade's answer window and meeting
+/// deadline, an animal is too old to trade (`Game::too_old_to_trade`).
+pub const OLD_AGE_ODDS: f32 = 0.85;
+
 /// Game days the pair of a completed market mating stays shielded from
 /// other players' animals on the way back (playtest 11).
 pub const POST_MATING_SHIELD_DAYS: u64 = 2;
@@ -3431,9 +3435,13 @@ impl Game {
             let wait = log.front().map_or(0, |&(t, _)| t + window - tick);
             return Err(ErrorInfo::new(
                 "too_many_requests",
-                format!("you have sent {} {REQUESTS_PER_TARGET} requests recently; try again later", self.name(to)),
+                format!(
+                    "you have sent {} {REQUESTS_PER_TARGET} requests in a short while: try again in about {:.0} real minutes",
+                    self.name(to),
+                    (wait as f64 * self.cfg.tick_ms / 60_000.0).ceil().max(1.0)
+                ),
             )
-            .with_detail(serde_json::json!({ "ticks_left": wait })));
+            .with_detail(serde_json::json!({ "ticks_left": wait, "minutes_left": (wait as f64 * self.cfg.tick_ms / 60_000.0).ceil() })));
         }
         Ok(())
     }
@@ -3501,6 +3509,14 @@ impl Game {
         if open >= self.cfg.max_open_offers {
             return Err(ErrorInfo::new("too_many_offers", format!("at most {} open offers", self.cfg.max_open_offers)));
         }
+        // One open offer per animal (playtest 13: the same animal in two
+        // offers to one lineage, its price escrowed twice).
+        if self.offers.values().any(|o| o.status.is_open() && (o.mine == mine || o.partner == mine)) {
+            return Err(ErrorInfo::new(
+                "organism_busy",
+                format!("#{mine} is already in an open offer: cancel it first"),
+            ));
+        }
         self.check_request_allowed(player, to)?;
         let price = price.filter(|&p| p > 0);
         if let Some(p) = price {
@@ -3539,6 +3555,7 @@ impl Game {
                 && b.sex != a.sex
                 && !(b.sex == Sex::Female && b.pregnancy.is_some())
                 && !busy(b.id)
+                && self.check_fit(b.id, true).is_ok()
                 && self.world.mating_preview(o.mine, b.id).ok().as_ref().and_then(incompatibility).is_none()
         };
         if let Some(p) = pick {
@@ -3721,12 +3738,35 @@ impl Game {
     /// its lifespan, asleep, or starving or parched (playtest 12: 7 of 16
     /// offers died while pending).
     fn check_fit_to_offer(&self, id: OrgId) -> Result<(), ErrorInfo> {
+        self.check_fit(id, true)
+    }
+
+    /// The days a trade may take, for the old-age odds: the answer window
+    /// and the meeting deadline (capped at [`HOLD_MAX_DAYS`]).
+    fn trade_days(&self) -> f32 {
+        let tpd = self.world.config.ticks_per_day.max(1) as f32;
+        let hold = (self.cfg.purchase_deadline_ticks as f32 / tpd).min(HOLD_MAX_DAYS as f32);
+        // Capped (about 42 days at the 1 s clock): a fast clock stretches the
+        // real-minute windows over a lifetime, but meetings take days.
+        (self.cfg.offer_ticks as f32 / tpd + hold).min(HOLD_MAX_DAYS as f32 + 15.0)
+    }
+
+    /// Whether `id` is likely to die of old age before a trade completes
+    /// ([`OLD_AGE_ODDS`]): the market's "old" flag and fitness gate
+    /// (playtest 13: the 90% gate came too late; deaths from 61%).
+    fn too_old_to_trade(&self, id: OrgId) -> bool {
+        self.world.old_age_survival(id, self.trade_days()).is_some_and(|p| p < OLD_AGE_ODDS)
+    }
+
+    /// The fitness check for an animal in a trade: not likely to die of old
+    /// age first, not starving or parched, and (with `awake`) not asleep.
+    fn check_fit(&self, id: OrgId, awake: bool) -> Result<(), ErrorInfo> {
         let Some(a) = self.world.organism(id) else { return Ok(()) };
         let tpd = self.world.config.ticks_per_day;
         let (age, life) = (a.age_days(tpd), a.traits.lifespan_days);
-        let why = if age >= 0.9 * life {
-            Some(format!("it is old ({age:.0} of about {life:.0} days) and may die before the two meet"))
-        } else if matches!(a.dormancy, Dormancy::Winter | Dormancy::Summer) {
+        let why = if self.too_old_to_trade(id) {
+            Some(format!("it is old ({age:.0} of about {life:.0} days) and likely to die before the two meet"))
+        } else if awake && matches!(a.dormancy, Dormancy::Winter | Dormancy::Summer) {
             Some("it is asleep (winter or summer sleep) and won't walk to a meeting until it wakes".to_string())
         } else if a.needs.hunger >= UNFIT_NEED || a.needs.thirst >= UNFIT_NEED {
             Some("it is starving or parched: let it eat and drink first".to_string())
@@ -3859,6 +3899,9 @@ impl Game {
         }
         self.check_listable(player, organism, fee)?;
         self.check_listing_price(fee)?;
+        // Not an animal likely to die before a buyer meets it, nor a starving
+        // one (playtest 13); an asleep one may be listed (shown asleep).
+        self.check_fit(organism, false)?;
         // A dam already promised in an open agreement can't take a buyer
         // (playtest 3: a promised dam got a fixed listing).
         let dam = self.world.organism(organism).is_some_and(|o| o.sex == Sex::Female);
@@ -3911,6 +3954,7 @@ impl Game {
         let duration = duration.max(self.cfg.min_auction_ticks);
         self.check_listable(player, organism, reserve)?;
         self.check_listing_price(reserve)?;
+        self.check_fit(organism, false)?;
         // The winner's agreement must be able to run: a pregnant dam can't
         // be auctioned (the auction's hold keeps a listed dam from
         // conceiving meanwhile).
@@ -4153,6 +4197,9 @@ impl Game {
             return Err(ErrorInfo::new("unknown_listing", format!("listing {listing} is no longer valid")));
         }
         self.check_auction_lock(mine)?;
+        // The buyer's animal walks to the meeting: it must be fit (playtest
+        // 13: a dormant buyer was accepted).
+        self.check_fit(mine, true)?;
         if self.listing_busy(&l) {
             return Err(ErrorInfo::new(
                 "listing_busy",
@@ -4224,7 +4271,7 @@ impl Game {
             owner_name: self.name(l.owner),
             organism: l.organism,
             animal_name: self.economy.animal_names.get(&l.organism).cloned(),
-            aging: o.age_days(tpd) >= 0.9 * o.traits.lifespan_days,
+            aging: self.too_old_to_trade(o.id),
             lifespan_days: Some(o.traits.lifespan_days.round()),
             dormant: matches!(o.dormancy, Dormancy::Winter | Dormancy::Summer),
             role: role_name(o.sex).into(),
@@ -4540,6 +4587,13 @@ impl Game {
         } else {
             partner
         };
+        // The accepter's animal walks too: it must be fit (playtest 13).
+        if let Err(e) = self.check_fit(partner, true) {
+            if offer_lineage_open {
+                self.offers.get_mut(&request).unwrap().partner = 0;
+            }
+            return Err(e);
+        }
         // An animal walks to one meeting at a time (playtest 4: one male held
         // several agreements and could reach none of them).
         for id in [mine, partner] {
@@ -5313,7 +5367,17 @@ impl Game {
                         .world
                         .organisms
                         .iter()
-                        .filter(|b| b.alive && b.lineage == l && b.matured && b.sex != a.sex)
+                        // Only animals the pick would take: free, fit, not
+                        // a pregnant female (playtest 13).
+                        .filter(|b| {
+                            b.alive
+                                && b.lineage == l
+                                && b.matured
+                                && b.sex != a.sex
+                                && !(b.sex == Sex::Female && b.pregnancy.is_some())
+                                && !self.in_agreement(b.id, 0)
+                                && self.check_fit(b.id, true).is_ok()
+                        })
                         .map(|b| (a.pos.dist(b.pos), b.pos))
                         .fold((f32::INFINITY, a.pos), |m, x| if x.0 < m.0 { x } else { m }),
                     (p, _) => {
@@ -5365,12 +5429,29 @@ impl Game {
             let excused = !steered
                 && matches!(
                     cause,
-                    Some(DeathCause::Disease | DeathCause::Recessive | DeathCause::Attrition | DeathCause::WinterSleep)
+                    // Old age too: the animal passed the fitness check when it
+                    // was offered (playtest 13: six deals lost to old age).
+                    Some(
+                        DeathCause::Disease
+                            | DeathCause::Recessive
+                            | DeathCause::Attrition
+                            | DeathCause::WinterSleep
+                            | DeathCause::OldAge
+                    )
                 );
             let x = self.offers.get_mut(&id).unwrap();
             x.lost = Some(how.clone());
             x.excused = excused;
             x.meet = None;
+            // At least a third of the deadline (and the half day) left to
+            // send another (playtest 13: "about a real minute" in winter).
+            let window = (self.cfg.purchase_deadline_ticks / 3).max(self.world.config.ticks_per_day as u64 / 2);
+            let left = self.offer_deadline(&o).saturating_sub(self.world.tick());
+            if left < window {
+                let x = self.offers.get_mut(&id).unwrap();
+                x.accepted_tick = Some(x.accepted_tick.unwrap_or(x.created_tick).saturating_add(window - left));
+            }
+            let o = self.offers[&id].clone();
             self.world.clear_rendezvous(o.partner);
             let minutes =
                 (self.offer_deadline(&o).saturating_sub(self.world.tick()) as f64 * self.cfg.tick_ms / 60_000.0).ceil();
@@ -5464,6 +5545,9 @@ impl Game {
         x.meet = None;
         x.start_dist = None;
         x.buyer_best = None;
+        // A fresh deadline for the new animal's walk (playtest 13).
+        x.accepted_tick = Some(self.world.tick());
+        x.paused = 0;
         self.start_rendezvous(request);
         self.sync_focus();
         let o = self.offers[&request].clone();
@@ -5569,7 +5653,9 @@ impl Game {
         // The nearest clear point to the usual one along the line, in
         // twentieths either way (playtest 11: any carnivore near the usual
         // point slid it all the way to the partner): only as far as needed.
-        let mut ts: Vec<f32> = (1..=19).map(|k| k as f32 / 20.0).filter(|t| (t - toward).abs() > 1e-3).collect();
+        // Never past three quarters toward either animal (playtest 13: the
+        // point slid 90% of the way to one side).
+        let mut ts: Vec<f32> = (5..=15).map(|k| k as f32 / 20.0).filter(|t| (t - toward).abs() > 1e-3).collect();
         ts.sort_by(|x, y| (x - toward).abs().total_cmp(&(y - toward).abs()));
         if clear(usual) {
             return Some((usual, None));
@@ -5583,7 +5669,13 @@ impl Game {
                 return Some((p, Some(note)));
             }
         }
-        Some((usual, Some("predators are near every point between the two: the usual point is kept".to_string())))
+        Some((
+            usual,
+            Some(
+                "kept where it was: predators are near every point between the two animals, so lead yours in with care"
+                    .to_string(),
+            ),
+        ))
     }
 
     /// Whether `id` is already in an accepted agreement other than `except`
@@ -14681,14 +14773,18 @@ mod tests {
         g.after_tick();
         assert!(g.offers.get(&id).is_some_and(|o| o.lost.is_some() && !o.excused), "the buyer's own risk");
 
-        // The buyer's animal dies of old age: not excused, the buyer pays.
+        // The buyer's animal dies of old age: excused (it passed the fitness
+        // check when offered).
         let (mut g, _dam, stud, id) = setup();
         g.world.step();
         let o = g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap();
         o.alive = false;
         o.death = Some(DeathCause::OldAge);
         g.after_tick();
-        assert!(g.offers[&id].lost.is_some() && !g.offers[&id].excused, "old age is the buyer's risk");
+        assert!(
+            g.offers[&id].lost.is_some() && g.offers[&id].excused,
+            "old age is excused: it was fit when offered (playtest 13)"
+        );
     }
 
     /// Playtest 10: a pending offer shields nothing (only an accepted
@@ -14817,6 +14913,39 @@ mod tests {
         g.world.step();
         g.after_tick();
         assert!(!g.world.market_shielded(dam) && !g.world.market_shielded(stud), "no full shield for a pending offer");
+    }
+
+    /// Playtest 13: an animal likely to die of old age before a trade
+    /// completes can't be listed or bought with; an asleep buyer's animal
+    /// can't buy; one animal sits in one open offer.
+    #[test]
+    fn trades_check_fitness_on_every_side() {
+        let (mut g, a, b) = game();
+        let (dam, stud) = (female(&g, &a), male(&g, &b));
+        not_pregnant(&mut g, &[dam]);
+        let tpd = g.world.config.ticks_per_day;
+        // Make the dam old: 88% of her lifespan.
+        let life = g.world.organism(dam).unwrap().traits.lifespan_days;
+        let age_ticks = (0.88 * life * tpd as f32) as u32;
+        g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().age_ticks = age_ticks;
+        assert!(g.too_old_to_trade(dam));
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: dam, fee: 10, expires_days: None });
+        assert_eq!(result(&out).1.as_deref(), Some("unfit"), "{out:?}");
+        g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().age_ticks = 0;
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: dam, fee: 10, expires_days: None });
+        let listing = data(&out)["listing"]["id"].as_u64().unwrap();
+        // An asleep buyer's animal can't buy.
+        g.economy.balances.insert(2, 100);
+        g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().dormancy = Dormancy::Winter;
+        let out = g.command(20, 2, None, ClientMsg::BuyListing { listing, mine: stud });
+        assert_eq!(result(&out).1.as_deref(), Some("unfit"), "{out:?}");
+        g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().dormancy = Dormancy::Awake;
+        // One open offer per animal, also to a lineage.
+        let al = g.lineage_of(1).unwrap();
+        let out = g.command(20, 2, None, ClientMsg::OfferToLineage { mine: stud, lineage: al, price: Some(5) });
+        assert!(result(&out).0, "{out:?}");
+        let out = g.command(20, 2, None, ClientMsg::OfferToLineage { mine: stud, lineage: al, price: Some(5) });
+        assert_eq!(result(&out).1.as_deref(), Some("organism_busy"), "{out:?}");
     }
 
     /// A pending request naming a listed animal doesn't make it busy (a

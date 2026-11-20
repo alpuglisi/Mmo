@@ -293,7 +293,7 @@ export function restoreText(s: Pick<ShopView, 'balance' | 'restore_price' | 'res
     : `${bought} bought recently: the price has doubled ${bought === 1 ? 'once' : `${bought} times`}, and doubles again with the next.`;
   const short = s.balance < s.restore_price ? ` You have ${s.balance}.` : '';
   return {
-    label: `Restore pasture: ${s.restore_price} renown`,
+    label: `Restore pasture: from ${s.restore_price} renown`,
     note: `Every dry tile within ${RESTORE_RADIUS} tiles of the group regrows as high as the season allows (nothing regrows in winter, and little in a drought). Priced at 1 renown per animal of your lineage plus each other player's animal you can see grazing the circle (at least ${RESTORE_MIN_PRICE}); the button shows the price for your lineage alone; its dialog gives the chosen group's. ${doubling}${short}`,
     can: s.balance >= s.restore_price,
   };
