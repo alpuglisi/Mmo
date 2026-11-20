@@ -266,6 +266,12 @@ export class GameModel {
           this.emit('offers');
           break;
         }
+        // Still accepted, nothing ended: a substitute or a moved meeting (playtest 13: "accepted" said
+        // again for each substitute; the server's alert names the substitute).
+        if (prev && prev.offer.status === 'accepted' && m.offer.status === 'accepted' && !m.error && !m.outcome) {
+          this.emit('offers');
+          break;
+        }
         const text = offerUpdateText(m.offer, m.outcome, m.error, this.player);
         this.toast(m.error && m.offer.status !== 'accepted' ? 'error' : 'info', text, true);
         this.addFeed([{ kind: 'offer', text, tick: this.tick(), day: m.day ?? this.state?.clock.day }]);

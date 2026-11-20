@@ -9621,6 +9621,66 @@ and 8 of 8 (8 and 8 off; viable 7 and 8 either way).
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.77 (± 0.16; 11.82 with the five tunables off). Every lineage survives 12 of 12. |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
 
+### Playtest 13: server Lows
+
+From `docs/playtest-13.md` (Medium 6 and server Lows):
+
+- **Grace and instinct grace (Medium 6).**
+  - With `Balance::instinct_grace` a graced player's animals leave rivals'
+    animals alone on their own. The founding reply now says so, and says
+    that only an ordered attack ends the grace.
+  - The grace-ended alert says "Your ordered attack struck …" instead of
+    "Your animals attacked …".
+  - The `StateView::grace` comment says the same.
+  - The client's End-grace panel ("by order or on instinct") is left to
+    the polish pass.
+- **Provision and sleepers.**
+  - A provision feeds only awake adults, since sleepers live on their fat.
+    With every adult asleep it is refused with `all_asleep`.
+  - The sleeping-lineage alert says a Provision feeds only the awake ones.
+  - At the window's limit the shop quotes the next provision's real size
+    and price, and `provision_blocked` says why it is blocked. It used to
+    quote the default 40 for 20.
+- **Frozen water.** "No drinking water left" adds "(the water there is
+  frozen; it opens when the thaw comes)" when water near the circle is
+  iced over.
+- **Spring restores.** In spring the restore hint says the plants regrow
+  on their own, so what a restore adds shrinks by the minute. The quote's
+  guard still refuses a purchase that changed too much.
+- **After a mating.** A possessed animal is released when its mating
+  completes, with an alert. One had stayed possessed and slept 45 tiles
+  from its herd.
+- **Territory counts.** The starving-territory line counts the animals
+  inside the circles and the whole of those groups ("13 of the 47 animals
+  inside their territories (Group A (main); 86 in those groups, the rest
+  outside the circles)").
+- **Day convention.** Alert texts that name a day count from 1, and the
+  `day` field counts from 0. The daily summary no longer names a day ("The
+  day's tally: …"); the field and the feed's label carry it.
+- **Survey.** The `survey` reply already carries the result: groups,
+  territories, the centre and the radius.
+- **Shop fees.** `listing_fee_percent` 0 sits beside `market_fee_percent` 10.
+- **Fliers' pace.** The journey warning says wings don't hurry a whole
+  group: it keeps together and stops to eat.
+- **Overlaps.** An `overlaps` refusal names the territory in the way
+  (owner, centre, radius) when its centre is in sight.
+- **Generations.** Reinforcements are left out of the generation
+  milestones. They are a generation on from the adults they copy.
+- **"defend".** The client's inspector reads "defending its territory
+  (driving out a wild or rival animal that wandered in)".
+- **"Outgrown".** The alert waits until the ground feeds under 90% of the
+  group, and not for a claim made in the last 3 days. It re-arms once the
+  ground feeds them all again.
+- **Substitutes.** The client no longer says "accepted" again when an
+  accepted agreement changes without ending (a substitute or a moved
+  meeting). The server's alert names the substitute.
+- **Renown taper.**
+  - Income now scales by `(1,000 / renown)²`: a quarter at 2,000, a
+    sixteenth at 4,000, never below the stipend. With the linear taper,
+    balances still piled up to 1,464–3,980.
+  - The ledger line says the taper is on renown "balance and renown held
+    in offers together", which is what it counts.
+
 ### Playtest 12: server Lows
 
 Server-side Lows from `docs/playtest-12.md`:
