@@ -2970,9 +2970,16 @@ pub struct CatastropheView {
     pub population_before: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub population_after: Option<usize>,
-    /// Players with a living lineage at its start, and those alive at its end.
+    /// Players with a living lineage at its start, and those credited with
+    /// surviving it (hit by it, kept half: `Game::survived`).
     pub players_before: Vec<PlayerId>,
     pub survivors: Vec<PlayerId>,
+    /// Once it has ended: the players whose lineage it hit (it lost 10% of
+    /// itself at some point, or died out; `survivors` are those of them who
+    /// kept half). Playtest 13: an epidemic that hit nobody read "0 of 5
+    /// survived".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hit: Vec<PlayerId>,
 }
 
 /// `GET /api/catastrophes`: catastrophes that have started, newest first.

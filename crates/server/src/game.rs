@@ -546,6 +546,12 @@ pub const TERRITORY_NEED: f32 = 85.0;
 /// A satellite group below this many animals is told it is dwindling
 /// (`Game::group_decline_alerts`).
 pub const GROUP_FEW: usize = 5;
+/// The smallest lineage whose territory an overclaim may take
+/// (`Game::vet_takeover`; playtest 13).
+pub const TAKEOVER_MIN_LINEAGE: usize = 100;
+/// How near the ground it takes over an overclaiming group's middle must
+/// stand (tiles past the territory's edge).
+pub const TAKEOVER_PRESENT: f32 = 4.0;
 /// Territories are starving when this share of the animals in them are.
 pub const TERRITORY_STARVING_SHARE: f64 = 0.25;
 /// A warning still in force is said again after this many days.
@@ -2816,6 +2822,9 @@ impl Game {
             }
             ClientMsg::ClaimTerritory { group, x, y, radius } => {
                 finite(&[x, y, radius])?;
+                // The server's rules on taking rivals' ground (playtest 13),
+                // before the sim's own (`World::claim_squats`).
+                self.vet_takeover(player, group, Vec2::new(x, y), radius, out)?;
                 let before = self.orders_of(player, group);
                 let mut outcome = self.world.claim_or_migrate(player, group, Vec2::new(x, y), radius);
                 // The cooldown is waived while the group has been told its
@@ -5876,9 +5885,34 @@ impl Game {
         c.survivors.iter().copied().filter(|&p| self.survival_credited.contains(&(p, c.id))).collect()
     }
 
-    /// [`catastrophe_view`] with the survivors who met the rule.
+    /// [`catastrophe_view`] with the survivors who met the rule and the
+    /// lineages it hit.
     pub(crate) fn catastrophe_view(&self, c: &Catastrophe) -> CatastropheView {
-        CatastropheView { survivors: self.credited_survivors(c), ..catastrophe_view(c) }
+        CatastropheView { survivors: self.credited_survivors(c), hit: self.hit_by(c), ..catastrophe_view(c) }
+    }
+
+    /// The players whose lineage catastrophe `c` hit, once it has ended: the
+    /// lineage of its start lost [`SURVIVAL_EXPOSED`] of itself at some point,
+    /// or is gone (died out or replaced). Without a record of its lows (an
+    /// older save), every player there at its start.
+    fn hit_by(&self, c: &Catastrophe) -> Vec<PlayerId> {
+        if c.is_active() {
+            return Vec::new();
+        }
+        let Some(starts) = self.survival_starts.get(&c.id) else { return c.players_before.clone() };
+        let lows = self.survival_low.get(&c.id);
+        let mut v: Vec<PlayerId> = starts
+            .iter()
+            .filter(|&(p, &(l, size))| {
+                let gone = self.lineage_of.get(p) != Some(&l);
+                gone || lows
+                    .and_then(|m| m.get(p))
+                    .is_none_or(|&low| (low as f64) <= (1.0 - SURVIVAL_EXPOSED) * size as f64)
+            })
+            .map(|(&p, _)| p)
+            .collect();
+        v.sort_unstable();
+        v
     }
 
     /// Whether `player` survived `catastrophe` (playtest 7, M15): the lineage
@@ -7830,6 +7864,99 @@ impl Game {
         self.outcomes.remove(&(player, group));
     }
 
+    /// Rivals' territories a claim of `player`'s `group` at `center` would
+    /// reach into, beyond the sim's rules (`World::claim_squats`; playtest 13):
+    ///
+    /// - An overclaim (a group twice the holders on ground that feeds four
+    ///   times them) no longer takes the ground of a lineage under
+    ///   [`TAKEOVER_MIN_LINEAGE`] animals, nor from afar: the claiming group's
+    ///   middle must stand within [`TAKEOVER_PRESENT`] tiles of that ground.
+    ///   (A leader's 555-865 group could strip a 46-animal player's ground.)
+    /// - Grace keeps a newcomer's animals, not a squat: a territory of a
+    ///   graced lineage that the squat rule would hand over (at most
+    ///   `SQUAT_MEMBERS` adults against a group `SQUAT_RATIO` times theirs)
+    ///   is released first, and its owner told. (2-animal squats on key
+    ///   water held for 100+ days.)
+    fn vet_takeover(
+        &mut self,
+        player: PlayerId,
+        group: u8,
+        center: Vec2,
+        radius: f32,
+        out: &mut Outbox,
+    ) -> Result<(), ErrorInfo> {
+        use evo_sim::world::groups::{
+            OVERCLAIM_FOOD, OVERCLAIM_RATIO, SQUAT_MEMBERS, SQUAT_RATIO, TERRITORY_MIN_RADIUS,
+        };
+        let Some(me) = self.world.groups(player).into_iter().find(|g| g.id == group) else { return Ok(()) };
+        let r = radius.clamp(TERRITORY_MIN_RADIUS, me.max_radius.max(TERRITORY_MIN_RADIUS));
+        let middle = self.world.group_middle(player, group);
+        let mut release = Vec::new();
+        let overlapped: Vec<(PlayerId, u8, evo_sim::world::groups::Territory)> = self
+            .world
+            .all_territories()
+            .filter(|&(p, _, t)| p != player && t.center.dist(center) < t.radius + r)
+            .map(|(p, g, t)| (p, g, *t))
+            .collect();
+        for (p, g, t) in overlapped {
+            let (theirs, adults) =
+                self.world.groups(p).iter().find(|x| x.id == g).map_or((0, 0), |x| (x.members, x.adults));
+            let squat = adults <= SQUAT_MEMBERS && me.members >= SQUAT_RATIO * adults.max(1);
+            let graced = self.lineage_of(p).is_some_and(|l| self.world.lineage_grace_ticks(l).is_some());
+            if squat {
+                if graced {
+                    release.push((p, g, t, adults));
+                }
+                continue;
+            }
+            let overclaim = me.members >= OVERCLAIM_RATIO * theirs.max(1)
+                && self
+                    .world
+                    .food_check(p, g, t.center, t.radius)
+                    .is_some_and(|f| f.supports >= OVERCLAIM_FOOD * theirs.max(1));
+            if !overclaim || graced {
+                continue; // the sim refuses it as an overlap
+            }
+            let owner = self.name(p);
+            let lineage = self.world.owner_count(p);
+            if lineage < TAKEOVER_MIN_LINEAGE {
+                return Err(ErrorInfo::new(
+                    "overlaps",
+                    format!(
+                        "That reaches into {owner}'s territory at ({:.0}, {:.0}): ground is taken over only from a lineage of \
+                         {TAKEOVER_MIN_LINEAGE} or more animals ({owner}'s has {lineage}).",
+                        t.center.x, t.center.y
+                    ),
+                ));
+            }
+            if middle.is_none_or(|m| m.dist(t.center) > t.radius + TAKEOVER_PRESENT) {
+                return Err(ErrorInfo::new(
+                    "overlaps",
+                    format!(
+                        "That reaches into {owner}'s territory at ({:.0}, {:.0}): to take ground over, your group must \
+                         stand on it first (migrate or rally there).",
+                        t.center.x, t.center.y
+                    ),
+                ));
+            }
+        }
+        for (p, g, t, adults) in release {
+            if self.world.abandon_territory(p, g).is_ok() {
+                let who = self.name(player);
+                let text = format!(
+                    "{}'s territory at ({:.0}, {:.0}), held by {adults} adult{}, was taken over by a far larger group of \
+                     {who}'s: your grace keeps your animals from hunters, not a squat on others' ground.",
+                    group_name(g),
+                    t.center.x,
+                    t.center.y,
+                    if adults == 1 { "" } else { "s" }
+                );
+                self.alert(p, AlertKind::Group, text, None, out);
+            }
+        }
+        Ok(())
+    }
+
     /// `claim_cooldown`, the wait said in minutes of real time and game days.
     fn cooldown_error(&self, ticks_left: u64) -> ErrorInfo {
         let minutes = ticks_left as f64 * self.cfg.tick_ms / 60_000.0;
@@ -9163,6 +9290,7 @@ pub fn catastrophe_view(c: &Catastrophe) -> CatastropheView {
         population_after: c.population_after,
         players_before: c.players_before.clone(),
         survivors: c.survivors.clone(),
+        hit: Vec::new(),
     }
 }
 

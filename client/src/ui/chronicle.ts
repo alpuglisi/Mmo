@@ -209,7 +209,7 @@ export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, 
         h('strong', {}, catastropheLabel(k.kind)),
         h('span', { class: 'muted small' }, ` · days ${k.start_day + 1}–${k.end_day}${k.active ? ' (now)' : ''} · population ${k.population_before}`
           + `${k.population_after !== undefined ? ` → ${k.population_after}` : ''}`
-          + `${k.active ? '' : ` · ${k.survivors.length} of ${k.players_before.length} player lineages survived`}`)))),
+          + `${k.active ? '' : ` · ${catastropheOutcome(k)}`}`)))),
     h('h3', {}, 'Achievements'),
     achievements.players.length === 0 ? h('p', { class: 'muted small' }, 'No player lineages yet.')
       : h('table', { class: 'board', id: 'achievement-table' },
@@ -223,4 +223,17 @@ export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, 
       h('span', { class: 'feed-kind kind-achievement' }, a.name), h('span', {}, a.text), h('span', { class: 'muted small' }, ` · day ${a.day + 1}`)))) : null,
   ];
   el.replaceChildren(...parts.filter((p): p is Node => p !== null));
+}
+
+/**
+ * How an ended catastrophe went for the players: how many lineages it hit
+ * and how many of those kept half (playtest 13: "0 of 5 survived" for an
+ * epidemic that hit nobody, all five alive).
+ */
+export function catastropheOutcome(k: { players_before: number[]; survivors: number[]; hit?: number[] }): string {
+  const n = k.players_before.length;
+  const hit = k.hit?.length ?? 0;
+  if (n === 0) return 'no player lineages then';
+  if (hit === 0) return `it hit none of the ${n} player lineage${n === 1 ? '' : 's'}`;
+  return `it hit ${hit} of ${n} player lineage${n === 1 ? '' : 's'}; ${k.survivors.length} of them kept half`;
 }

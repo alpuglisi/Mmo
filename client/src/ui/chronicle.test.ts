@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CatastropheView, EraList, SpeciesView } from '../protocol';
-import { catastropheBanner, catastropheLabel, dietLabel, endedText, myEraRanks, nicheLabel, speciesTree } from './chronicle';
+import { catastropheBanner, catastropheLabel, catastropheOutcome, dietLabel, endedText, myEraRanks, nicheLabel, speciesTree } from './chronicle';
 
 function sp(id: number, name: string, extra: Partial<SpeciesView> = {}): SpeciesView {
   return {
@@ -98,5 +98,13 @@ describe('endedText', () => {
       { id: 1, name: 'Pocket Wayfarers', owner: 2, owner_name: 'PocketNomad12', founded_day: 16, extinct_day: 131, retired_day: 133 },
       { id: 2, name: 'Old herd', owner: 3, owner_name: 'Rulebender12', founded_day: 20, extinct_day: 137 },
     ])).toBe('Old herd (Rulebender12, days 21–138, died out) · Pocket Wayfarers (PocketNomad12, days 17–134, retired)');
+  });
+});
+
+describe('catastrophe outcome', () => {
+  it('says how many lineages it hit and how many kept half', () => {
+    // Playtest 13: "0 of 5 survived" for an epidemic that hit nobody.
+    expect(catastropheOutcome({ players_before: [1, 2, 3, 4, 5], survivors: [] })).toBe('it hit none of the 5 player lineages');
+    expect(catastropheOutcome({ players_before: [1, 2, 3], survivors: [2], hit: [1, 2] })).toBe('it hit 2 of 3 player lineages; 1 of them kept half');
   });
 });

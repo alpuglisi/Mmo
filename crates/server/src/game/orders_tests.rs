@@ -1032,6 +1032,7 @@ fn survival_counts_in_the_season_the_catastrophe_fell_in() {
     assert_eq!(survived, vec![1], "{:?}", last.standings[4]);
     let ch = g.chronicle();
     assert_eq!(ch.catastrophes.history[0].survivors, vec![1], "public list: bob wasn't hit");
+    assert_eq!(ch.catastrophes.history[0].hit, vec![1], "hit: ann only (playtest 13: unhit read as not surviving)");
     assert!(ch.achievements.players.iter().all(|t| t.player != 2 || t.catastrophes_survived == 0));
     let now = g.season.standings(|p| p.to_string());
     assert!(now[4].rows.is_empty(), "not credited again in season 2: {:?}", now[4]);
@@ -1818,4 +1819,91 @@ fn declines_are_graded_on_one_window() {
     let w = g.lineage_warnings(1);
     let d = w.iter().find(|w| w.kind == "decline").expect("a decline");
     assert!(d.text.starts_with("Your lineage is crashing: 100 → 71"), "{}", d.text);
+}
+
+/// Playtest 13 (M17): an overclaim can't take a small lineage's ground nor
+/// from afar; a graced lineage's squat is released to the squat rule.
+#[test]
+fn takeovers_spare_small_lineages_and_grace_keeps_animals_not_squats() {
+    let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
+    let mut g = Game::new(world, GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    g.set_name(1, "ann");
+    g.set_name(2, "bob");
+    // Ann: a big group (the founders copied up past ten times a squat).
+    g.found_at_any_price(1, &design("A").founders(150)).unwrap();
+    for _ in 0..g.world.config.ticks_per_day {
+        tick(&mut g);
+    }
+    let b = g.found(2, &design("B").founders(6)).unwrap().founders;
+    g.connect(10, 1, "ann");
+    let home = g.world.group_middle(1, 0).unwrap();
+    // Bob's few animals hold ground right by ann's herd, still in grace.
+    let m = &g.world.map;
+    let spot = (0..m.height)
+        .flat_map(|y| (0..m.width).map(move |x| evo_sim::terrain::Map::tile_center(x, y)))
+        .filter(|&p| (3.0..8.0).contains(&p.dist(home)))
+        .find(|&p| g.world.water_check(2, 0, p, 3.0).water_share < 0.2 && m.tile_at(p).water_depth == 0.0)
+        .expect("dry ground by the herd");
+    for o in g.world.organisms.iter_mut().filter(|o| b.contains(&o.id)) {
+        o.pos = spot;
+    }
+    g.world.claim_territory(2, 0, spot, 3.0).unwrap();
+    assert!(g.world.lineage_grace_ticks(g.lineage_of(2).unwrap()).is_some(), "bob is graced");
+    let d = run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: spot.x, y: spot.y, radius: 6.0 });
+    assert!(d.is_ok(), "the squat gives way: {d:?}");
+    assert!(g.world.territory(2, 0).is_none(), "bob's squat is gone");
+    let told = g.alerts.get(&2).map_or(Vec::new(), |a| a.iter().map(|x| x.text.clone()).collect::<Vec<_>>());
+    assert!(told.iter().any(|t| t.contains("not a squat")), "{told:?}");
+}
+
+/// An overclaim (twice the holders, four times their food) no longer takes
+/// a small lineage's ground (playtest 13: a leader's 555-865 group could
+/// strip a 46-animal player's territory).
+#[test]
+fn an_overclaim_spares_a_small_lineage() {
+    let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
+    let mut g = Game::new(world, GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    g.set_name(1, "ann");
+    g.set_name(2, "bob");
+    g.found_at_any_price(1, &design("A").founders(150)).unwrap();
+    for _ in 0..g.world.config.ticks_per_day {
+        tick(&mut g);
+    }
+    // One adult past a squat: only the overclaim rule could take its ground.
+    let b = g.found_at_any_price(2, &design("B").founders(13)).unwrap().founders;
+    g.world.end_grace(2).ok();
+    g.connect(10, 1, "ann");
+    let home = g.world.group_middle(1, 0).unwrap();
+    let m = &g.world.map;
+    let spot = (0..m.height)
+        .flat_map(|y| (0..m.width).map(move |x| evo_sim::terrain::Map::tile_center(x, y)))
+        .filter(|&p| (4.0..10.0).contains(&p.dist(home)))
+        .find(|&p| g.world.water_check(2, 0, p, 6.0).water_share < 0.2 && m.tile_at(p).water_depth == 0.0)
+        .expect("dry ground by the herd");
+    for o in g.world.organisms.iter_mut().filter(|o| b.contains(&o.id)) {
+        o.pos = spot;
+    }
+    // Lush ground: far more than bob's 13 eat.
+    for k in 0..g.world.map.tiles.len() {
+        let max = g.world.map.ground()[k].veg_max;
+        g.world.map.tiles[k].veg = max;
+    }
+    let r = g.world.groups(2)[0].max_radius;
+    g.world.claim_territory(2, 0, spot, r).unwrap();
+    // Ann's herd grazes elsewhere, off bob's ground (its grazing would count against his food).
+    let away = land_away(&g, spot, 30.0);
+    let ids: Vec<usize> = (0..g.world.organisms.len()).filter(|&i| g.world.organisms[i].owner == 1).collect();
+    for i in ids {
+        g.world.organisms[i].pos = away;
+    }
+    assert!(g.world.lineage_grace_ticks(g.lineage_of(2).unwrap()).is_none(), "bob's grace is over");
+    let err = run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: spot.x, y: spot.y, radius: 6.0 }).unwrap_err();
+    assert_eq!(err, "overlaps");
+    assert!(g.world.territory(2, 0).is_some(), "bob keeps his ground");
+    let out = g.command(10, 1, Some(9), ClientMsg::ClaimTerritory { group: 0, x: spot.x, y: spot.y, radius: 6.0 });
+    let msg = match &out[0].1 {
+        ServerMsg::Result { error: Some(e), .. } => e.message.clone(),
+        m => panic!("{m:?}"),
+    };
+    assert!(msg.contains("lineage of 100"), "{msg}");
 }

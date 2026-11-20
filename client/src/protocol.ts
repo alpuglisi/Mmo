@@ -1399,7 +1399,10 @@ export interface CatastropheView {
   population_before: number;
   population_after?: number;
   players_before: PlayerId[];
+  /** Hit by it and kept half (credited survivors). */
   survivors: PlayerId[];
+  /** Once ended: the players whose lineage it hit (lost a tenth at some point); absent when none was, or from older servers. */
+  hit?: PlayerId[];
 }
 
 export interface CatastropheList {
