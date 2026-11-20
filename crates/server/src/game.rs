@@ -3654,7 +3654,9 @@ impl Game {
     fn trade_days(&self) -> f32 {
         let tpd = self.world.config.ticks_per_day.max(1) as f32;
         let hold = (self.cfg.purchase_deadline_ticks as f32 / tpd).min(HOLD_MAX_DAYS as f32);
-        self.cfg.offer_ticks as f32 / tpd + hold
+        // Capped (about 42 days at the 1 s clock): a fast clock stretches the
+        // real-minute windows over a lifetime, but meetings take days.
+        (self.cfg.offer_ticks as f32 / tpd + hold).min(HOLD_MAX_DAYS as f32 + 15.0)
     }
 
     /// Whether `id` is likely to die of old age before a trade completes
