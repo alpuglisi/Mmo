@@ -132,6 +132,25 @@ impl World {
     /// apply to the whole, before only to the lesson (playtest 7: hungry
     /// packs never took bright toxic prey).
     pub(crate) fn hunter_avoidance(&self, o: &crate::organism::Organism, q: &crate::organism::Organism) -> f32 {
+        self.hunter_avoidance_awake(o, q) * self.torpid_defence(q)
+    }
+
+    /// The share of a prey's toxin defence it keeps now
+    /// (`Balance::torpid_toxins`): `1 − torpid_toxins` for a cold-blooded
+    /// animal deep in brumation (or estivation), whose warning display and
+    /// toxin don't work torpid; 1 otherwise. Playtest 13: the cold toxic
+    /// bright brumator held 56% of the world for two copies, and its edge
+    /// was toxins with colour, then brumation (`dominance --cold-mod`).
+    pub(crate) fn torpid_defence(&self, q: &crate::organism::Organism) -> f32 {
+        let k = self.config.balance.torpid_toxins;
+        if k > 0.0 && !q.traits.warm && q.dormancy.is_deep() {
+            (1.0 - k).clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
+    }
+
+    fn hunter_avoidance_awake(&self, o: &crate::organism::Organism, q: &crate::organism::Organism) -> f32 {
         let bal = &self.config.balance;
         let colour = if self.is_bright(q.pheno[crate::Gene::Coloration]) {
             if o.bright_aversion {
