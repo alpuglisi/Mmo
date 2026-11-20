@@ -1117,6 +1117,10 @@ pub struct Game {
     /// Each satellite group's size since it was last told of a decline
     /// (`group_decline_alerts`); not saved.
     group_peak: BTreeMap<(PlayerId, u8), usize>,
+    /// The lineage's adults (all groups) when each group peak was set: a
+    /// group's fall with the lineage's total flat is a move between groups,
+    /// not deaths (playtest 13); not saved.
+    group_peak_total: BTreeMap<(PlayerId, u8), usize>,
     /// Groups whose claim reply said they starve now, and the tick: the
     /// sim's "hold loosened" just after says it again (playtest 9: "feeds
     /// 235", then "no longer feeds it" two ticks later); not saved.
@@ -1481,6 +1485,7 @@ impl Game {
             drift_alerted: BTreeSet::new(),
             left_home: BTreeMap::new(),
             group_peak: BTreeMap::new(),
+            group_peak_total: BTreeMap::new(),
             claimed_starving: BTreeMap::new(),
             loose_said: BTreeSet::new(),
             hunted_week: BTreeMap::new(),
@@ -2787,8 +2792,9 @@ impl Game {
                     before.retain(|&o| o != "territory");
                     data["territory_kept"] = serde_json::to_value(TerritoryView::from(t)).unwrap_or_default();
                     let text = format!(
-                        "the group keeps its territory at ({:.0}, {:.0}) while away: no rival may claim over it, it is \
-                         held again if you clear the order, and given up when the group claims elsewhere",
+                        "the group keeps its territory at ({:.0}, {:.0}) while away: no rival may claim over it; it is \
+                         held again if you clear the order, if the migration ends short, or if the target lies in or \
+                         near it, and given up when the group arrives elsewhere or claims anew",
                         t.center.x, t.center.y
                     );
                     data["note"] = match data["note"].as_str() {
@@ -2978,6 +2984,8 @@ impl Game {
                 // 11: a split read as "Group B has fallen from 751 to 311").
                 self.group_peak.remove(&(player, group));
                 self.group_peak.remove(&(player, out.group));
+                self.group_peak_total.remove(&(player, group));
+                self.group_peak_total.remove(&(player, out.group));
                 let mut data = serde_json::json!({ "group": out.group, "moved": out.moved, "kept": out.kept });
                 self.group_counts_report(player, &mut data);
                 Ok(Some(data))
@@ -2988,6 +2996,8 @@ impl Game {
                 // the receiving group's peak starts again from its new size.
                 self.group_peak.remove(&(player, from));
                 self.group_peak.remove(&(player, into));
+                self.group_peak_total.remove(&(player, from));
+                self.group_peak_total.remove(&(player, into));
                 let mut data = serde_json::json!({ "moved": moved });
                 self.group_counts_report(player, &mut data);
                 Ok(Some(data))
@@ -6845,6 +6855,16 @@ impl Game {
                 "Hunters are taking them: keep groups together, away from packs, and claim ground the hunters don't \
                  range over; vigilance and speed help."
                     .to_string()
+            } else if season_of(w, self.world.day()) == evo_sim::terrain::Season::Winter {
+                // Midwinter: no "before the cold" (playtest 13).
+                if self.lineage_hunts(player) {
+                    "Move the pack to where prey is, or split it so each part finds enough; it fattens again in spring."
+                        .to_string()
+                } else {
+                    "Move groups to sheltered ground with food and water (forest, near water), or split big herds; \
+                     they fatten again in spring."
+                        .to_string()
+                }
             } else if self.lineage_hunts(player) {
                 "Move the pack to where prey is, split it, or fatten it before the cold.".to_string()
             } else {
@@ -6860,15 +6880,17 @@ impl Game {
             // the peak of the last two windows.
             // One window and one baseline for every grade (playtest 12: "278 →
             // 164" then "247 → 131", and "112 → 30", "65 → 30" from moving
-            // peaks): the count DECLINE_DAYS ago. Under DECLINE_SLOW fewer is
-            // no alert; from DECLINE_CRASH it is a crash.
+            // peaks): the count DECLINE_DAYS ago. Graded on the net fall or the
+            // gross deaths, whichever is worse, for a crash (playtest 13:
+            // "dying off slowly" while 40% died, births hiding it); a slow
+            // die-off needs DECLINE_SLOW fewer net (playtest 12: a 1% dip).
             let text = if now >= then {
                 Some(format!(
                     "Your lineage is losing animals faster than it looks: {lost} died over the \
                      last {DECLINE_DAYS} days ({causes}; {pct:.0}% of the {then} it had), though births kept the count up ({then} → \
                      {now}). {advice}"
                 ))
-            } else if drop >= DECLINE_CRASH * 100.0 {
+            } else if drop.max(pct) >= DECLINE_CRASH * 100.0 {
                 // Net and gross told apart (playtest 12: "6% fewer" beside
                 // "21% of the 121" in one sentence).
                 Some(format!(
@@ -7040,7 +7062,7 @@ impl Game {
                     || if k == "near_cap" {
                         now.iter().any(|w| &w.kind == k) || near_cap_armed
                     } else {
-                        now.iter().any(|w| &w.kind == k) || day < *d + WARNING_REPEAT_DAYS
+                        now.iter().any(|w| &w.kind == k) || day < *d + repeat_days(k)
                     }
             });
             // Mostly asleep (playtest 10: hungry, hunted and crashing alerts
@@ -7124,7 +7146,7 @@ impl Game {
             for w in now {
                 let key = (p, w.kind.clone());
                 let repeat = w.kind != "near_cap";
-                if self.warned.get(&key).is_some_and(|&d| !repeat || day < d + WARNING_REPEAT_DAYS) {
+                if self.warned.get(&key).is_some_and(|&d| !repeat || day < d + repeat_days(&w.kind)) {
                     continue;
                 }
                 // Loss warnings share one budget (below).
@@ -7365,16 +7387,37 @@ impl Game {
         use evo_sim::world::commands::GroupEvent;
         for ev in self.world.take_group_events() {
             match ev {
-                GroupEvent::Arrived { player, group, target } => {
+                GroupEvent::Arrived { player, group, target, kept } => {
                     self.routes.remove(&(player, group));
                     self.drift_alerted.remove(&(player, group));
-                    let text = format!(
-                        "{} reached its migration target ({:.0}, {:.0}); the order is done, and the group keeps it as \
-                         its home ground until its next order (claim a territory to hold it firmly).",
-                        group_name(group),
-                        target.x,
-                        target.y
-                    );
+                    let text = match kept {
+                        Some((t, true)) => format!(
+                            "{} reached its migration target ({:.0}, {:.0}) inside its territory at ({:.0}, {:.0}), \
+                             which it holds again; the order is done.",
+                            group_name(group),
+                            target.x,
+                            target.y,
+                            t.center.x,
+                            t.center.y
+                        ),
+                        Some((t, false)) => format!(
+                            "{} reached its migration target ({:.0}, {:.0}); the order is done. It gave up the \
+                             territory it left at ({:.0}, {:.0}) (too far from here to hold), and the claim wait is cut \
+                             as an abandon cuts it; it keeps the target as its home ground until its next order.",
+                            group_name(group),
+                            target.x,
+                            target.y,
+                            t.center.x,
+                            t.center.y
+                        ),
+                        None => format!(
+                            "{} reached its migration target ({:.0}, {:.0}); the order is done, and the group keeps it as \
+                             its home ground until its next order (claim a territory to hold it firmly).",
+                            group_name(group),
+                            target.x,
+                            target.y
+                        ),
+                    };
                     self.outcomes.insert((player, group), format!("reached ({:.0}, {:.0})", target.x, target.y));
                     self.alert(player, AlertKind::Group, text, None, out);
                 }
@@ -7420,7 +7463,7 @@ impl Game {
                     let (why, short) = timeout_reason(dormant_share, basking_share, needy_share, never_moved, gained);
                     let claim = if pending_claim { " The territory it was to claim there is dropped too." } else { "" };
                     let claim = if territory_kept {
-                        format!("{claim} It is still on the territory it left, and holds it again.")
+                        format!("{claim} It keeps the territory it left, and holds it again (it goes back to it).")
                     } else {
                         claim.to_string()
                     };
@@ -7755,7 +7798,15 @@ impl Game {
                 .organisms
                 .iter()
                 .any(|o| o.alive && o.owner == player && o.group == group && o.dormancy == Dormancy::Winter);
-            let why = if winter_sleep && self.world.days_until_winter() > 0 {
+            // Still asleep as spring begins: they wake within days, not next
+            // spring (playtest 13: "about 119 days from now" on day 597 for
+            // sleepers that woke on day 601).
+            let spring = self.world.season() == evo_sim::terrain::Season::Spring;
+            let why = if winter_sleep && spring {
+                " Winter is over: winter sleepers wake within days as the warmth returns; orders until then are kept \
+                 but not walked."
+                    .to_string()
+            } else if winter_sleep && self.world.days_until_winter() > 0 {
                 format!(
                     " Winter sleepers bed down early, as the days cool and food thins, and wake in spring (about {} \
                      from now): orders until then are kept but not walked. Give them before autumn, or split off the \
@@ -7959,29 +8010,51 @@ impl Game {
     /// from the last alert on.
     fn group_decline_alerts(&mut self, p: PlayerId, groups: &[evo_sim::world::groups::GroupInfo], out: &mut Outbox) {
         let mut texts = Vec::new();
+        let total: usize = groups.iter().map(|g| g.adults).sum();
         for g in groups.iter().filter(|g| g.id != 0) {
             let key = (p, g.id);
             // By adults: a group's young swell it each breeding season and die
             // back each winter, and that yearly swing isn't a decline
             // (playtest 10: the alert fired every winter after an autumn crop).
             let peak = self.group_peak.entry(key).or_insert(g.adults);
-            if g.adults > *peak {
-                *peak = g.adults;
-                continue;
+            if g.adults > *peak || !self.group_peak_total.contains_key(&key) {
+                *peak = (*peak).max(g.adults);
+                self.group_peak_total.insert(key, total);
+                if g.adults >= *peak {
+                    continue;
+                }
             }
             let (was, now) = (*peak, g.adults);
             let few = now < GROUP_FEW && was >= GROUP_FEW;
+            // Moved, not died: the lineage's adults held while this group
+            // shrank (playtest 13: "fallen from 97 to 46" while they joined
+            // the main group).
+            let then_total = self.group_peak_total.get(&key).copied().unwrap_or(total);
+            let lost_total = then_total.saturating_sub(total);
+            let moved = was.saturating_sub(now) > 2 * lost_total;
             if g.members == 0 && was > 0 {
                 texts.push(format!("{} has died out (it had {}).", group_name(g.id), count_of(was as u64, "adult")));
                 self.group_peak.remove(&key);
+                self.group_peak_total.remove(&key);
             } else if g.members > 0 && (2 * now <= was || few) {
-                texts.push(format!(
-                    "{} has fallen from {was} to {now} adults{}. Merge it into another group, or move it to better \
-                     ground.",
-                    group_name(g.id),
-                    if few { ": too few to hold together for long" } else { "" }
-                ));
+                let text = if moved {
+                    format!(
+                        "{} has gone from {was} to {now} adults, most of them by wandering into your other groups (the \
+                         lineage lost {lost_total} adults meanwhile){}. Merge it, or move it apart from the others.",
+                        group_name(g.id),
+                        if few { "; too few to hold together for long" } else { "" }
+                    )
+                } else {
+                    format!(
+                        "{} has fallen from {was} to {now} adults{}. Merge it into another group, or move it to better \
+                         ground.",
+                        group_name(g.id),
+                        if few { ": too few to hold together for long" } else { "" }
+                    )
+                };
+                texts.push(text);
                 *self.group_peak.entry(key).or_default() = now;
+                self.group_peak_total.insert(key, total);
             }
         }
         // Groups gone from the list since (no members left).
@@ -8053,7 +8126,10 @@ impl Game {
                         };
                         let drink = self.world.water_check(p, g.id, center, radius).drinkable;
                         let dry = drink == 0;
-                        if self.condition_begins((p, g.id, 0), dry, drink >= LOW_WATER_TILES) {
+                        // Not while it sleeps: sleepers neither drink nor graze, and
+                        // the alert came every ~8 days through a winter (playtest
+                        // 13); said when they wake if it is still true.
+                        if !sleeping && self.condition_begins((p, g.id, 0), dry, drink >= LOW_WATER_TILES) {
                             let tail = if thirst > 0 {
                                 format!(" {thirst} of the group died of thirst yesterday.")
                             } else {
@@ -8081,7 +8157,10 @@ impl Game {
                         // Said again only once it has really recovered (playtest 6:
                         // the alert repeated every few days for one territory).
                         let regrown = food.is_none_or(|f| f.standing_days >= 2.0 * BARE_DAYS);
-                        if self.condition_begins((p, g.id, 1), bare, regrown) && self.territory_alert_due(p, g.id) {
+                        if (!sleeping || starved > 0)
+                            && self.condition_begins((p, g.id, 1), bare, regrown)
+                            && self.territory_alert_due(p, g.id)
+                        {
                             let days = days_text(food.map_or(0.0, |f| f.standing_days));
                             // Asleep, the deaths are the winter sleep's, not the
                             // ground's (playtest 12: sleepers' starvation blamed
@@ -9494,7 +9573,19 @@ pub const HUNTED_WEEK: usize = 7;
 pub const HUNTED_WEEK_SHARE: f64 = 0.05;
 /// At most one loss warning per lineage in this many days, the day's kinds
 /// merged into one line (playtest 12: about one a game day in a crash).
-pub const NEED_BUDGET_DAYS: u64 = 2;
+pub const NEED_BUDGET_DAYS: u64 = 3;
+
+/// Days before a lineage warning of `kind` is said again: a decline each
+/// fresh window (its baseline then moves on whole: playtest 13 saw five
+/// "crashing" lines a few days apart, each from a new baseline), being
+/// hunted and eggs failing weekly, the rest every [`WARNING_REPEAT_DAYS`].
+fn repeat_days(kind: &str) -> u64 {
+    match kind {
+        "decline" => DECLINE_DAYS,
+        "hunted" | "eggs" => HUNTED_WEEK as u64,
+        _ => WARNING_REPEAT_DAYS,
+    }
+}
 /// Loss warnings, most severe first: they share [`NEED_BUDGET_DAYS`].
 pub const NEED_ORDER: [&str; 7] = ["decline", "starving", "hunted", "cold", "heat", "drowning", "eggs"];
 /// A slow decline (`Game::slow_decline`): deaths, the count at the window's

@@ -1813,7 +1813,9 @@ fn declines_are_graded_on_one_window() {
         }
     };
     fill(&mut g, 98);
-    assert!(g.lineage_warnings(1).iter().all(|w| w.kind != "decline"), "a 2% dip");
+    // 30 died (30%) though only 2% fewer: a crash by the gross deaths.
+    let w = g.lineage_warnings(1);
+    assert!(w.iter().any(|w| w.kind == "decline" && w.text.starts_with("Your lineage is crashing")), "{w:?}");
     fill(&mut g, 71);
     let w = g.lineage_warnings(1);
     let d = w.iter().find(|w| w.kind == "decline").expect("a decline");
