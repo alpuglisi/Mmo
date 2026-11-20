@@ -47,8 +47,8 @@ fn args() -> Args {
     a
 }
 
-/// The round-12 starter (`client/src/designMorph.ts`): warm, incubated
-/// eggs, 3 a clutch, 30 founders.
+/// The starter (`client/src/designMorph.ts`, round 13: hibernation and fat
+/// stores 0.8): warm, incubated eggs, 3 a clutch, 30 founders.
 fn starter(name: &str) -> FounderDesign {
     use Gene::*;
     FounderDesign::new(name, Thermo::Warm, BirthType::IncubatedEggs, 3)
@@ -56,8 +56,8 @@ fn starter(name: &str) -> FounderDesign {
         .with(GroupTolerance, 0.95)
         .with(Boldness, 0.3)
         .with(Fur, 0.6)
-        .with(FatStores, 0.6)
-        .with(Hibernation, 0.5)
+        .with(FatStores, 0.8)
+        .with(Hibernation, 0.8)
         .with(Toxins, 0.5)
         .with(Coloration, 0.6)
         .with(ForagingRange, 0.6)
@@ -68,17 +68,12 @@ fn candidates() -> Vec<(&'static str, FounderDesign)> {
     use Gene::*;
     vec![
         ("current", starter("current")),
-        ("fat0.9", starter("fat0.9").with(FatStores, 0.9)),
-        ("deep", starter("deep").with(Hibernation, 0.8).with(FatStores, 0.8)),
-        ("small+fat", starter("small+fat").with(BodySize, 0.4).with(FatStores, 0.8)),
-        ("awake", starter("awake").with(Hibernation, 0.0).with(Fur, 0.8).with(FatStores, 0.7)),
-        ("cache", starter("cache").with(Caching, 0.6)),
-        ("fat+cache", starter("fat+cache").with(FatStores, 0.8).with(Caching, 0.5)),
-        ("cold", {
-            let mut d = starter("cold");
-            d.thermo = Thermo::Cold;
-            d
-        }),
+        // Round 12's, for reference.
+        ("r12", starter("r12").with(Hibernation, 0.5).with(FatStores, 0.6)),
+        ("estivate", starter("estivate").with(Estivation, 0.3)),
+        ("burrow", starter("burrow").with(Burrowing, 0.4)),
+        ("migrate", starter("migrate").with(Migration, 0.5)),
+        ("camo", starter("camo").with(Camouflage, 0.5)),
     ]
 }
 
