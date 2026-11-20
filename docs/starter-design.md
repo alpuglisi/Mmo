@@ -107,6 +107,29 @@ from the strong designs. The sim's winter sleep needs no change for this:
 a design with modest fat (0.6) starves in a big herd's sleep, but the
 genes that pay for a deep sleep fix it.
 
+## Round 14: drought and the pack
+
+Playtest 13: with winter starvation fixed, the starter still lost 60–80% a
+year, to drought and to a pack eating its sleepers. Re-measured on the
+merged main of round 14 (`starter_winters`, 600 days, the round-13
+starter as the baseline), the baseline ended at a median of 17 (seeds 1–6)
+and 28 (seeds 7–12), most deaths predation, then starvation and thirst.
+Cheap additions:
+
+| Candidate | Points | End median (seeds 1–6) | Deaths: predation / thirst | End median (seeds 7–12) | Deaths: predation / thirst |
+| --- | --- | --- | --- | --- | --- |
+| round-13 starter | 37.0 | 17 | 1251 / 420 | 28 | 819 / 488 |
+| estivation 0.3 | 38.8 | 23 | 1213 / 328 | | |
+| **burrowing 0.4** | 40.2 | 37 | 1072 / 194 | 93 | 478 / 769 |
+| migration 0.5 | 41.0 | 30 | 1182 / 225 | 23 | 587 / 564 |
+| camouflage 0.5 | 39.5 | 24 | 1315 / 223 | | |
+| the strong herd, as the newcomer | 67.2 | | | 191 (peak 1,108) | |
+
+Burrowing 0.4 is the starter's since round 14 (about 40 points): its
+burrows keep it from hunters and the heat, and it ends roughly twice to
+three times the baseline, still far below the strong herd. Winters are
+kept as before (85–86%).
+
 ## How it was measured
 
 `crates/server/examples/starter_survival.rs` founds a design through the

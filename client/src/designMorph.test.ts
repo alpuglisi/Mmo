@@ -50,8 +50,8 @@ describe('feature detection', () => {
     const s = newEditorDesign(real);
     s.name = 'Starter';
     const c = designCost(designPayload(s, real), real);
-    // A safe first lineage that still leaves most of the budget (round 12: about 33 points).
-    expect(c.total).toBeLessThan(real.budget * 0.4);
+    // A safe first lineage that still leaves most of the budget (round 14: about 40 points).
+    expect(c.total).toBeLessThan(real.budget * 0.45);
     expect(s.founders).toBe(Math.max(real.base_founders, STARTER_FOUNDERS));
   });
 
