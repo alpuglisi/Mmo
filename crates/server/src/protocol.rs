@@ -2175,6 +2175,10 @@ pub struct DesignCompatView {
     /// its first summer, with no warning).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heat_warning: Option<String>,
+    /// A timed breeder founded outside its spring window: how long until it
+    /// first breeds (playtest 13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing_warning: Option<String>,
     /// Set when founding now is a re-founding soon after the player's last
     /// lineage ended: it founds `founders` of the design's (founders cost
     /// double points: as many as fit, at least half), costing
@@ -3042,9 +3046,9 @@ pub struct SpeciesView {
     pub peak_adults: f64,
     pub lineages: Vec<SpeciesLineage>,
     /// The diet band from the exact mean (`herbivore`, `omnivore`,
-    /// `carnivore`, as the creature sprites draw it): `carnivory` is coarse
-    /// for a player's species, and 0.34 rounded to 0.25 read "herbivore"
-    /// (playtest 12).
+    /// `carnivore`, as the era's diet niches count it: from 0.3 and 0.6):
+    /// `carnivory` is coarse for a player's species, and 0.34 rounded to
+    /// 0.25 read "herbivore" (playtests 12–13).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub diet: String,
     #[serde(serialize_with = "crate::protocol::round::f2")]

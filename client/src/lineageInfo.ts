@@ -150,7 +150,15 @@ export function rampText(ramp: { founded_day: number; weight: number; days: numb
 /** What the two leaderboard columns mean (Lineage and Ranks tabs). */
 export const LEGACY_EXPLAIN = 'Share: your alleles among all living breeding adults (genes, not heads; your genes in other lineages count too). '
   + 'Weighted: the same, but each adult counts by how many of its young reached adulthood, so it stays at 0% until your first young grow up. '
-  + 'A new lineage counts toward the ranked season gradually (the founding ramp), so dying out and founding again does not pay.';
+  + 'A new lineage counts toward the ranked season gradually (the founding ramp), so dying out and founding again does not pay. '
+  + 'Shares are measured against the world\'s recent peak of breeding adults, not today\'s count, so when the world shrinks (a drought, a hard winter) they add up to less than 100%.';
+
+/** Under a leaderboard whose shares add up to clearly less than 100% (playtest 13: 69–88% with no word why). */
+export function shareSumNote(shares: readonly number[]): string | null {
+  const sum = shares.reduce((a, b) => a + b, 0);
+  if (shares.length === 0 || sum >= 0.97) return null;
+  return `These shares add up to ${Math.round(sum * 100)}%: they are measured against the world's recent peak, and the world has shrunk since.`;
+}
 
 /**
  * Why the share can fall while the herd grows (playtest 11: it halved during

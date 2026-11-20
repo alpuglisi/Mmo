@@ -2044,9 +2044,11 @@ impl World {
     }
 
     /// For a warm-blooded design: the share of the dry land whose summer
-    /// peak (the year's mean plus the seasonal swing) is hot enough to harm
-    /// its founders, and that temperature (°C). Forest and water don't cool
-    /// an animal; a lighter coat, a smaller body, a burrow or estivation do.
+    /// peak (the year's mean plus the seasonal swing and the afternoon's
+    /// day/night swing: playtest 13 saw heat deaths in a design warned of
+    /// nothing) is hot enough to harm its founders, and that temperature
+    /// (°C). Forest, water and body size don't cool an animal; a lighter
+    /// coat, a burrow or estivation do.
     /// None for a cold-blooded design.
     pub fn summer_heat(&self, design: &crate::design::FounderDesign) -> Option<(f32, f32)> {
         if design.thermo != crate::design::Thermo::Warm {
@@ -2066,7 +2068,12 @@ impl World {
                 continue;
             }
             land += 1;
-            if g.base_temp + self.map.climate_temp + crate::terrain::SEASONAL_AMPLITUDE > limit {
+            if g.base_temp
+                + self.map.climate_temp
+                + crate::terrain::SEASONAL_AMPLITUDE
+                + crate::terrain::DIURNAL_AMPLITUDE
+                > limit
+            {
                 hot += 1;
             }
         }
