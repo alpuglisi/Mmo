@@ -238,7 +238,7 @@ describe('pasture restoration', () => {
     const { restoreText } = await import('./marketData');
     expect(restoreText({ balance: 500 })).toBeNull();
     const first = restoreText({ balance: 500, restore_price: 240, restores_bought: 0 })!;
-    expect(first.label).toBe('Restore pasture: 240 renown');
+    expect(first.label).toBe('Restore pasture: from 240 renown');
     expect(first.can).toBe(true);
     expect(first.note).toContain('within 12 tiles of the group');
     expect(first.note).toContain('1 renown per animal of your lineage plus each other player\'s animal you can see grazing the circle (at least 200)');

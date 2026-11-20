@@ -412,6 +412,16 @@ impl World {
         self.pair_shield = pairs.into_iter().collect();
     }
 
+    /// The chance organism `id` lives another `days` days by the old-age
+    /// hazard alone (the server's market fitness check), or `None` when it
+    /// isn't alive.
+    pub fn old_age_survival(&self, id: OrgId, days: f32) -> Option<f32> {
+        let o = self.organism(id)?;
+        let life = o.traits.lifespan_days;
+        let frac = o.age_days(self.config.ticks_per_day) / life.max(1.0);
+        Some(super::apply::old_age_survival(frac, days, life, self.config.balance.age_spread))
+    }
+
     /// Whether `id` is shielded by a market agreement now.
     pub fn market_shielded(&self, id: OrgId) -> bool {
         self.market_shield.contains(&id)

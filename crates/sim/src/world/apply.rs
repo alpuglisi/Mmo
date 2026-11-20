@@ -1808,6 +1808,25 @@ pub(super) fn ice_trap(body: &crate::stats::Body, t: &crate::terrain::Tile) -> b
 /// at a rate set by the lifespan: ages at death then follow a Rayleigh
 /// curve with mean 85% of the lifespan and that standard deviation, so a
 /// boom cohort dies over months.
+/// The chance an organism at lifespan fraction `frac` lives another
+/// `days` days by the old-age hazard alone ([`old_age_hazard`]'s Rayleigh
+/// tail, or its spread-0 ramp approximated as certain death past 130%).
+pub fn old_age_survival(frac: f32, days: f32, lifespan_days: f32, spread: f32) -> f32 {
+    let life = lifespan_days.max(1.0);
+    let end = frac + days.max(0.0) / life;
+    if end > 1.3 {
+        return 0.0;
+    }
+    if spread <= 0.0 {
+        let s = |f: f32| if f <= 0.8 { 1.0 } else { (-2.0 * life * (f - 0.8).powi(2)).exp() };
+        return (s(end) / s(frac).max(1e-9)).clamp(0.0, 1.0);
+    }
+    let sigma = spread / 0.655;
+    let onset = 0.85 - 1.2533 * sigma;
+    let s = |f: f32| if f <= onset { 1.0 } else { (-(f - onset).powi(2) / (2.0 * sigma * sigma)).exp() };
+    (s(end) / s(frac).max(1e-9)).clamp(0.0, 1.0)
+}
+
 pub(crate) fn old_age_hazard(frac: f32, lifespan_days: f32, spread: f32) -> f32 {
     if spread <= 0.0 {
         return if frac > 0.8 { 4.0 * (frac - 0.8) } else { 0.0 };
@@ -2005,6 +2024,18 @@ mod tests {
     /// Old age with a spread (`Balance::age_spread`): ages at death average
     /// about 85% of the lifespan with that standard deviation; without it,
     /// the old rule packs them within days of 84%.
+    #[test]
+    fn old_age_survival_falls_with_age_and_time() {
+        let (life, spread) = (300.0, 0.12);
+        let young = old_age_survival(0.3, 30.0, life, spread);
+        let mid = old_age_survival(0.7, 30.0, life, spread);
+        let old = old_age_survival(0.85, 30.0, life, spread);
+        assert!((young - 1.0).abs() < 1e-6, "{young}");
+        assert!(mid < young && old < mid, "{young} {mid} {old}");
+        assert!(old_age_survival(0.7, 5.0, life, spread) > mid, "a shorter wait is likelier to be outlived");
+        assert_eq!(old_age_survival(1.25, 30.0, life, spread), 0.0);
+    }
+
     #[test]
     fn old_age_deaths_spread_with_age_spread() {
         let stats = |spread: f32| {
