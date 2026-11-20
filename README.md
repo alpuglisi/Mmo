@@ -9113,6 +9113,57 @@ around it.
 
 
 
+### Playtest 13: balance
+
+Playtest 13 (`docs/playtest-13.md`, findings 1, 2, 4 and the sim part of 5).
+- **The leader's share still passed 30% every winter.** It went 19% → 30%,
+  20% → 30% and 28% → 34%, each time while its head count fell. Over
+  winter the young matured as the wild's adults died, so the world's
+  breeding total stayed flat: the remembered peak never engaged, and the
+  litter brake had nothing to act on.
+- **The cold, toxic, bright brumator dominated** (two copies held 56%).
+- **The era score's end term (its last tenth) always fell in winter.**
+- **Packs** found little reachable prey, and their adult females died more.
+
+Version 96 (each off at 0), and the era score's end term:
+
+- **The young count in the legacy** (`Balance::share_young`, 1). The share
+  counts every living animal's alleles, agents and cohort members alike,
+  not only breeding adults' (`breeding_adults` still counts adults). The
+  autumn young are in the share from birth, so maturing over winter no
+  longer moves it. The weighted share still counts offspring raised.
+- **A torpid brumator loses most of its toxin defence**
+  (`Balance::torpid_toxins`, 0.6). A cold-blooded animal deep in brumation
+  or estivation keeps 40% of it, in hunters' avoidance (colour and lesson)
+  and in the toxin of a strike (`World::torpid_defence`). Awake, or
+  warm-blooded asleep, it keeps it all. Round 13's `--cold-mod` runs found
+  that toxins with colour, then brumation, carried the class.
+- **The era score's end term is the era's last full year** (server,
+  `EraScores::add(.., year_days)`), not its last tenth. A year holds every
+  season. Renaming "Era mean" to "Era score" in the API and UI is left to
+  the polish branch.
+
+**Pack sex ratio.** The trace now counts the pack's adults and deaths by sex
+each season. With version 95's `pack_nursing` (pregnant females fed first),
+the replay's pack is mostly female: 60/53, 88/62 and 72/49 adult
+females/males across years 3–5. Deaths split roughly in proportion, and
+few dying females were pregnant (0–3 a season). The replay doesn't
+reproduce the playtest's skew, which came from played packs (orders,
+wintering inside a toxic herd); no sim change.
+
+**Replay** (`dominance --only Cold,Herd,Pack,Steady,Flier,Sleepers --cold-day
+27 --flier-day 360`; seeds 1–4, 840 days). Plain era means, playtest 13
+rules → v96 rules:
+- Cold 12.6% → 12.4% (titles 12 → 2 of 40)
+- Flier, the late copy: 16.5% → 14.0% (peak alive 594 → 387, final share
+  13.2% → 6.1%)
+- Herd 11.8% → 22.8%, Sleepers 15.3% → 4.5%
+- Steady 10.7% → 11.2%, Pack 4.6% → 7.0% (peak 199 → 258; 304 on seed 1)
+
+No lineage passes 23% for an era. In the trace (seed 1) the leader's
+winter jumps shrink: Cold 11% → 15% over a winter, where it went 14% →
+26–29% under the old measure.
+
 ### Playtest 12: balance
 
 Playtest 12 (`docs/playtest-12.md`, findings 1, 2 and 7). The cold, live-bearing,
