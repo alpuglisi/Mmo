@@ -42,7 +42,7 @@ pub mod groups;
 #[cfg(test)]
 mod groups_tests;
 mod hosts;
-pub use hosts::HostTally;
+pub use hosts::{HostTally, ReinforceLanding};
 #[cfg(test)]
 mod attack_tests;
 pub mod lod;

@@ -75,6 +75,8 @@ fn homes_hash() -> u64 {
         (config.balance.raid_rules, config.balance.animal_clear) = (0.0, 0.0);
         // Playtest 12 (version 95): nursing packs, grace kept from instinct bites.
         (config.balance.pack_nursing, config.balance.instinct_grace) = (0.0, 0.0);
+        // Playtest 13 (version 97): denned sleepers, near reinforcements.
+        (config.balance.sleeper_den, config.balance.reinforce_near) = (0.0, 0.0);
         // Playtest 6 balance (version 62): toxin upkeep, hungry hunters,
         // toxin source, speciation credit and clutch cover change how the
         // world grows before the sample players found.

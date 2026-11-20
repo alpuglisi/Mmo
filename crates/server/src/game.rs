@@ -1636,6 +1636,23 @@ impl Game {
         }
     }
 
+    /// The nearest living animal of `target`'s lineage not down a burrow,
+    /// within an attack order's reach of `attacker`, nearest to `target`
+    /// first (for a sheltered target's order, playtest 13).
+    fn nearest_open_kin(&self, attacker: OrgId, target: OrgId) -> Option<OrgId> {
+        let a = self.world.organism(attacker)?;
+        let t = self.world.organism(target)?;
+        let reach = evo_sim::world::commands::ORDER_KEPT * self.world.attack_range();
+        self.world
+            .organisms
+            .iter()
+            .filter(|o| {
+                o.alive && o.lineage == t.lineage && o.id != target && !o.sheltered && o.pos.dist(a.pos) <= reach
+            })
+            .min_by(|x, y| x.pos.dist(t.pos).total_cmp(&y.pos.dist(t.pos)).then(x.id.cmp(&y.id)))
+            .map(|o| o.id)
+    }
+
     /// A command error, with the real time left added to a grace refusal
     /// (the days alone mislead at a fast clock).
     fn grace_error(&self, err: &CommandError) -> ErrorInfo {
@@ -2617,16 +2634,42 @@ impl Game {
                 }
                 // Repeating the standing order changes nothing: no new alert.
                 let repeat = self.world.attack_target(organism) == Some(target);
-                self.world.possess_attack(player, organism, target).map_err(|err| match err {
-                    CommandError::OutOfSight(_) => self.attack_out_of_sight(organism, target, &err),
-                    _ => self.grace_error(&err),
-                })?;
+                // The target dived into its burrow as the order came: the
+                // nearest of its kind still out, if any, instead (playtest
+                // 13: 50 of 60 orders on small prey refused as sheltered).
+                let mut retarget = None;
+                let target = match self.world.possess_attack(player, organism, target) {
+                    Err(CommandError::Sheltered(_)) => {
+                        let alt = self
+                            .nearest_open_kin(organism, target)
+                            .filter(|&alt| self.world.possess_attack(player, organism, alt).is_ok());
+                        match alt {
+                            Some(alt) => {
+                                retarget = Some(target);
+                                alt
+                            }
+                            None => return Err(self.grace_error(&CommandError::Sheltered(target))),
+                        }
+                    }
+                    Err(err @ CommandError::OutOfSight(_)) => {
+                        return Err(self.attack_out_of_sight(organism, target, &err))
+                    }
+                    Err(err) => return Err(self.grace_error(&err)),
+                    Ok(()) => target,
+                };
                 self.attack_watch.insert(organism, (player, target));
                 self.possessed_seen.insert(organism, self.world.tick());
                 if !repeat {
                     self.alert_attacked(player, organism, target, out);
                 }
                 let mut data = serde_json::json!({ "organism": organism, "target": target });
+                if let Some(first) = retarget {
+                    data["retargeted_from"] = first.into();
+                    data["note"] = format!(
+                        "#{first} dived into its burrow; ordered at #{target}, the nearest of its kind still out"
+                    )
+                    .into();
+                }
                 let mut warn: Vec<String> = self.world.attack_warning(organism, target).into_iter().collect();
                 // An ordered attack on a rival ends a graced player's grace
                 // (`Balance::graced_hunting`): said before it lands
@@ -12079,17 +12122,26 @@ mod tests {
         g.cfg.season_days = 4;
         let _ = g.post(1, 5000, LedgerKind::Income, "test".into(), None, None);
         let alive = g.owner_population(1);
-        // A peak of 100 two days ago, under the limit today.
+        // The limit right at today's count; a peak just past it two days ago.
+        g.world.config.lineage_cap = (alive as f64 / economy::REINFORCE_MAX_SHARE).ceil() as usize;
+        let max = g.reinforce_max_alive();
+        assert!(alive <= max && alive * 2 > max + 1, "alive {alive}, max {max}");
         let today = g.world.day();
-        g.economy.alive_days.insert(1, [(today.saturating_sub(2), 100), (today, alive)].into());
-        g.world.config.lineage_cap = 5 * (alive + 5);
-        assert!(alive <= g.reinforce_max_alive());
+        g.economy.alive_days.insert(1, [(today.saturating_sub(2), max + 1), (today, alive)].into());
         let out = g.command(10, 1, None, ClientMsg::Reinforce);
         assert_eq!(result(&out).1.as_deref(), Some("too_large"));
-        assert!(format!("{out:?}").contains("you had 100 at the most"), "{out:?}");
+        assert!(format!("{out:?}").contains(&format!("you had {} at the most", max + 1)), "{out:?}");
+        // Down to half the peak or less (playtest 13: "you had 306" while at
+        // 69): not held to it.
+        let peaks = g.economy.alive_days.get(&1).cloned();
+        g.economy.alive_days.insert(1, [(today.saturating_sub(2), 2 * alive), (today, alive)].into());
+        assert!(g.reinforce_blocked(1).is_ok(), "{:?}", g.reinforce_blocked(1).err());
+        if let Some(p) = peaks {
+            g.economy.alive_days.insert(1, p);
+        }
         // The peak lapses with the window.
         run_days(&mut g, 4);
-        assert!(g.season_peak(1) < 100, "{:?}", g.economy.alive_days.get(&1));
+        assert!(g.season_peak(1) <= max, "{:?}", g.economy.alive_days.get(&1));
         g.world.config.lineage_cap = 5 * (g.owner_population(1).max(g.season_peak(1)) + 5);
         assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)), (true, None));
     }

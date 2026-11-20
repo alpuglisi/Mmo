@@ -867,7 +867,7 @@ impl Game {
     }
 
     /// Why `player` can't buy reinforcements now (their lineage otherwise).
-    fn reinforce_blocked(&self, player: PlayerId) -> Result<u32, ErrorInfo> {
+    pub(super) fn reinforce_blocked(&self, player: PlayerId) -> Result<u32, ErrorInfo> {
         let Some(lineage) = self.lineage_of(player).filter(|_| !self.is_extinct(player)) else {
             return Err(ErrorInfo::new("no_lineage", "you have no living lineage to reinforce"));
         };
@@ -906,13 +906,16 @@ impl Game {
                 ),
             ));
         }
+        // A lineage crashing (down to half its peak or less) isn't held to
+        // its peak (playtest 13: "you had 306" locked out a newcomer down
+        // to 69).
         let peak = self.season_peak(player);
-        if peak > max {
+        if peak > max && alive * 2 > peak {
             return Err(ErrorInfo::new(
                 "too_large",
                 format!(
                     "reinforcements are for lineages of at most {max} alive at any time in the last {} days \
-                     (you had {peak} at the most)",
+                     (you had {peak} at the most; a lineage down to half its peak or less may reinforce)",
                     self.cfg.season_days
                 ),
             ));
@@ -966,7 +969,23 @@ impl Game {
             return Err(ErrorInfo::new("insufficient_funds", format!("{price} renown needed, you have {balance}"))
                 .with_detail(serde_json::json!({ "balance": balance, "needed": price })));
         }
-        let (ids, moved) = self.world.reinforce_lineage_report(lineage, economy::REINFORCE_SIZE);
+        let (ids, landing) = self.world.reinforce_lineage_report(lineage, economy::REINFORCE_SIZE);
+        // No clear ground near the group (`Balance::reinforce_near`): refused,
+        // nothing charged (playtest 13: they landed 34 tiles off and died).
+        if landing == evo_sim::world::ReinforceLanding::Blocked {
+            return Err(ErrorInfo::new(
+                "no_clear_ground",
+                format!(
+                    "no ground within {:.0} tiles of your group is clear of other players' territories and animals: \
+                     move it out of the rival's ground first (nothing was charged)",
+                    evo_sim::World::REINFORCE_NEAR
+                ),
+            ));
+        }
+        let moved = match landing {
+            evo_sim::world::ReinforceLanding::Away { from, tiles } => Some((from, tiles)),
+            _ => None,
+        };
         if ids.is_empty() {
             return Err(ErrorInfo::new("lineage_full", "no room for reinforcements"));
         }
