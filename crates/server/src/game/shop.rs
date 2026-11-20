@@ -120,16 +120,28 @@ pub fn drought_design_text(drought: f32) -> String {
 
 /// Share of the dry land too hot in summer for a design from which the
 /// design check warns (`DesignCompatView::heat_warning`).
-pub const HEAT_DESIGN_SHARE: f32 = 0.25;
+/// A sixth (playtest 13: a fur-and-fat design died of heat with no warning
+/// at a quarter).
+pub const HEAT_DESIGN_SHARE: f32 = 0.15;
 
 /// [`DesignCompatView::heat_warning`]'s text.
 pub fn heat_design_text(share: f32, limit: f32) -> String {
     format!(
-        "Heat: in summer about {:.0}% of the land gets hotter than this design can bear (about {limit:.0} °C, its fur \
+        "Heat: on summer afternoons about {:.0}% of the land gets hotter than this design can bear (about {limit:.0} °C, its fur \
          and fat hold the heat in), and founders landing there die of heat in their first summer. Shade and water \
          don't cool them, and body size makes no difference; less fur and fat, burrowing (a burrow keeps the midday \
          heat off) or estivation (sleeping through the hottest weeks) do.",
         share * 100.0
+    )
+}
+
+/// [`DesignCompatView::timing_warning`]'s text.
+pub fn timing_design_text(window: u32, wait: u32) -> String {
+    format!(
+        "Timed breeding: this design mates only in the first {window} days of spring. Founded now, its first young \
+         are conceived only when next spring begins, about {wait} days from now, and the founders must live that \
+         long. Found shortly before spring, or keep timed breeding below {:.1} to breed all year.",
+        evo_sim::stats::STRATEGY_THRESHOLD
     )
 }
 
@@ -1147,8 +1159,13 @@ impl Game {
             .summer_heat(design)
             .filter(|&(share, _)| share >= HEAT_DESIGN_SHARE)
             .map(|(share, limit)| heat_design_text(share, limit));
+        let wait = self.world.days_to_breeding_window();
+        let timing_warning =
+            (design.values()[evo_sim::Gene::TimedBreeding.index()] >= evo_sim::stats::STRATEGY_THRESHOLD && wait > 0)
+                .then(|| timing_design_text(self.world.breeding_window_days(), wait));
         DesignCompatView {
             day: self.world.day(),
+            timing_warning,
             sample: SAMPLE,
             fertile_with,
             at_risk,

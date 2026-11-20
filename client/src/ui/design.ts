@@ -22,7 +22,7 @@ import { foundingHint } from '../foodHint';
 import { avatarView } from './avatarView';
 import { createBodyBuilder, type BodyBuilder, type BuilderChange } from './builder/builder';
 import type { BuilderPreset } from './builder/presets';
-import { h } from './dom';
+import { h, present } from './dom';
 import { readMode, writeMode, type EditorMode } from './editorMode';
 import { caption, TRAIT_TEXT, type Level } from './traitText';
 import { traitEnds, traitName } from './traitNames';
@@ -369,6 +369,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   let serverCarnEggs: string | null = null;
   /** The server's summer heat warning (`heat_warning`) for the design it last checked (playtest 11). */
   let serverHeat: string | null = null;
+  let serverTiming: string | null = null;
   function renderHybrid(): void {
     if (!species) return;
     const p = payload();
@@ -412,8 +413,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     const rivals = [...new Map(v.rows.filter((r) => !r.wild && r.owner !== cb.player && r.fertility >= 0.05)
       .sort((a, b) => b.fertility - a.fertility).map((r) => [r.owner, r] as const)).values()];
     return rivals.length
-      ? `Directed matings and the market: measured, you could breed with ${rivals.slice(0, 5).map((r) => `${r.owner_name} (${r.lineage_name}, ${Math.round(r.fertility * 100)}% fertile)`).join(', ')}${rivals.length > 5 ? ` and ${rivals.length - 5} more` : ''}; other players' studs would be sterile with yours.`
-      : 'Directed matings and the market: measured, no other player\'s lineage would be fertile with these founders; their studs would be sterile with yours.';
+      ? `Directed matings and the market: measured on day ${v.day + 1}, you could breed with ${rivals.slice(0, 5).map((r) => `${r.owner_name} (${r.lineage_name}, ${Math.round(r.fertility * 100)}% fertile)`).join(', ')}${rivals.length > 5 ? ` and ${rivals.length - 5} more` : ''}; other players' studs would be sterile with yours.`
+      : `Directed matings and the market: measured on day ${v.day + 1}, no other player's lineage living then would be fertile with these founders. Lineages founded later can be: once founded, the Market tab's "Who your lineage can breed with" compares real animals.`;
   }
 
   let waterTimer: ReturnType<typeof setTimeout> | undefined;
@@ -465,6 +466,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
         serverEggs = r.egg_warning ? { design: key, text: serverText(r.egg_warning) } : null;
         serverCarnEggs = r.carnivore_egg_warning ? serverText(r.carnivore_egg_warning) : null;
         serverHeat = r.heat_warning ? serverText(r.heat_warning) : null;
+        serverTiming = r.timing_warning ? serverText(r.timing_warning) : null;
         refoundNow = r.refound ? { design: key, terms: r.refound } : null;
       }
       // Every answer redraws the warnings, the budget and the card at once
@@ -561,6 +563,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     if (serverEggs) warns.unshift({ id: 'eggs', level: 'bad', text: serverEggs.text });
     if (serverCarnEggs) warns.push({ id: 'carnivore_eggs', level: 'warn', text: serverCarnEggs });
     if (serverHeat) warns.push({ id: 'heat', level: 'bad', text: serverHeat });
+    if (serverTiming) warns.push({ id: 'timing', level: 'warn', text: serverTiming });
     const wkey = JSON.stringify(warns);
     if (warnBox.dataset.key !== wkey) {
       warnBox.dataset.key = wkey;
@@ -583,6 +586,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     const p = validateDesign(payload(), cat);
     problem.textContent = p && !(p.code === 'bad_name' && spec.name === '') ? p.message : '';
     needName.hidden = spec.name.trim() !== '';
+    present(needName, !needName.hidden);
     // The server's verdict on the name, shown under it while it still applies.
     const refused = nameWarning !== null && nameWarned === spec.name.trim() ? nameWarning : null;
     nameWarnEl.textContent = refused ? `This name would be refused: ${refused}` : '';
@@ -673,6 +677,9 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     }
     attached = true;
     const [w, sp] = await Promise.all([api.world().catch(() => null), species ? api.species().catch(() => null) : Promise.resolve(null)]);
+    // A lineage founded (or gone) since: check again at once (playtest 13: the designer said no player's
+    // lineage would be fertile, from a check made before the rivals founded; the Market later said fully fertile).
+    if (w && world && w.lineages !== world.lineages) lastAsked = '';
     if (w) world = w;
     if (sp) species = sp;
     showSeason();

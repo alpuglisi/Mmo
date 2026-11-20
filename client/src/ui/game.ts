@@ -9,12 +9,12 @@ import { commandError } from '../errors';
 import { DEFAULT_TICKS_PER_DAY, gameAndReal, ticksToNextSeason } from './duration';
 import { reconcile, setText } from './reconcile';
 import { friendlyError, MEETING_TILES } from './friendlyErrors';
-import { NEWS_MS, OWN_MS, pickToasts, toastAlive } from './toastPick';
+import { pickToasts, toastAlive, toastLife } from './toastPick';
 import { apartText, historyRows, meetText, offerLine } from './matingHistory';
 import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
 import { buildFamilyTree, type FamilyModel } from '../familyTree';
-import { actionText, boomShareText, capInfo, graceText, grouped, LEGACY_EXPLAIN, migrationText, rampText } from '../lineageInfo';
+import { actionText, boomShareText, capInfo, graceText, grouped, LEGACY_EXPLAIN, migrationText, rampText, shareSumNote } from '../lineageInfo';
 import { droughtNotice } from '../droughtInfo';
 import { markRetired, wasRetired } from '../retired';
 import { awaySummary, seenKey } from '../awaySummary';
@@ -32,7 +32,7 @@ import { GROUND, ICE, SNOW, toCss, WATER, type Rgb } from '../world/palette';
 import { describeLook } from '../world/creature';
 import { visionLines, visionStats } from '../world/visionCones';
 import { visionSummary } from '../vision';
-import { append, clear, h, pct, tiles } from './dom';
+import { append, clear, h, pct, present, tiles } from './dom';
 import { icon, type IconName } from './icons';
 import { renderAlertPrefs, renderDashboard, renderFeed } from './dashboard';
 import { catastropheBanner, catastropheEffect, catastropheLabel, renderWorld, type Chronicle } from './chronicle';
@@ -74,21 +74,6 @@ const ATTACK_RANGE = 8;
  * Every organism of the player's lineage has died: say so, point to what
  * killed them, and offer a new lineage (renown and records stay).
  */
-/** Hidden notices kept out of the page, a placeholder in their place (playtest 12: "Start a new lineage" stayed in the DOM while alive). */
-const placeholders = new WeakMap<HTMLElement, Comment>();
-function present(el: HTMLElement, on: boolean): void {
-  let mark = placeholders.get(el);
-  if (!on && el.parentNode) {
-    if (!mark) {
-      mark = document.createComment(el.id || 'notice');
-      placeholders.set(el, mark);
-    }
-    el.replaceWith(mark);
-  } else if (on && !el.parentNode && mark?.parentNode) {
-    mark.replaceWith(el);
-  }
-}
-
 function extinctNoticeEl(id: string, onNewLineage: (() => void) | undefined): HTMLElement {
   return h('div', { class: 'notice bad', id, role: 'status' },
     h('p', { class: 'extinct-text' }),
@@ -508,6 +493,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   let mode: Mode = 'select';
   function setMode(m: Mode): void {
     mode = m;
+    // A map mode wants the map: an open Tools menu closes (playtest 13: left open, a tap meant for the
+    // territory's centre landed on its Migrate… and switched modes).
+    if (m !== 'select') setToolsMenu(false);
     migrateBtn.classList.toggle('active', m === 'migrate');
     territoryBtn.classList.toggle('active', m === 'territory');
     rallyBtn.classList.toggle('active', m === 'rally');
@@ -837,7 +825,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     // a territory and a rally.
     const groups = groupsOf(model.state).filter((g) => groupChoice === 'all' || g.id === groupChoice);
     const done: string[] = [];
-    if (groups.some((g) => g.migration)) done.push('migration');
+    // Named, as the territory and rally are (playtest 13: "Cleared: migration").
+    for (const g of groups.filter((x) => x.migration)) done.push(`${groupName(g.id)}'s migration`);
     await send(clearMigrationMsg(groupChoice));
     for (const g of groups) {
       if (g.territory && (await send({ type: 'abandon_territory', group: g.id })).ok) done.push(`${groupName(g.id)}'s territory`);
@@ -926,10 +915,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   cleanups.push(() => window.removeEventListener('keydown', onKey));
 
   // A group order's reply says what becomes of its brooding parents.
-  const broodingToast = (data: unknown) => {
-    const note = (data as { brooding_note?: string } | undefined)?.brooding_note;
-    if (note) model.toast('info', note);
-  };
+  const broodNote = (data: unknown) => (data as { brooding_note?: string } | undefined)?.brooding_note ?? '';
   view.onClick = async (c) => {
     if (mode === 'migrate') {
       setMode('select');
@@ -956,9 +942,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const r = await send(rallyMsg(id, c.x, c.y));
       if (r.ok) {
         const t = r.data as { x: number; y: number; radius: number; warning?: string; note?: string };
-        model.toast('info', `${groupName(id)} gathering at (${t.x.toFixed(0)}, ${t.y.toFixed(0)}), within ${t.radius.toFixed(1)} tiles${t.note ? ` (${t.note})` : ''}`);
-        if (t.warning) model.toast('warn', `Rallying, but: ${t.warning}`);
-        broodingToast(r.data);
+        // One toast for the whole reply (playtest 13: on a phone the brooding line stayed pinned and the warning went).
+        model.toast(t.warning ? 'warn' : 'info', [`${groupName(id)} gathering at (${t.x.toFixed(0)}, ${t.y.toFixed(0)}), within ${t.radius.toFixed(1)} tiles${t.note ? ` (${t.note})` : ''}.`,
+          t.warning ? `But: ${t.warning}` : '', broodNote(r.data)].filter(Boolean).join(' '));
       }
       return;
     }
@@ -974,10 +960,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const r = await send(step.claim);
       if (r.ok) {
         const t = r.data as { x: number; y: number; radius: number; warning?: string; note?: string; pending?: boolean };
-        if (t.pending) model.toast('info', `${groupName(g.id)} is migrating to (${t.x.toFixed(0)}, ${t.y.toFixed(0)}): ${t.note ?? 'it claims the territory when it arrives'}`);
-        else model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? ` (${t.note})` : ''}`);
-        if (t.warning) model.toast('warn', `${t.pending ? 'Ordered' : 'Claimed'}, but: ${t.warning}`);
-        broodingToast(r.data);
+        const head = t.pending
+          ? `${groupName(g.id)} is migrating to (${t.x.toFixed(0)}, ${t.y.toFixed(0)}): ${t.note ?? 'it claims the territory when it arrives'}.`
+          : `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? ` (${t.note})` : ''}.`;
+        // One toast for the whole reply, the warning first after the order (playtest 13: the brooding line was pinned, the warning pushed out).
+        model.toast(t.warning ? 'warn' : 'info', [head, t.warning ? `${t.pending ? 'Ordered' : 'Claimed'}, but: ${t.warning}` : '', broodNote(r.data)].filter(Boolean).join(' '));
       }
       return;
     }
@@ -2379,6 +2366,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     keyed(boardEl, JSON.stringify(lb) + nameplatesKey(), () => lb.rows.length === 0
       ? [h('p', { class: 'muted small' }, lb.day === null ? 'The first legacy snapshot comes at the end of day 1.' : 'No breeding adults.')]
       : [h('p', { class: 'muted small' }, `Day ${(lb.day ?? 0) + 1} snapshot · ${lb.breeding_adults} breeding adults`),
+        shareSumNote(lb.rows.map((r) => r.share)) ? h('p', { class: 'muted small', id: 'share-sum-note' }, shareSumNote(lb.rows.map((r) => r.share))) : null,
         h('table', { class: 'board' },
           h('thead', {}, h('tr', {}, h('th', {}, 'Player'), h('th', {}, 'Share'), h('th', { title: 'Weighted by offspring raised to adulthood' }, 'Weighted'), h('th', {}, 'Alive'))),
           h('tbody', {}, ...lb.rows.map((r) => h('tr', { class: r.player === model.player ? 'me' : '' },
@@ -2558,7 +2546,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       return;
     }
     const now = Date.now();
-    const next = Math.min(...model.toasts.map((x) => (x.at ?? now) + (x.news ? NEWS_MS : OWN_MS) - now));
+    const next = Math.min(...model.toasts.map((x) => (x.at ?? now) + toastLife(x) - now));
     toastTimer = setTimeout(renderToasts, Math.max(50, next + 20));
   }
 

@@ -8880,7 +8880,8 @@ impl Game {
                     .collect(),
                 // A player's species: quarters, as the leaderboard history
                 // gives rivals' genes (exact means were a design recipe).
-                diet: crate::appearance::diet_band(s.carnivory).into(),
+                // The era's diet niches' bands (playtest 13: a 0.339 species aimed at the omnivore niche read "herbivore").
+                diet: evo_sim::world::diet_niche(s.carnivory).trim_start_matches("diet:").into(),
                 carnivory: coarse(s.dominant, s.carnivory),
                 body_size: coarse(s.dominant, s.body_size),
                 endothermy: family::rep_mean(s.reps(), Gene::Endothermy).map(|v| coarse(s.dominant, v)),
@@ -13015,6 +13016,26 @@ mod tests {
         let cold = FounderDesign::new("C", Thermo::Cold, BirthType::Live, 2).with(Gene::Fur, 1.0).founders(6);
         assert_eq!(g.design_compatibility(9, &cold).heat_warning, None);
         assert!(shop::heat_design_text(0.4, 31.0).contains("Shade and water don't cool them"));
+    }
+
+    /// A timed breeder founded outside its spring window is told how long
+    /// until it first breeds (playtest 13: founded in summer, no young for
+    /// ~90 days); inside the window, or without the gene, nothing.
+    #[test]
+    fn a_timed_breeder_founded_out_of_season_is_warned() {
+        let (mut g, _, _) = game();
+        let timed =
+            FounderDesign::new("T", Thermo::Warm, BirthType::Live, 2).with(Gene::TimedBreeding, 0.8).founders(6);
+        let plain = FounderDesign::new("P", Thermo::Warm, BirthType::Live, 2).founders(6);
+        assert_eq!(g.world.days_to_breeding_window(), 0, "a new world starts in spring");
+        assert_eq!(g.design_compatibility(9, &timed).timing_warning, None);
+        let summer = g.world.config.days_per_season() + 2;
+        run_days(&mut g, summer);
+        let wait = g.world.days_to_breeding_window();
+        assert!(wait > 0);
+        let w = g.design_compatibility(9, &timed).timing_warning.expect("warned");
+        assert!(w.contains(&format!("about {wait} days")), "{w}");
+        assert_eq!(g.design_compatibility(9, &plain).timing_warning, None);
     }
 
     /// Warm and cold lineages of one plan are partly fertile
