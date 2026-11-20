@@ -1584,6 +1584,23 @@ pub struct Balance {
     /// ordered attack still may, and ends it. 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v95"))]
     pub instinct_grace: f32,
+    /// The legacy share counts every living animal's alleles, the young's
+    /// too, not only breeding adults' (version 96, off at 0,
+    /// `serde_util::before_v96`): the autumn young no longer arrive in the
+    /// share all at once as they mature over winter, while the wild's
+    /// adults die. Playtest 13: the leader went 19% → 30% each winter while
+    /// its head count fell. The weighted share still counts offspring
+    /// raised (the young have none).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v96"))]
+    pub share_young: f32,
+    /// A cold-blooded animal deep in brumation (or estivation) keeps only
+    /// `1 − torpid_toxins` of its toxin defence: hunters' avoidance of it
+    /// and the toxin in a strike (`World::torpid_defence`; version 96, off
+    /// at 0, `serde_util::before_v96`). Playtest 13: the cold toxic bright
+    /// brumator held 56% of the world for two copies; toxins with colour,
+    /// then brumation, carried it.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v96"))]
+    pub torpid_toxins: f32,
     // Playtest 13 sleepers and reinforcements (version 97; *Playtest 13:
     // sleepers and landings* in the README). Off at 0, what snapshots
     // before version 97 read (`serde_util::before_v97`).
@@ -1931,6 +1948,8 @@ impl Default for Balance {
             sleeper_cover: 0.0,
             pack_nursing: 1.0,
             instinct_grace: 1.0,
+            share_young: 1.0,
+            torpid_toxins: 0.6,
             sleeper_den: 0.7,
             reinforce_near: 1.0,
         }
@@ -1938,7 +1957,7 @@ impl Default for Balance {
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 201;
+    pub const FIELD_COUNT: usize = 203;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -2147,6 +2166,8 @@ impl Balance {
             ("sleeper_cover", &mut self.sleeper_cover),
             ("pack_nursing", &mut self.pack_nursing),
             ("instinct_grace", &mut self.instinct_grace),
+            ("share_young", &mut self.share_young),
+            ("torpid_toxins", &mut self.torpid_toxins),
             ("sleeper_den", &mut self.sleeper_den),
             ("reinforce_near", &mut self.reinforce_near),
         ]

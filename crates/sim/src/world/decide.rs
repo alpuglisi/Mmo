@@ -1605,15 +1605,23 @@ impl World {
     }
 
     /// Whether deep sleeper `q` lies hidden in its den from player hunter
-    /// `o`, `d` tiles away (`Balance::sleeper_den`): one that can den (a
-    /// burrower or a small body, [`sleeper_dens`]) is missed from farther
+    /// `o`, `d` tiles away (`Balance::sleeper_den`): a warm-blooded one that
+    /// can den (a burrower or a small body, [`sleeper_dens`]) is missed from farther
     /// than [`DEN_SEEN`] tiles with that chance per hunter and day.
     /// Playtest 13: a pack ate a toxic starter herd's sleepers 2–5 a day all
     /// winter; round 13's `sleeper_cover` for every warm sleeper lifted the
     /// cold flier instead, so this goes by how the sleeper beds down.
     pub(crate) fn sleeper_denned(&self, o: &Organism, q: &Organism, d: f32) -> bool {
         let den = self.config.balance.sleeper_den;
-        if den <= 0.0 || o.owner == crate::WILD || d <= DEN_SEEN || !q.dormancy.is_deep() || !sleeper_dens(q) {
+        // Only a warm-blooded hibernator dens up: a cold brumator lies out, as
+        // `Balance::torpid_toxins` has it (its toxins weakened, not hidden).
+        if den <= 0.0
+            || o.owner == crate::WILD
+            || d <= DEN_SEEN
+            || !q.dormancy.is_deep()
+            || !q.traits.warm
+            || !sleeper_dens(q)
+        {
             return false;
         }
         let day = self.tick / self.config.ticks_per_day.max(1) as u64;

@@ -2559,6 +2559,28 @@ mod tests {
         assert_eq!((off.total_alleles, off.world_alleles), (500.0, 0.0));
     }
 
+    /// Playtest 13: the autumn young arrived in the share all at once as
+    /// they matured over winter. With `Balance::share_young` every living
+    /// animal's alleles count (breeding adults still counted apart).
+    #[test]
+    fn the_young_count_in_the_legacy() {
+        let mut w = small_world(3);
+        w.run_days(1);
+        let young = w.organisms.iter().filter(|o| o.alive && !o.matured).count();
+        let mut off = w.clone();
+        off.config.balance.share_young = 0.0;
+        off.legacy.clear();
+        off.run_days(1);
+        let mut on = w.clone();
+        on.legacy.clear();
+        on.run_days(1);
+        let (a, b) = (off.latest_legacy().unwrap(), on.latest_legacy().unwrap());
+        if young > 0 {
+            assert!(b.alleles.values().sum::<f64>() > a.alleles.values().sum::<f64>(), "{a:?} {b:?}");
+        }
+        assert_eq!(a.breeding_adults, b.breeding_adults);
+    }
+
     /// The daily legacy snapshots are a window, not a history: a long-running
     /// world must not grow by a map of every player's share each day.
     #[test]

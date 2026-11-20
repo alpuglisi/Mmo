@@ -523,6 +523,25 @@ fn deep_sleepers_lie_hidden_from_most_hunters() {
     assert!(hunters.iter().all(|h| !w.sleeper_hidden(h, &prey)));
 }
 
+/// Playtest 13: the cold toxic bright brumator dominated. Deep in
+/// brumation a cold-blooded animal keeps `1 − torpid_toxins` of its toxin
+/// defence; awake, or warm-blooded asleep, it keeps all of it.
+#[test]
+fn a_torpid_brumator_loses_most_of_its_toxin_defence() {
+    let w = niche(3);
+    let mut q = w.organisms.iter().find(|o| o.lineage != PACK).unwrap().clone();
+    q.traits.warm = false;
+    assert_eq!(w.torpid_defence(&q), 1.0, "awake");
+    q.dormancy = crate::organism::Dormancy::Winter;
+    assert!((w.torpid_defence(&q) - 0.4).abs() < 1e-6);
+    q.traits.warm = true;
+    assert_eq!(w.torpid_defence(&q), 1.0, "a warm sleeper");
+    let mut off = w.clone();
+    off.config.balance.torpid_toxins = 0.0;
+    q.traits.warm = false;
+    assert_eq!(off.torpid_defence(&q), 1.0);
+}
+
 /// Playtest 13: a pack ate a toxic starter herd's sleepers 2–5 a day all
 /// winter. With `Balance::sleeper_den` a deep sleeper that can den (small,
 /// or a burrower) is missed from more than `DEN_SEEN` tiles on most hunter-
@@ -535,6 +554,7 @@ fn small_and_burrowing_sleepers_den_out_of_sight() {
     let q = (0..w.organisms.len()).find(|&k| k != h && w.organisms[k].alive).unwrap();
     w.organisms[h].owner = 7;
     w.organisms[q].dormancy = crate::organism::Dormancy::Winter;
+    w.organisms[q].traits.warm = true;
     let (o, p) = (w.organisms[h].clone(), w.organisms[q].clone());
     let small = |w: &mut World, size: f32, burrow: f32| {
         let mut p = p.clone();
@@ -554,6 +574,10 @@ fn small_and_burrowing_sleepers_den_out_of_sight() {
     assert!(small(&mut w, 0.8, 0.5) > 25, "a burrower too");
     assert_eq!(small(&mut w, 0.8, 0.0), 0, "a big sleeper in the open is found");
     assert!(!w.sleeper_denned(&o, &p, 1.0), "beside it, found");
+    let mut cold = p.clone();
+    cold.pheno.0[Gene::BodySize.index()] = 0.3;
+    cold.traits.warm = false;
+    assert!(!w.sleeper_denned(&o, &cold, 10.0), "a cold brumator lies out (torpid_toxins)");
     let mut wild = o.clone();
     wild.owner = crate::WILD;
     assert!(!w.sleeper_denned(&wild, &p, 10.0), "wild hunters as before");

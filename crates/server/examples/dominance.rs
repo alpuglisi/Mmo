@@ -43,8 +43,8 @@
 //! - **Loophole** founds Rulebender5's small egg-incubating cold flier as a
 //!   half-size re-found (22 founders) on `--loophole-day` (default 334).
 //!
-//! Two arms on the same seeds. **Playtest 12 rules**: the version 94
-//! tunables off (`share_peak`, `share_cap`, `niche_cap`, `sleeper_cover`), or with `--baseline playtest2`
+//! Two arms on the same seeds. **Playtest 13 rules**: the version 96
+//! tunables off (`share_young`, `torpid_toxins`), or with `--baseline playtest2`
 //! playtest 2's (the balance rules since version 43 off, the old soft cap),
 //! each founded at any price. **New rules**:
 //! today's defaults, each design fitted to today's prices by dropping
@@ -405,12 +405,13 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         }
     }
     if !new_rules {
-        // Default: playtest 12's rules (the version 94 tunables off: the
-        // remembered world a running mean, no share cap, no niche cap,
-        // sleepers found as easily as the awake).
+        // Default: playtest 13's rules (the version 96 tunables off: the
+        // share counts breeding adults only, a torpid brumator keeps its
+        // whole toxin defence).
         let b = &mut g.world.config.balance;
-        (b.share_peak, b.share_cap, b.niche_cap, b.sleeper_cover) = (0.0, 0.0, 0.0, 0.0);
+        (b.share_young, b.torpid_toxins) = (0.0, 0.0);
         if a.playtest2_baseline {
+            (b.share_peak, b.share_cap, b.niche_cap, b.sleeper_cover) = (0.0, 0.0, 0.0, 0.0);
             (b.graced_hunting, b.share_memory, b.wild_rebound) = (0.0, 0.0, 0.0);
             (b.nest_raids, b.share_litters, b.refuge_ramp) = (0.0, 0.0, 0.0);
             (b.wild_barrier, b.world_crowding, b.wild_refuge) = (0.0, 0.0, 0.0);
@@ -454,6 +455,10 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
     let mut records = Vec::new();
     let mut adults_by_day: Vec<usize> = Vec::new();
     let mut trace_prev = TracePrev::default();
+    // The pack's living animals yesterday (id → female, pregnant, adult),
+    // and its deaths by sex this season, for `--trace`.
+    let mut pack_alive: BTreeMap<u64, (bool, bool, bool)> = BTreeMap::new();
+    let mut pack_deaths = [0u32; 4]; // female adult, of them pregnant, male adult, young
     for day in 0..a.days {
         if day == a.flier_day {
             found(&mut g, FLIER, flier(), &mut o);
@@ -502,6 +507,35 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         }
         if a.trace && new_rules && seed == a.first_seed && (day + 1) % SEASON == 0 {
             trace_season(&g, day + 1, &mut trace_prev);
+            let (f, m) =
+                pack_alive.values().filter(|x| x.2).fold((0, 0), |(f, m), x| if x.0 { (f + 1, m) } else { (f, m + 1) });
+            println!(
+                "    Pack sexes: {f} adult females, {m} adult males; died this season: {} adult females ({} pregnant), {} adult males, {} young",
+                pack_deaths[0], pack_deaths[1], pack_deaths[2], pack_deaths[3]
+            );
+            pack_deaths = [0; 4];
+        }
+        if a.trace && new_rules && seed == a.first_seed {
+            let now: BTreeMap<u64, (bool, bool, bool)> = g
+                .world
+                .organisms
+                .iter()
+                .filter(|o| o.alive && o.owner == PACK)
+                .map(|o| (o.id, (o.sex == evo_sim::organism::Sex::Female, o.pregnancy.is_some(), o.matured)))
+                .collect();
+            for (id, &(female, pregnant, adult)) in &pack_alive {
+                if !now.contains_key(id) {
+                    match (adult, female) {
+                        (false, _) => pack_deaths[3] += 1,
+                        (true, true) => {
+                            pack_deaths[0] += 1;
+                            pack_deaths[1] += u32::from(pregnant);
+                        }
+                        (true, false) => pack_deaths[2] += 1,
+                    }
+                }
+            }
+            pack_alive = now;
         }
         for p in 1..=PLAYERS {
             let alive = g.world.owner_count(p);
@@ -628,7 +662,7 @@ fn main() {
         }
     });
     let results = results.into_inner().unwrap();
-    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 12 rules" };
+    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 13 rules" };
     for (new, title) in [(false, old_title), (true, "New rules")] {
         if a.new_only && !new {
             continue;
