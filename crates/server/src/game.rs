@@ -873,6 +873,11 @@ struct Offer {
     /// could walk its animal away and the buyer forfeited).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     start_dist: Option<(f32, f32)>,
+    /// A pending offer's `apart` as it stood when made, frozen (playtest
+    /// 13: recomputed live, possessing the offered animal ranged the
+    /// other side's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    apart: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     buyer_best: Option<f32>,
     /// The partner's owner possessed or ordered its animal during the
@@ -1389,6 +1394,19 @@ fn coarse_in(v: f32, cell: f32) -> f32 {
     (v / cell).floor() * cell + cell / 2.0
 }
 
+/// What makes an agreement's update news (`Game::last_pushed`): the
+/// meeting point, whether either is asleep or possessed, and the distance
+/// in 16-tile steps. Two sleepers' jitter flapped the distance between 68
+/// and 72 and sent an update each time (playtest 13).
+fn meet_key(meet: Option<&MeetView>) -> String {
+    match meet {
+        None => String::new(),
+        Some(m) => {
+            format!("{:?},{:?},{},{},{}", m.meet_x, m.meet_y, m.asleep, m.possessed, (m.distance / 16.0).round())
+        }
+    }
+}
+
 fn finite(v: &[f32]) -> Result<(), ErrorInfo> {
     if v.iter().all(|x| x.is_finite()) {
         Ok(())
@@ -1564,6 +1582,44 @@ impl Game {
         for plate in self.economy.nameplates.values_mut() {
             plate.title = sanitize(&plate.title, economy::MAX_TITLE_LEN, Kind::Title, "Breeder");
         }
+    }
+
+    /// Player-chosen names that read as another player's under the current
+    /// rules (`names::impersonates`), renamed plainly: a named species to
+    /// "Species N", a nameplate title to "Breeder", an animal's name
+    /// dropped. Run on a restore once the players' names are known (names
+    /// given before the rules tightened stood for good: playtest 13's
+    /// species "Nomad Pocket II"). The number renamed.
+    pub fn rename_look_alikes(&mut self) -> usize {
+        use crate::names::Kind;
+        let mut n = 0;
+        let named: Vec<(u32, PlayerId)> = self.economy.named_species.iter().map(|(&s, &p)| (s, p)).collect();
+        for (id, by) in named {
+            let Some(name) = self.world.chronicle.species.get(id).map(|s| s.name.clone()) else { continue };
+            if self.impersonates(by, &name, Kind::Species) {
+                if let Some(s) = self.world.chronicle.species.species.iter_mut().find(|s| s.id == id) {
+                    s.name = format!("Species {id}");
+                    n += 1;
+                }
+            }
+        }
+        let plates: Vec<(PlayerId, String)> =
+            self.economy.nameplates.iter().map(|(&p, x)| (p, x.title.clone())).collect();
+        for (p, title) in plates {
+            if self.impersonates(p, &title, Kind::Title) {
+                self.economy.nameplates.get_mut(&p).unwrap().title = "Breeder".into();
+                n += 1;
+            }
+        }
+        let animals: Vec<(OrgId, String)> = self.economy.animal_names.iter().map(|(&o, s)| (o, s.clone())).collect();
+        for (id, name) in animals {
+            let owner = self.world.organism(id).map(|o| o.owner);
+            if owner.is_some_and(|p| self.impersonates(p, &name, Kind::Species)) {
+                self.economy.animal_names.remove(&id);
+                n += 1;
+            }
+        }
+        n
     }
 
     /// Players whose current lineage is under its newcomer grace.
@@ -3443,6 +3499,7 @@ impl Game {
         }
         let id = self.open_offer(player, to, mine, 0, price, OfferStatus::Pending, None)?;
         self.offers.get_mut(&id).unwrap().lineage = Some(lineage);
+        self.freeze_apart(id);
         self.request_log.entry((player, to)).or_default().push_back((self.world.tick(), id));
         self.hold_added(Some(id), None);
         let view = self.offer_view(id);
@@ -3605,8 +3662,10 @@ impl Game {
             partner_steered: false,
             meet_note: None,
             paused: 0,
+            apart: None,
         };
         self.offers.insert(id, offer);
+        self.freeze_apart(id);
         if status == OfferStatus::Accepted {
             // The pair walks to meet (`World::set_rendezvous`).
             self.start_rendezvous(id);
@@ -4571,7 +4630,7 @@ impl Game {
                 let view = self.offer_view(request);
                 // Asked again ("Complete now") with nothing changed: the
                 // caller gets the error, nobody a repeated update.
-                let key = serde_json::to_string(&view.meet).unwrap_or_default();
+                let key = meet_key(view.meet.as_ref());
                 let fresh = self.last_pushed.get(&request) != Some(&key);
                 self.last_pushed.insert(request, key);
                 for p in [o.from, o.to].into_iter().filter(|_| fresh) {
@@ -5210,32 +5269,53 @@ impl Game {
             // listing's region, playtest 11).
             mine_age: o.status.is_open().then(|| self.animal_age(o.mine)).flatten(),
             partner_age: o.status.is_open().then(|| self.animal_age(o.partner)).flatten(),
-            apart: (o.status == OfferStatus::Pending)
-                .then(|| {
-                    let a = self.world.organism(o.mine)?;
-                    let (d, at) = match (o.partner, o.lineage) {
-                        (0, Some(l)) => self
-                            .world
-                            .organisms
-                            .iter()
-                            .filter(|b| b.alive && b.lineage == l && b.matured && b.sex != a.sex)
-                            .map(|b| (a.pos.dist(b.pos), b.pos))
-                            .fold((f32::INFINITY, a.pos), |m, x| if x.0 < m.0 { x } else { m }),
-                        (p, _) => {
-                            let b = self.world.organism(p)?;
-                            (a.pos.dist(b.pos), b.pos)
-                        }
-                    };
-                    let step = if self.in_sight(o.from, at) { 8.0 } else { LISTING_REGION };
-                    d.is_finite().then(|| (d / step).ceil() * step)
-                })
-                .flatten(),
+            // Frozen when the offer was made (`Offer::apart`); computed for
+            // an offer saved before that.
+            apart: o.apart.or_else(|| self.apart_now(o)).filter(|_| o.status == OfferStatus::Pending),
             meet_note: o.meet_note.clone().filter(|_| o.status == OfferStatus::Accepted),
             walk_warning: (o.status == OfferStatus::Accepted).then(|| self.walk_warning(o)).flatten(),
             substitute_sex: o.lost.as_ref().filter(|_| o.status == OfferStatus::Accepted).and_then(|_| {
                 self.world.organism(o.partner).map(|p| if p.sex == Sex::Female { "male" } else { "female" }.to_string())
             }),
         }
+    }
+
+    /// Fix pending offer `id`'s `apart` as it stands now (see
+    /// [`Offer::apart`]).
+    fn freeze_apart(&mut self, id: u64) {
+        let Some(o) = self.offers.get(&id) else { return };
+        let apart = self.apart_now(o);
+        if let Some(o) = self.offers.get_mut(&id) {
+            o.apart = apart;
+        }
+    }
+
+    /// About how far apart a pending offer's two are now: 8-tile steps, so
+    /// Accept can say what the walk will be (playtest 10); for an offer to
+    /// the lineage, the nearest adult of the other sex in it (playtest 11);
+    /// 32-tile steps while the requester doesn't see that partner (playtest
+    /// 11).
+    fn apart_now(&self, o: &Offer) -> Option<f32> {
+        (o.status == OfferStatus::Pending)
+            .then(|| {
+                let a = self.world.organism(o.mine)?;
+                let (d, at) = match (o.partner, o.lineage) {
+                    (0, Some(l)) => self
+                        .world
+                        .organisms
+                        .iter()
+                        .filter(|b| b.alive && b.lineage == l && b.matured && b.sex != a.sex)
+                        .map(|b| (a.pos.dist(b.pos), b.pos))
+                        .fold((f32::INFINITY, a.pos), |m, x| if x.0 < m.0 { x } else { m }),
+                    (p, _) => {
+                        let b = self.world.organism(p)?;
+                        (a.pos.dist(b.pos), b.pos)
+                    }
+                };
+                let step = if self.in_sight(o.from, at) { 8.0 } else { LISTING_REGION };
+                d.is_finite().then(|| (d / step).ceil() * step)
+            })
+            .flatten()
     }
 
     /// Accepted agreement `id`'s requester animal is dead: the first time,
@@ -5740,7 +5820,7 @@ impl Game {
                 // Only when something a player would see changed (playtest
                 // 10: an update every couple of seconds).
                 // The paused deadline alone moving is no news (playtest 11).
-                let key = serde_json::to_string(&view.meet).unwrap_or_default();
+                let key = meet_key(view.meet.as_ref());
                 if self.last_pushed.get(&id) == Some(&key) {
                     continue;
                 }
@@ -8880,7 +8960,8 @@ impl Game {
                     .collect(),
                 // A player's species: quarters, as the leaderboard history
                 // gives rivals' genes (exact means were a design recipe).
-                diet: crate::appearance::diet_band(s.carnivory).into(),
+                // The era's diet niches' bands (playtest 13: a 0.339 species aimed at the omnivore niche read "herbivore").
+                diet: evo_sim::world::diet_niche(s.carnivory).trim_start_matches("diet:").into(),
                 carnivory: coarse(s.dominant, s.carnivory),
                 body_size: coarse(s.dominant, s.body_size),
                 endothermy: family::rep_mean(s.reps(), Gene::Endothermy).map(|v| coarse(s.dominant, v)),
@@ -9349,8 +9430,8 @@ impl Game {
                 // public summary).
                 .filter(|&(&player, _)| !self.is_extinct(player))
                 .filter_map(|(&player, &lineage)| {
-                    let days_left = self.world.lineage_grace_left(lineage)?.ceil();
-                    Some(crate::protocol::ProtectedLineage { player, lineage, days_left })
+                    self.world.lineage_grace_left(lineage)?;
+                    Some(crate::protocol::ProtectedLineage { player, lineage, days_left: None })
                 })
                 .collect(),
         }
@@ -12438,6 +12519,7 @@ mod tests {
             partner_steered: false,
             meet_note: None,
             paused: 0,
+            apart: None,
         };
         let tpd = g.world.config.ticks_per_day as u64;
         assert_eq!(g.offer_deadline(&o), 100 + HOLD_MAX_DAYS * tpd);
@@ -13015,6 +13097,26 @@ mod tests {
         let cold = FounderDesign::new("C", Thermo::Cold, BirthType::Live, 2).with(Gene::Fur, 1.0).founders(6);
         assert_eq!(g.design_compatibility(9, &cold).heat_warning, None);
         assert!(shop::heat_design_text(0.4, 31.0).contains("Shade and water don't cool them"));
+    }
+
+    /// A timed breeder founded outside its spring window is told how long
+    /// until it first breeds (playtest 13: founded in summer, no young for
+    /// ~90 days); inside the window, or without the gene, nothing.
+    #[test]
+    fn a_timed_breeder_founded_out_of_season_is_warned() {
+        let (mut g, _, _) = game();
+        let timed =
+            FounderDesign::new("T", Thermo::Warm, BirthType::Live, 2).with(Gene::TimedBreeding, 0.8).founders(6);
+        let plain = FounderDesign::new("P", Thermo::Warm, BirthType::Live, 2).founders(6);
+        assert_eq!(g.world.days_to_breeding_window(), 0, "a new world starts in spring");
+        assert_eq!(g.design_compatibility(9, &timed).timing_warning, None);
+        let summer = g.world.config.days_per_season() + 2;
+        run_days(&mut g, summer);
+        let wait = g.world.days_to_breeding_window();
+        assert!(wait > 0);
+        let w = g.design_compatibility(9, &timed).timing_warning.expect("warned");
+        assert!(w.contains(&format!("about {wait} days")), "{w}");
+        assert_eq!(g.design_compatibility(9, &plain).timing_warning, None);
     }
 
     /// Warm and cold lineages of one plan are partly fertile
@@ -14815,6 +14917,26 @@ mod tests {
         g.conns.get_mut(&10).unwrap().view = Some(ViewWindow { x: p.x, y: p.y, radius: 8.0, pinned: true });
         g.found_at_any_price(1, &design("Third")).unwrap();
         assert!(!g.state_for(10).unwrap().view.pinned, "found unpins");
+    }
+
+    /// Playtest 13: names given before the rules tightened that now read
+    /// as another player's are renamed plainly on a restore.
+    #[test]
+    fn old_look_alike_names_are_renamed() {
+        let (mut g, a, _) = game();
+        run_days(&mut g, 10);
+        g.set_name(2, "PocketNomad13");
+        let sp = g.world.chronicle.species.species.first().map(|s| s.id).expect("a species");
+        g.world.chronicle.species.species.iter_mut().find(|s| s.id == sp).unwrap().name = "Nomad Pocket II".into();
+        g.economy.named_species.insert(sp, 1);
+        g.economy.nameplates.insert(1, economy::Nameplate { color: "amber".into(), title: "Pokcet Nomda".into() });
+        g.economy.animal_names.insert(a[0], "Nomadpocket".into());
+        g.economy.animal_names.insert(a[1], "Old Thunder".into());
+        assert_eq!(g.rename_look_alikes(), 3);
+        assert_eq!(g.world.chronicle.species.get(sp).unwrap().name, format!("Species {sp}"));
+        assert_eq!(g.economy.nameplates[&1].title, "Breeder");
+        assert!(!g.economy.animal_names.contains_key(&a[0]));
+        assert_eq!(g.economy.animal_names[&a[1]], "Old Thunder");
     }
 
     /// Playtest 11: a claim's or rally's way names rival hunters only where

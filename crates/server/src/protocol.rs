@@ -968,7 +968,17 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             OwnGrace { .. } => "own_grace",
             NoGrace => "no_grace",
         };
-        let info = ErrorInfo::new(code, e.to_string());
+        let message = match e {
+            // In 8-tile steps: the exact distance ranged the other animal
+            // (playtest 13).
+            TooFar { distance } => format!(
+                "the two are about {:.0} tiles apart; they must be within {}",
+                (distance / 8.0).ceil() * 8.0,
+                evo_sim::world::commands::MEETING_DISTANCE
+            ),
+            _ => e.to_string(),
+        };
+        let info = ErrorInfo::new(code, message);
         match e {
             ClaimCooldown { ticks_left } => info.with_detail(serde_json::json!({ "ticks_left": ticks_left })),
             MostlyWater { share } => {
@@ -1870,7 +1880,11 @@ pub struct LineageWarning {
 pub struct ProtectedLineage {
     pub player: PlayerId,
     pub lineage: u32,
-    pub days_left: f32,
+    /// Not told in the public summary (playtests 12 and 13: every graced
+    /// player's days left, anonymously); the lineage's owner reads its own
+    /// in `lineage_stats.grace_days_left` and the state's `grace`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub days_left: Option<f32>,
 }
 
 /// Whose genes make up a legacy share (`lineage_stats.score`). The score
@@ -2177,6 +2191,10 @@ pub struct DesignCompatView {
     /// its first summer, with no warning).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heat_warning: Option<String>,
+    /// A timed breeder founded outside its spring window: how long until it
+    /// first breeds (playtest 13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing_warning: Option<String>,
     /// Set when founding now is a re-founding soon after the player's last
     /// lineage ended: it founds `founders` of the design's (founders cost
     /// double points: as many as fit, at least half), costing
@@ -3044,9 +3062,9 @@ pub struct SpeciesView {
     pub peak_adults: f64,
     pub lineages: Vec<SpeciesLineage>,
     /// The diet band from the exact mean (`herbivore`, `omnivore`,
-    /// `carnivore`, as the creature sprites draw it): `carnivory` is coarse
-    /// for a player's species, and 0.34 rounded to 0.25 read "herbivore"
-    /// (playtest 12).
+    /// `carnivore`, as the era's diet niches count it: from 0.3 and 0.6):
+    /// `carnivory` is coarse for a player's species, and 0.34 rounded to
+    /// 0.25 read "herbivore" (playtests 12–13).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub diet: String,
     #[serde(serialize_with = "crate::protocol::round::f2")]
@@ -3172,9 +3190,11 @@ pub struct EraRow {
     /// Share at the era's end (and weighted).
     pub share: f64,
     pub weighted_share: f64,
-    /// The era's mean day score (the ranked season's: mean of raw and
-    /// weighted share, with the founding ramp), which ranks it; absent for
-    /// eras from before it was kept, ranked by the final share.
+    /// The era score, which ranks it (the field keeps its old name): the
+    /// ranked season's day scores (mean of raw and weighted share, with the
+    /// founding ramp), later days weighted more, blended with the mean of
+    /// the era's last full year (`game::eras`); absent for eras from before
+    /// it was kept, ranked by the final share.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mean_share: Option<f64>,
 }

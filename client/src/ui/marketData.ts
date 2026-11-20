@@ -133,8 +133,11 @@ export const COMPAT_CONFIDENCE = 'From a sample of adults on each side: the mean
 const pct0 = (x: number) => `${Math.round(x * 100)}%`;
 
 /** One line of the "who can breed with you" list (sampled pairs: no "best pair" claim). */
-export function compatRowText(r: CompatibilityView['rows'][number]): string {
-  const who = r.owner === 0 ? `wild ${r.lineage_name}` : `${r.owner_name}'s ${r.lineage_name}`;
+export function compatRowText(r: CompatibilityView['rows'][number], species?: string): string {
+  // The species' own name beside the lineage's when a player named it (playtest 13: "Glintwing Frost"
+  // in the Market, "Nomad Pocket II" in the World tab, one species).
+  const named = species && species !== r.lineage_name ? ` (species ${species})` : '';
+  const who = r.owner === 0 ? `wild ${r.lineage_name}${named}` : `${r.owner_name}'s ${r.lineage_name}${named}`;
   const what = BODY_PLAN_WORDS[r.limiting] ?? r.limiting;
   const range = r.fertility_low !== undefined && r.fertility_high !== undefined && r.fertility_high - r.fertility_low >= 0.05
     ? `, most pairs ${pct0(r.fertility_low)}–${pct0(r.fertility_high)}` : '';

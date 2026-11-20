@@ -552,6 +552,7 @@ async function main() {
               const s = window.evo.model.state;
               const ids = [first, ...s.organisms.filter((o) => o.sex === 'male' && o.matured).map((o) => o.id)];
               const listed = [];
+              const refused = [];
               for (const id of [...new Set(ids)]) {
                 // At the server's minimum fee (a fee of 0 is refused: bad_price,
                 // and the request then kept naming unlisted males).
@@ -561,11 +562,13 @@ async function main() {
                 }
                 // Listed now, or already (a second listing of one is refused).
                 if (r.ok || /already|listed/.test(r.error?.code ?? '')) listed.push(id);
+                else refused.push(r.error?.code ?? '?');
                 if (r.error?.code === 'too_many_listings') break;
               }
-              return listed;
+              return { listed, refused };
             }, req.partner);
-            for (const id of ok) listedMales.add(id);
+            for (const id of ok.listed) listedMales.add(id);
+            if (ok.refused.length) console.log(`  … bob's listings refused: ${[...new Set(ok.refused)].join(', ')} (${ok.listed.length} listed)`);
           }
           const server = (await (await fetch(`${base}/api/world`)).json()).clock.tick;
           const look = (p, id) => p.evaluate((id) => { const s = window.evo.model.state; const o = s.organisms.find((o) => o.id === id); return `${s.clock.tick}:${o ? `${o.sex[0]}${o.pregnant ? 'P' : ''}${o.matured ? 'A' : ''}` : '-'}`; }, id);

@@ -268,3 +268,15 @@ A random id with digits around a staff word ("8mod2") is now refused, the same a
 | Anonymous `/api/metrics` `state_encode_ns` grew with connections. | Zero without the operator token. | — |
 | A listing's purchase streamed the seller's animal's position; `meet_note` placed out-of-sight predators. | An agreement from a listing gives both animals and the meeting point as 32-tile region centres, with the distance in 16-tile steps (other agreements keep 8-tile cells and 4-tile steps). The note says the point moved to keep clear of a predator, without how far or which way. | — |
 | `others_on_the_way` not filtered by sight. | Already counts only grazers the player sees, since round 11; the playtest build predated it. | — |
+
+## Round 14 (playtest 13)
+
+| Finding | Fix | Test |
+|---|---|---|
+| Medium 8: rearrangements with fillers or run together passed ("Nomad Pocket II", "Nomadpocket", "Comer Late II", "Master Herd Jr", "Masterherd", "The Master Herd", "Apex the Hunter"), and two swaps split across words ("Pokcet Nomda II"). | `names::rearranged` replaces `reordered`. It first normalises the text (`normalised`): drops fillers (`FILLERS`: the, of, jr, new, real, fan, …), roman numerals, digits and words of one or two letters, then joins the rest. It then compares the result with every rotation of each player's name ("masterherd" for "Herdmaster") and every order of the name's CamelCase parts: a letter off anywhere, or two off as a whole for 9+ letters. As a consequence, "Masters of the herd" and "Herd of masters" now read as Herdmaster too. | `blends_of_two_names_are_look_alikes` (playtest 13 cases) |
+| "Nomad Pocket II" stood as a species name for good. | `Game::rename_look_alikes`, run on every restore once the accounts' names are set (`lib.rs`), renames names that now read as another player's: a player-named species becomes "Species N", a nameplate "Breeder", and an animal's name is dropped. The count is logged. | `old_look_alike_names_are_renamed` |
+| Low: grace days (rounded) still public in anonymous `/api/world`. | `protected` lists who is under grace without `days_left` (optional in the protocol). The client shows "newcomer grace" without a duration for others. Owners read their own days in `lineage_stats` and the state. | `orders_tests` (days_left none) |
+| A pending lineage offer's `apart` was recomputed live (possessing the offered animal ranged the other side's). | `Offer::apart` is frozen when the offer is made (and when it becomes a lineage offer). An offer saved before this is computed as before. | — |
+| The `too_far` refusal gave the exact distance. | "about N tiles apart", in 8-tile steps. | — |
+| `/api/leaderboard/history` gave rival lineages' `morph` to 3 decimals. | Other players' lineages: eye azimuth to 15°, snout, horns and wings to quarters (`public_morph`), like `public_genes`. | — |
+| Mating updates of a pair asleep flapped 68 ↔ 72. | An update is news only when the meeting point, the asleep or possessed flags, or the distance in 16-tile steps change (`meet_key`). | — |
