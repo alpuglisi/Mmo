@@ -924,11 +924,13 @@ impl World {
             }
             let a = c.adults(today);
             let adults = (a[0] + a[1]) as f64;
-            if adults == 0.0 {
+            // The young count too with `Balance::share_young`.
+            let counted = if self.config.balance.share_young > 0.0 { c.count() as f64 } else { adults };
+            if counted == 0.0 {
                 continue;
             }
             s.breeding_adults += adults as usize;
-            let w = adults / c.pool.len() as f64;
+            let w = counted / c.pool.len() as f64;
             let rw = c.raised / c.pool.len() as f64;
             // At most `Balance::raised_cap` a member, as for agents.
             let cap = self.config.balance.raised_cap;
