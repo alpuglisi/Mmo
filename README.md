@@ -10947,14 +10947,14 @@ playtest's newcomer, down to 69, was told "you had 306".
   whatever the peak was. The refusal says so.
 - Tested in `reinforcements_go_by_the_seasons_peak`.
 
-**Checks** (main eb56379 at version 96 merged; studies on the merged code):
+**Checks** (studies on the merge with main eb56379, version 96; the gate rows again on the final merge with main 9042083):
 
 | Check | Result |
 | --- | --- |
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.83 (± 0.19); every lineage 12 of 12 |
 | `predlong 6` on seeds 31–38 and 41–48 | fox 16/16 (16 viable), pack hunters 16/16 (16); 2 seeds lost a prey species, the toxic frog on 33 and 38 (round 13: 1). On 33 it is lost with `torpid_toxins`, `share_young`, `sleeper_den` and `reinforce_near` all 0 too. On 38 it survives (low of 9) only with all four off, not with any one alone: a marginal seed, not one rule |
-| workspace tests (470 sim), both clippy runs, fixtures, serde lib tests, client typecheck, `vitest` (481), build | pass |
-| e2e (`E2E_JOBS=2`, evo-server rebuilt) | 16 of 16 pass |
+| workspace tests (474 sim), both clippy runs, fixtures, serde lib tests, client typecheck, `vitest` (482), build | pass |
+| e2e (`E2E_JOBS=2`, evo-server rebuilt) | 16 of 16 on the eb56379 merge. On 9042083's, 15 of 16: `vision` failed ("the cones did not turn") in the parallel run, then passed twice alone |
 
 ## Genetics validation
 
