@@ -74,6 +74,8 @@ fn candidates() -> Vec<(&'static str, FounderDesign)> {
         ("burrow", starter("burrow").with(Burrowing, 0.4)),
         ("migrate", starter("migrate").with(Migration, 0.5)),
         ("camo", starter("camo").with(Camouflage, 0.5)),
+        // The ceiling: the strong herd itself, founded as the newcomer.
+        ("as-herd", herd()),
     ]
 }
 
