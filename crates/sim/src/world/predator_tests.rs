@@ -541,3 +541,44 @@ fn a_torpid_brumator_loses_most_of_its_toxin_defence() {
     q.traits.warm = false;
     assert_eq!(off.torpid_defence(&q), 1.0);
 }
+
+/// Playtest 13: a pack ate a toxic starter herd's sleepers 2–5 a day all
+/// winter. With `Balance::sleeper_den` a deep sleeper that can den (small,
+/// or a burrower) is missed from more than `DEN_SEEN` tiles on most hunter-
+/// days; beside it, or a big sleeper in the open, is found as before; wild
+/// hunters aren't affected.
+#[test]
+fn small_and_burrowing_sleepers_den_out_of_sight() {
+    let mut w = niche(4);
+    let h = adults(&mut w, Sex::Male, 1, &[])[0];
+    let q = (0..w.organisms.len()).find(|&k| k != h && w.organisms[k].alive).unwrap();
+    w.organisms[h].owner = 7;
+    w.organisms[q].dormancy = crate::organism::Dormancy::Winter;
+    w.organisms[q].traits.warm = true;
+    let (o, p) = (w.organisms[h].clone(), w.organisms[q].clone());
+    let small = |w: &mut World, size: f32, burrow: f32| {
+        let mut p = p.clone();
+        p.pheno.0[Gene::BodySize.index()] = size;
+        p.pheno.0[Gene::Burrowing.index()] = burrow;
+        let days = 50u64;
+        let tpd = w.config.ticks_per_day as u64;
+        (0..days)
+            .filter(|&d| {
+                w.tick = d * tpd;
+                w.sleeper_denned(&o, &p, 10.0)
+            })
+            .count()
+    };
+    let hidden = small(&mut w, 0.3, 0.0);
+    assert!(hidden > 25 && hidden < 50, "a small sleeper hidden on {hidden} of 50 days");
+    assert!(small(&mut w, 0.8, 0.5) > 25, "a burrower too");
+    assert_eq!(small(&mut w, 0.8, 0.0), 0, "a big sleeper in the open is found");
+    assert!(!w.sleeper_denned(&o, &p, 1.0), "beside it, found");
+    let mut cold = p.clone();
+    cold.pheno.0[Gene::BodySize.index()] = 0.3;
+    cold.traits.warm = false;
+    assert!(!w.sleeper_denned(&o, &cold, 10.0), "a cold brumator lies out (torpid_toxins)");
+    let mut wild = o.clone();
+    wild.owner = crate::WILD;
+    assert!(!w.sleeper_denned(&wild, &p, 10.0), "wild hunters as before");
+}

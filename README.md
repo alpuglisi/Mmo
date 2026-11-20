@@ -10864,6 +10864,98 @@ ran on the round before that merge):
 | workspace tests (461 sim), both clippy runs, fixtures, serde lib tests, client typecheck, `vitest` (476), build | pass |
 | e2e (16 scripts, `E2E_JOBS=2`) | 16 of 16 pass |
 
+### Playtest 13: sleepers and landings
+
+Round 14 against [`docs/playtest-13.md`](docs/playtest-13.md): High 3 (a
+pack eats a herd's winter sleepers), the behaviour half of Medium 5 (attack
+orders refused as `sheltered`) and Medium 7 (reinforcements land far away;
+the 300-alive rule locks out a crashing lineage). Snapshot version 97 adds
+`Balance::sleeper_den` and `reinforce_near`; versions before 97 read both as
+0 (off, `serde_util::before_v97`). Main's version 96 (`share_young`,
+`torpid_toxins`) comes before it.
+
+**Sleepers in their dens** (`Balance::sleeper_den`, 0.7;
+`World::sleeper_denned`). The playtest's pack ate the toxic starter's
+sleepers 2–5 a day all winter. Round 13's `sleeper_cover` hid every warm
+sleeper, and it lifted the cold flier instead. This round's rule goes by how
+the sleeper beds down.
+- **Who dens.** A deep sleeper that is warm-blooded and can den: a burrower
+  (burrowing ≥ 0.3) or a small body (≤ 0.4), `decide::sleeper_dens`.
+- **What it does.** A player's hunter more than 1.5 tiles away
+  (`DEN_SEEN`) misses it with chance 0.7 per hunter and day, drawn by hash
+  (no RNG draw). A hunter beside it finds it as before.
+- **Not covered.** Large sleepers out in the open, wild hunters, and
+  ordered attacks are unchanged. Cold brumators are never denned, so main's
+  `torpid_toxins` (cold sleepers keep 40% of their toxin defence) still
+  works as intended.
+- Tested in `small_and_burrowing_sleepers_den_out_of_sight`.
+
+**Measured** (`predators --playtest4 --seeds 3 --days 360`). The study
+now counts the deep sleepers of the five other players that die of
+predation (`sleepers eaten`, any predator). A first version of that count
+read 0 everywhere because `World::organism` returns only the living; it now
+looks the prey up by index.
+
+| Arm, rules | Sleepers eaten / world | Hunter peak / final | Toxic eaten | Herd final |
+| --- | --- | --- | --- | --- |
+| New (the pack's instinct), `sleeper_den` 0 | 315 | 133 / 95 | 174 | 57 |
+| New, `sleeper_den` 0.7 (this round) | 201 | 125 / 89 | 219 | 68 |
+| Deliberate (orders), `sleeper_den` 0 | 386 | 126 / 99 | 401 | 183 |
+| Deliberate, `sleeper_den` 0.7 | 379 | 120 / 93 | 378 | 239 |
+
+- **A third fewer sleepers eaten on instinct, not none.** The pack still
+  finds the sleepers beside it and the big ones in the open.
+- **The pack is a little smaller** (peak 125 against 133). It eats more
+  awake prey instead (Toxic eaten 219 against 174), but not all of what it
+  lost.
+- **Orders are untouched.** The Deliberate arm's ordered attacks pick their
+  target and aren't filtered, so it hardly changes. A player who
+  directs the pack can still raid a herd's dens, one sleeper at a time.
+- **Not reproduced exactly.** The study's herds live away from the pack, so
+  most kills are of wild prey. A pack living on a herd's ground, as in the
+  playtest, wasn't measured. An attempt to measure one in a unit scenario
+  (sleepers held asleep beside a pack) failed: held asleep out of season,
+  the sleepers died of thirst within days.
+
+**Attack orders on a diving target** (`Game` `PossessAttack`). The playtest
+saw 50 of 60 orders refused as `sheltered`: the nearest animal had dived
+just before the state updated.
+- An order on a sheltered target now retargets to the nearest animal of the
+  same lineage that is still out, within the order's reach
+  (`nearest_open_kin`). It is refused only if none is.
+- The reply says so (`retargeted_from`, plus a note: "#X dived into its
+  burrow; ordered at #Y, the nearest of its kind still out"). The client's
+  toast and selection follow the new target.
+- The pack scattering when no order is given is not addressed this round.
+
+**Reinforcements land near or not at all** (`Balance::reinforce_near`,
+`World::reinforce_lineage_report` → `ReinforceLanding`). The playtest's
+reinforcements landed 34 tiles away when the group was inside or next to
+rival ground, and 8 of 10 died alone.
+- With the rule on, the search stays within 12 tiles of the group
+  (`REINFORCE_NEAR`). It tries the strict rules first, then eased ones: the
+  edge of a territory, and half the usual clearance from rival animals.
+- If nothing within 12 tiles will do, the order is refused with
+  `no_clear_ground`: "…move it out of the rival's ground first (nothing was
+  charged)".
+- Tested in `reinforcements_land_near_or_not_at_all`: an 18-tile rival
+  territory refuses; a 9-tile one lands within 12 tiles.
+
+**The 300-alive rule and a crash** (`shop::reinforce_blocked`). The
+playtest's newcomer, down to 69, was told "you had 306".
+- A lineage now down to half its season's peak or less may reinforce
+  whatever the peak was. The refusal says so.
+- Tested in `reinforcements_go_by_the_seasons_peak`.
+
+**Checks** (studies on the merge with main eb56379, version 96; the gate rows again on the final merge with main 9042083):
+
+| Check | Result |
+| --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.83 (± 0.19); every lineage 12 of 12 |
+| `predlong 6` on seeds 31–38 and 41–48 | fox 16/16 (16 viable), pack hunters 16/16 (16); 2 seeds lost a prey species, the toxic frog on 33 and 38 (round 13: 1). On 33 it is lost with `torpid_toxins`, `share_young`, `sleeper_den` and `reinforce_near` all 0 too. On 38 it survives (low of 9) only with all four off, not with any one alone: a marginal seed, not one rule |
+| workspace tests (474 sim), both clippy runs, fixtures, serde lib tests, client typecheck, `vitest` (482), build | pass |
+| e2e (`E2E_JOBS=2`, evo-server rebuilt) | 16 of 16 on the eb56379 merge. On 9042083's, 15 of 16: `vision` failed ("the cones did not turn") in the parallel run, then passed twice alone |
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many

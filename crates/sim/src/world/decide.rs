@@ -429,6 +429,20 @@ pub(crate) fn led_pack(b: &crate::Balance) -> f32 {
 
 /// Pack instinct as it counts in a pack hunt: 0 at 0.3 or below, 1 at 0.9
 /// and above.
+/// Tiles within which a hunter finds a denned sleeper all the same
+/// (`World::sleeper_denned`).
+pub(crate) const DEN_SEEN: f32 = 1.5;
+/// Burrowing from which a sleeper dens underground, and body size up to
+/// which one tucks into cover (`sleeper_dens`).
+pub(crate) const DEN_BURROWING: f32 = 0.3;
+pub(crate) const DEN_BODY: f32 = 0.4;
+
+/// Whether `q` beds down out of sight when it sleeps (`Balance::sleeper_den`):
+/// a burrower, or a body small enough to tuck into cover.
+pub(crate) fn sleeper_dens(q: &Organism) -> bool {
+    q.pheno[Gene::Burrowing] >= DEN_BURROWING || q.pheno[Gene::BodySize] <= DEN_BODY
+}
+
 pub(crate) fn pack_instinct(o: &Organism) -> f32 {
     ((o.pheno[Gene::PackInstinct] - 0.3) / 0.6).clamp(0.0, 1.0)
 }
@@ -1439,6 +1453,7 @@ impl World {
                     && !self.grace_spares(o, q)
                     && !self.instinct_grace_spares(o, q, false)
                     && !self.sleeper_hidden(o, q)
+                    && !self.sleeper_denned(o, q, d)
                     && reachable()
                 {
                     // Avoidance of bright and known-toxic prey, lowered by
@@ -1587,6 +1602,31 @@ impl World {
         let day = self.tick / self.config.ticks_per_day.max(1) as u64;
         let roll = (splitmix64(o.id ^ splitmix64(q.id ^ (day << 20) ^ 0x5133_9c0e)) >> 40) as f32 / (1u64 << 24) as f32;
         roll < cover
+    }
+
+    /// Whether deep sleeper `q` lies hidden in its den from player hunter
+    /// `o`, `d` tiles away (`Balance::sleeper_den`): a warm-blooded one that
+    /// can den (a burrower or a small body, [`sleeper_dens`]) is missed from farther
+    /// than [`DEN_SEEN`] tiles with that chance per hunter and day.
+    /// Playtest 13: a pack ate a toxic starter herd's sleepers 2–5 a day all
+    /// winter; round 13's `sleeper_cover` for every warm sleeper lifted the
+    /// cold flier instead, so this goes by how the sleeper beds down.
+    pub(crate) fn sleeper_denned(&self, o: &Organism, q: &Organism, d: f32) -> bool {
+        let den = self.config.balance.sleeper_den;
+        // Only a warm-blooded hibernator dens up: a cold brumator lies out, as
+        // `Balance::torpid_toxins` has it (its toxins weakened, not hidden).
+        if den <= 0.0
+            || o.owner == crate::WILD
+            || d <= DEN_SEEN
+            || !q.dormancy.is_deep()
+            || !q.traits.warm
+            || !sleeper_dens(q)
+        {
+            return false;
+        }
+        let day = self.tick / self.config.ticks_per_day.max(1) as u64;
+        let roll = (splitmix64(o.id ^ splitmix64(q.id ^ (day << 20) ^ 0x0de4_51ee)) >> 40) as f32 / (1u64 << 24) as f32;
+        roll < den
     }
 
     /// Wild lineage `l`'s count over its refuge (`Balance::wild_refuge` of

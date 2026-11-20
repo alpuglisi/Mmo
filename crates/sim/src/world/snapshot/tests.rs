@@ -671,6 +671,34 @@ fn packs12_off(b: &mut crate::Balance) {
 fn playtest13_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v96::OLD_VALUE;
     (b.share_young, b.torpid_toxins) = (old, old);
+    sleepers13_off(b);
+}
+
+/// The playtest 13 sleeper and reinforcement tunables as snapshots before
+/// version 97 read them.
+fn sleepers13_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v97::OLD_VALUE;
+    (b.sleeper_den, b.reinforce_near) = (old, old);
+}
+
+/// Version 96 snapshots (before the playtest 13 sleeper and reinforcement
+/// rules) restore with them off, and are otherwise the same world.
+#[test]
+fn version_96_snapshots_restore_without_sleeper_den() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v96();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 96);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.sleeper_den, crate::serde_util::before_v97::OLD_VALUE);
+    assert!(r.snapshot_v96() == old);
+    sleepers13_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.sleeper_den, r.config.balance.reinforce_near), (0.7, 1.0));
 }
 
 /// Version 95 snapshots (before the playtest 13 balance rules) restore with

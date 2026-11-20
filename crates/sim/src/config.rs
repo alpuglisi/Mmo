@@ -1601,6 +1601,24 @@ pub struct Balance {
     /// then brumation, carried it.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v96"))]
     pub torpid_toxins: f32,
+    // Playtest 13 sleepers and reinforcements (version 97; *Playtest 13:
+    // sleepers and landings* in the README). Off at 0, what snapshots
+    // before version 97 read (`serde_util::before_v97`).
+    /// A deep sleeper that can den (a burrower, or a small body:
+    /// `World::sleeper_dens`) lies hidden from a player's hunter more than
+    /// `decide::DEN_SEEN` tiles away with this chance per hunter and day
+    /// (playtest 13: a pack ate a toxic starter herd's sleepers 2–5 a day
+    /// all winter). Large sleepers out in the open stay a pack's winter
+    /// food. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v97"))]
+    pub sleeper_den: f32,
+    /// Reinforcements land within `World::REINFORCE_NEAR` tiles of their
+    /// group, at the edge of a rival territory or near rival animals if
+    /// nothing clearer is that near, never farther (`World::reinforce_lineage_report`
+    /// then says they couldn't land; playtest 13: they landed 34 tiles away
+    /// and died alone, 8 of 10). 0: off (the outward search).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v97"))]
+    pub reinforce_near: f32,
 }
 
 impl Balance {
@@ -1932,12 +1950,14 @@ impl Default for Balance {
             instinct_grace: 1.0,
             share_young: 1.0,
             torpid_toxins: 0.6,
+            sleeper_den: 0.7,
+            reinforce_near: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 201;
+    pub const FIELD_COUNT: usize = 203;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -2148,6 +2168,8 @@ impl Balance {
             ("instinct_grace", &mut self.instinct_grace),
             ("share_young", &mut self.share_young),
             ("torpid_toxins", &mut self.torpid_toxins),
+            ("sleeper_den", &mut self.sleeper_den),
+            ("reinforce_near", &mut self.reinforce_near),
         ]
     }
 
