@@ -468,6 +468,13 @@ async fn load_world(
     for a in accounts {
         game.set_name(a.player, &a.name);
     }
+    // Names given before today's look-alike rules that now read as another
+    // player's are renamed plainly (playtest 13: "Nomad Pocket II" stood
+    // as a species name for good).
+    let renamed = game.rename_look_alikes();
+    if renamed > 0 {
+        tracing::info!("world {}: renamed {renamed} names that read as another player's", spec.id);
+    }
     let unfounded: Vec<_> = designs.iter().filter(|d| game.lineage_of(d.player).is_none()).collect();
     for d in unfounded {
         // A design stored under the old flat founder price is founded with

@@ -1557,6 +1557,44 @@ impl Game {
         }
     }
 
+    /// Player-chosen names that read as another player's under the current
+    /// rules (`names::impersonates`), renamed plainly: a named species to
+    /// "Species N", a nameplate title to "Breeder", an animal's name
+    /// dropped. Run on a restore once the players' names are known (names
+    /// given before the rules tightened stood for good: playtest 13's
+    /// species "Nomad Pocket II"). The number renamed.
+    pub fn rename_look_alikes(&mut self) -> usize {
+        use crate::names::Kind;
+        let mut n = 0;
+        let named: Vec<(u32, PlayerId)> = self.economy.named_species.iter().map(|(&s, &p)| (s, p)).collect();
+        for (id, by) in named {
+            let Some(name) = self.world.chronicle.species.get(id).map(|s| s.name.clone()) else { continue };
+            if self.impersonates(by, &name, Kind::Species) {
+                if let Some(s) = self.world.chronicle.species.species.iter_mut().find(|s| s.id == id) {
+                    s.name = format!("Species {id}");
+                    n += 1;
+                }
+            }
+        }
+        let plates: Vec<(PlayerId, String)> =
+            self.economy.nameplates.iter().map(|(&p, x)| (p, x.title.clone())).collect();
+        for (p, title) in plates {
+            if self.impersonates(p, &title, Kind::Title) {
+                self.economy.nameplates.get_mut(&p).unwrap().title = "Breeder".into();
+                n += 1;
+            }
+        }
+        let animals: Vec<(OrgId, String)> = self.economy.animal_names.iter().map(|(&o, s)| (o, s.clone())).collect();
+        for (id, name) in animals {
+            let owner = self.world.organism(id).map(|o| o.owner);
+            if owner.is_some_and(|p| self.impersonates(p, &name, Kind::Species)) {
+                self.economy.animal_names.remove(&id);
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// Players whose current lineage is under its newcomer grace.
     fn graced_players(&self) -> BTreeSet<PlayerId> {
         self.lineage_of.iter().filter(|(_, &l)| self.world.lineage_grace_ticks(l).is_some()).map(|(&p, _)| p).collect()
@@ -14556,6 +14594,26 @@ mod tests {
         g.conns.get_mut(&10).unwrap().view = Some(ViewWindow { x: p.x, y: p.y, radius: 8.0, pinned: true });
         g.found_at_any_price(1, &design("Third")).unwrap();
         assert!(!g.state_for(10).unwrap().view.pinned, "found unpins");
+    }
+
+    /// Playtest 13: names given before the rules tightened that now read
+    /// as another player's are renamed plainly on a restore.
+    #[test]
+    fn old_look_alike_names_are_renamed() {
+        let (mut g, a, _) = game();
+        run_days(&mut g, 10);
+        g.set_name(2, "PocketNomad13");
+        let sp = g.world.chronicle.species.species.first().map(|s| s.id).expect("a species");
+        g.world.chronicle.species.species.iter_mut().find(|s| s.id == sp).unwrap().name = "Nomad Pocket II".into();
+        g.economy.named_species.insert(sp, 1);
+        g.economy.nameplates.insert(1, economy::Nameplate { color: "amber".into(), title: "Pokcet Nomda".into() });
+        g.economy.animal_names.insert(a[0], "Nomadpocket".into());
+        g.economy.animal_names.insert(a[1], "Old Thunder".into());
+        assert_eq!(g.rename_look_alikes(), 3);
+        assert_eq!(g.world.chronicle.species.get(sp).unwrap().name, format!("Species {sp}"));
+        assert_eq!(g.economy.nameplates[&1].title, "Breeder");
+        assert!(!g.economy.animal_names.contains_key(&a[0]));
+        assert_eq!(g.economy.animal_names[&a[1]], "Old Thunder");
     }
 
     /// Playtest 11: a claim's or rally's way names rival hunters only where
