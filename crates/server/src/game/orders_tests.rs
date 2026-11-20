@@ -246,7 +246,8 @@ fn an_attack_order_alerts_the_targets_owner() {
     g.world.config.balance.attack_grace = 1e6;
     // Shown: bo's lineage is listed as protected, and bo's stats give the days left.
     let protected = g.summary().protected;
-    assert!(protected.iter().any(|p| p.player == 2 && p.days_left > 1.0), "{protected:?}");
+    // Who is protected, not for how long (playtest 13).
+    assert!(protected.iter().any(|p| p.player == 2 && p.days_left.is_none()), "{protected:?}");
     assert!(g.lineage_stats(2).grace_days_left.is_some_and(|d| d > 1.0));
     assert!(g.lineage_stats(2).ramp.is_some_and(|r| r.days == FOUNDING_RAMP_DAYS && r.weight < 1.0));
     let out = g.command(10, 1, Some(2), msg.clone());

@@ -161,9 +161,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   let worldCap: number | undefined;
   /** Players whose lineage is a protected newcomer, with the days left (`/api/world`). */
   const protectedPlayers = new Map<PlayerId, number>();
-  const setProtected = (list: { player: PlayerId; days_left: number }[] | undefined) => {
+  const setProtected = (list: { player: PlayerId; days_left?: number }[] | undefined) => {
     protectedPlayers.clear();
-    for (const p of list ?? []) protectedPlayers.set(p.player, p.days_left);
+    for (const p of list ?? []) protectedPlayers.set(p.player, p.days_left ?? 0);
   };
   /** The genetics dashboard's data (declared up here: the Lineage tab reads it too, possibly before its fetch is set up). */
   let stats: LineageStats | null = null;

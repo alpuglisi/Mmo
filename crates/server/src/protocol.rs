@@ -968,7 +968,17 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             OwnGrace { .. } => "own_grace",
             NoGrace => "no_grace",
         };
-        let info = ErrorInfo::new(code, e.to_string());
+        let message = match e {
+            // In 8-tile steps: the exact distance ranged the other animal
+            // (playtest 13).
+            TooFar { distance } => format!(
+                "the two are about {:.0} tiles apart; they must be within {}",
+                (distance / 8.0).ceil() * 8.0,
+                evo_sim::world::commands::MEETING_DISTANCE
+            ),
+            _ => e.to_string(),
+        };
+        let info = ErrorInfo::new(code, message);
         match e {
             ClaimCooldown { ticks_left } => info.with_detail(serde_json::json!({ "ticks_left": ticks_left })),
             MostlyWater { share } => {
@@ -1868,7 +1878,11 @@ pub struct LineageWarning {
 pub struct ProtectedLineage {
     pub player: PlayerId,
     pub lineage: u32,
-    pub days_left: f32,
+    /// Not told in the public summary (playtests 12 and 13: every graced
+    /// player's days left, anonymously); the lineage's owner reads its own
+    /// in `lineage_stats.grace_days_left` and the state's `grace`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub days_left: Option<f32>,
 }
 
 /// Whose genes make up a legacy share (`lineage_stats.score`). The score

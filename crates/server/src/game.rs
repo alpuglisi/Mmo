@@ -873,6 +873,11 @@ struct Offer {
     /// could walk its animal away and the buyer forfeited).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     start_dist: Option<(f32, f32)>,
+    /// A pending offer's `apart` as it stood when made, frozen (playtest
+    /// 13: recomputed live, possessing the offered animal ranged the
+    /// other side's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    apart: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     buyer_best: Option<f32>,
     /// The partner's owner possessed or ordered its animal during the
@@ -1380,6 +1385,19 @@ const LISTING_REGION: f32 = 32.0;
 /// A coordinate as the center of its `cell`-tile cell.
 fn coarse_in(v: f32, cell: f32) -> f32 {
     (v / cell).floor() * cell + cell / 2.0
+}
+
+/// What makes an agreement's update news (`Game::last_pushed`): the
+/// meeting point, whether either is asleep or possessed, and the distance
+/// in 16-tile steps. Two sleepers' jitter flapped the distance between 68
+/// and 72 and sent an update each time (playtest 13).
+fn meet_key(meet: Option<&MeetView>) -> String {
+    match meet {
+        None => String::new(),
+        Some(m) => {
+            format!("{:?},{:?},{},{},{}", m.meet_x, m.meet_y, m.asleep, m.possessed, (m.distance / 16.0).round())
+        }
+    }
 }
 
 fn finite(v: &[f32]) -> Result<(), ErrorInfo> {
@@ -3457,6 +3475,7 @@ impl Game {
         }
         let id = self.open_offer(player, to, mine, 0, price, OfferStatus::Pending, None)?;
         self.offers.get_mut(&id).unwrap().lineage = Some(lineage);
+        self.freeze_apart(id);
         self.request_log.entry((player, to)).or_default().push_back((self.world.tick(), id));
         self.hold_added(Some(id), None);
         let view = self.offer_view(id);
@@ -3619,8 +3638,10 @@ impl Game {
             partner_steered: false,
             meet_note: None,
             paused: 0,
+            apart: None,
         };
         self.offers.insert(id, offer);
+        self.freeze_apart(id);
         if status == OfferStatus::Accepted {
             // The pair walks to meet (`World::set_rendezvous`).
             self.start_rendezvous(id);
@@ -4580,7 +4601,7 @@ impl Game {
                 let view = self.offer_view(request);
                 // Asked again ("Complete now") with nothing changed: the
                 // caller gets the error, nobody a repeated update.
-                let key = serde_json::to_string(&view.meet).unwrap_or_default();
+                let key = meet_key(view.meet.as_ref());
                 let fresh = self.last_pushed.get(&request) != Some(&key);
                 self.last_pushed.insert(request, key);
                 for p in [o.from, o.to].into_iter().filter(|_| fresh) {
@@ -5201,32 +5222,53 @@ impl Game {
             // listing's region, playtest 11).
             mine_age: o.status.is_open().then(|| self.animal_age(o.mine)).flatten(),
             partner_age: o.status.is_open().then(|| self.animal_age(o.partner)).flatten(),
-            apart: (o.status == OfferStatus::Pending)
-                .then(|| {
-                    let a = self.world.organism(o.mine)?;
-                    let (d, at) = match (o.partner, o.lineage) {
-                        (0, Some(l)) => self
-                            .world
-                            .organisms
-                            .iter()
-                            .filter(|b| b.alive && b.lineage == l && b.matured && b.sex != a.sex)
-                            .map(|b| (a.pos.dist(b.pos), b.pos))
-                            .fold((f32::INFINITY, a.pos), |m, x| if x.0 < m.0 { x } else { m }),
-                        (p, _) => {
-                            let b = self.world.organism(p)?;
-                            (a.pos.dist(b.pos), b.pos)
-                        }
-                    };
-                    let step = if self.in_sight(o.from, at) { 8.0 } else { LISTING_REGION };
-                    d.is_finite().then(|| (d / step).ceil() * step)
-                })
-                .flatten(),
+            // Frozen when the offer was made (`Offer::apart`); computed for
+            // an offer saved before that.
+            apart: o.apart.or_else(|| self.apart_now(o)).filter(|_| o.status == OfferStatus::Pending),
             meet_note: o.meet_note.clone().filter(|_| o.status == OfferStatus::Accepted),
             walk_warning: (o.status == OfferStatus::Accepted).then(|| self.walk_warning(o)).flatten(),
             substitute_sex: o.lost.as_ref().filter(|_| o.status == OfferStatus::Accepted).and_then(|_| {
                 self.world.organism(o.partner).map(|p| if p.sex == Sex::Female { "male" } else { "female" }.to_string())
             }),
         }
+    }
+
+    /// Fix pending offer `id`'s `apart` as it stands now (see
+    /// [`Offer::apart`]).
+    fn freeze_apart(&mut self, id: u64) {
+        let Some(o) = self.offers.get(&id) else { return };
+        let apart = self.apart_now(o);
+        if let Some(o) = self.offers.get_mut(&id) {
+            o.apart = apart;
+        }
+    }
+
+    /// About how far apart a pending offer's two are now: 8-tile steps, so
+    /// Accept can say what the walk will be (playtest 10); for an offer to
+    /// the lineage, the nearest adult of the other sex in it (playtest 11);
+    /// 32-tile steps while the requester doesn't see that partner (playtest
+    /// 11).
+    fn apart_now(&self, o: &Offer) -> Option<f32> {
+        (o.status == OfferStatus::Pending)
+            .then(|| {
+                let a = self.world.organism(o.mine)?;
+                let (d, at) = match (o.partner, o.lineage) {
+                    (0, Some(l)) => self
+                        .world
+                        .organisms
+                        .iter()
+                        .filter(|b| b.alive && b.lineage == l && b.matured && b.sex != a.sex)
+                        .map(|b| (a.pos.dist(b.pos), b.pos))
+                        .fold((f32::INFINITY, a.pos), |m, x| if x.0 < m.0 { x } else { m }),
+                    (p, _) => {
+                        let b = self.world.organism(p)?;
+                        (a.pos.dist(b.pos), b.pos)
+                    }
+                };
+                let step = if self.in_sight(o.from, at) { 8.0 } else { LISTING_REGION };
+                d.is_finite().then(|| (d / step).ceil() * step)
+            })
+            .flatten()
     }
 
     /// Accepted agreement `id`'s requester animal is dead: the first time,
@@ -5731,7 +5773,7 @@ impl Game {
                 // Only when something a player would see changed (playtest
                 // 10: an update every couple of seconds).
                 // The paused deadline alone moving is no news (playtest 11).
-                let key = serde_json::to_string(&view.meet).unwrap_or_default();
+                let key = meet_key(view.meet.as_ref());
                 if self.last_pushed.get(&id) == Some(&key) {
                     continue;
                 }
@@ -9179,8 +9221,8 @@ impl Game {
                 // public summary).
                 .filter(|&(&player, _)| !self.is_extinct(player))
                 .filter_map(|(&player, &lineage)| {
-                    let days_left = self.world.lineage_grace_left(lineage)?.ceil();
-                    Some(crate::protocol::ProtectedLineage { player, lineage, days_left })
+                    self.world.lineage_grace_left(lineage)?;
+                    Some(crate::protocol::ProtectedLineage { player, lineage, days_left: None })
                 })
                 .collect(),
         }
@@ -12217,6 +12259,7 @@ mod tests {
             partner_steered: false,
             meet_note: None,
             paused: 0,
+            apart: None,
         };
         let tpd = g.world.config.ticks_per_day as u64;
         assert_eq!(g.offer_deadline(&o), 100 + HOLD_MAX_DAYS * tpd);
