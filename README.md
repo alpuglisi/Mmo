@@ -2123,6 +2123,26 @@ minutes, every purchase failed when the buyer's animal died):
   says fixed listings pay no market fee (`listing_fee_percent` 0); the
   taper line says "balance plus renown held in offers".
 
+**Playtest 13 changes** (economy):
+
+- **Market fitness**: "too old" is now the chance of outliving the answer
+  window plus the meeting deadline under the old-age hazard
+  (`World::old_age_survival`, below 85%: `Game::too_old_to_trade`), not
+  90% of the lifespan (deaths came from 61%). The same check (old,
+  starving or parched, asleep) runs on the requester's animal, the
+  buyer's animal (`buy_listing`), the accepter's animal (`respond_mating`,
+  the lineage pick and `lineage_candidates`), and on listing (an asleep
+  animal may be listed, shown asleep). Listings' `aging` flag uses it.
+- **Agreements**: an old-age death mid-agreement is excused (the animal
+  was fit when offered); after a buyer's loss at least a third of the
+  deadline (and half a game day) is left to send another, and a
+  substitute gets a fresh deadline; one animal sits in one open offer
+  (also offers to a lineage); a lineage offer's `apart` counts only the
+  animals the pick would take; the meeting point never slides past three
+  quarters toward either animal (else it stays and says so).
+- Small: the request limit says how many real minutes to wait; the
+  shop's restore price reads "from N" (more where others graze).
+
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.
 

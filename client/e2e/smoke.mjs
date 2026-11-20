@@ -541,7 +541,7 @@ async function main() {
         // adult (which can be the partner's sex): retry then, too.
         const swapped = req.mine !== cand.mine || req.partner !== cand.partner;
         if (!req.ok) {
-          if (!swapped && !['already_pregnant', 'not_mature', 'not_found', 'died', 'out_of_sight'].includes(req.error?.code)) throw new Error(`request_mating failed: ${JSON.stringify(req.error)} for ${JSON.stringify(cand)}`);
+          if (!swapped && !['already_pregnant', 'not_mature', 'not_found', 'died', 'out_of_sight', 'unfit'].includes(req.error?.code)) throw new Error(`request_mating failed: ${JSON.stringify(req.error)} for ${JSON.stringify(cand)}`);
           // A request names only an animal in sight, on the market or in an
           // offer: the lineages can be founded far apart, so bob lists it.
           // Every adult male of his (each retry may pick another: listing
@@ -747,7 +747,7 @@ async function main() {
       await page.click('#market-list-submit');
       const listed = await waitFor('create_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_listing')));
       if (!listed.ok) {
-        if (['not_found', 'not_mature', 'already_listed'].includes(listed.error?.code)) {
+        if (['not_found', 'not_mature', 'already_listed', 'unfit'].includes(listed.error?.code)) {
           console.log(`  … create_listing refused (${listed.error.code}); picking again`);
           continue;
         }
@@ -801,7 +801,7 @@ async function main() {
       }
       const r = await waitFor('buy_listing result', () => bob.evaluate(() => window.__results.find((r) => r.type === 'buy_listing')));
       if (!r.ok) {
-        if (['already_pregnant', 'not_found', 'died', 'not_mature', 'unknown_listing'].includes(r.error?.code)) {
+        if (['already_pregnant', 'not_found', 'died', 'not_mature', 'unknown_listing', 'unfit'].includes(r.error?.code)) {
           console.log(`  … buy_listing refused (${r.error.code}); picking again`);
           continue;
         }
@@ -907,7 +907,7 @@ async function main() {
       await choosePick(page, '#market-list-organism', null, 10000);
       await page.click('#market-list-submit');
       const relisted = await waitFor('create_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_listing')));
-      if (!relisted.ok && !['not_found', 'not_mature', 'already_listed'].includes(relisted.error?.code)) throw new Error(`create_listing failed: ${JSON.stringify(relisted.error)}`);
+      if (!relisted.ok && !['not_found', 'not_mature', 'already_listed', 'unfit'].includes(relisted.error?.code)) throw new Error(`create_listing failed: ${JSON.stringify(relisted.error)}`);
       if (relisted.ok) [withdrawId, withdrawOrg] = [relisted.data.listing.id, relisted.data.listing.organism];
     };
     for (let attempt = 0; attempt < 8 && !withdrawn; attempt++) {
@@ -1000,7 +1000,7 @@ async function main() {
         lotTried.push(lot);
         const r = await waitFor('create_auction result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_auction') ?? null), 30000);
         if (r.ok) return { id: r.data.listing.id, sex: r.data.listing.sex, organism: r.data.listing.organism };
-        if (!['already_pregnant', 'not_found', 'not_mature', 'already_listed', 'organism_busy'].includes(r.error?.code)) throw new Error(`create_auction failed: ${JSON.stringify(r.error)}`);
+        if (!['already_pregnant', 'not_found', 'not_mature', 'already_listed', 'organism_busy', 'unfit'].includes(r.error?.code)) throw new Error(`create_auction failed: ${JSON.stringify(r.error)}`);
         const server = (await (await fetch(`${base}/api/world`)).json()).clock.tick;
         const diag = await page.evaluate((id) => { const s = window.evo.model.state; const o = s.organisms.find((o) => String(o.id) === id); return `${s.clock.tick}:${o ? `${o.sex[0]}${o.pregnant ? 'P' : ''}${o.matured ? 'A' : ''}` : '-'}`; }, lot);
         createLog.push(`#${lot} refused (${r.error?.code}; server ${server}, ann ${diag})`);
